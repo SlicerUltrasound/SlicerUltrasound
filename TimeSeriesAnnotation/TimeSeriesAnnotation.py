@@ -712,17 +712,59 @@ class TimeSeriesAnnotationLogic(ScriptedLoadableModuleLogic):
         if not parameterNode.reconstructedVolume:
             parameterNode.reconstructedVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "ReconstructedVolume")
             parameterNode.reconstructedVolume.CreateDefaultDisplayNodes()
-        
+
     def captureCurrentFrame(self):
         """
         Record the current frame and segmentation in the segmentation browser.
         """
         parameterNode = self.getParameterNode()
-        
-        
         currentAttributeIndexStr = parameterNode.segmentation.GetAttribute(self.ORIGINAL_IMAGE_INDEX)
         if currentAttributeIndexStr == "None" or currentAttributeIndexStr == "":
             currentAttributeIndexStr = None
+
+        selectedSegmentation = parameterNode.segmentation
+        sequencesLogic = slicer.modules.sequences.logic()
+
+        # Check if the segmentation browser is empty
+        if not parameterNode.segmentationBrowser.GetNumberOfSynchronizedSequenceNodes():
+            # Create a temporary QLabel to display a message
+            self.infoLabel = qt.QLabel("Adding proxy nodes from input browser and segmentation node...")
+            self.infoLabel.setWindowFlags(qt.Qt.ToolTip)
+            self.infoLabel.setStyleSheet("background-color:  #0ABAB5; padding: 10px;")
+            self.infoLabel.setAlignment(qt.Qt.AlignCenter)
+            self.infoLabel.setGeometry(100, 100, 400, 50)  # Set position and size of the message label
+            self.infoLabel.show()
+
+            # Process to add nodes
+            inputProxyNodes = vtk.vtkCollection()
+            parameterNode.inputBrowser.GetAllProxyNodes(inputProxyNodes)
+            totalNodes = inputProxyNodes.GetNumberOfItems()
+
+            for i in range(totalNodes):
+                proxyNode = inputProxyNodes.GetItemAsObject(i)
+                synchronizedSequenceNode = sequencesLogic.AddSynchronizedNode(None, proxyNode, parameterNode.segmentationBrowser)
+                # Enable recording for the added synchronized sequence node
+                parameterNode.segmentationBrowser.SetRecording(synchronizedSequenceNode, True)
+
+            # Add selected segmentation as proxy node
+            segmentationSequenceNode = sequencesLogic.AddSynchronizedNode(None, selectedSegmentation,
+                                                                              parameterNode.segmentationBrowser)
+            # Enable recording for the segmentation node as well
+            parameterNode.segmentationBrowser.SetRecording(segmentationSequenceNode, True)
+
+            # Change the message to show success
+            self.infoLabel.setText("Proxy nodes and segmentation added successfully.")
+            qt.QTimer.singleShot(5000, self.infoLabel.hide)  # Hide the label after 7 seconds
+        else:
+            # Existing functionality for handling non-empty segmentation browser
+            if not parameterNode.segmentationBrowser.GetSequenceNode(selectedSegmentation):
+                segmentationSequenceNode = sequencesLogic.AddSynchronizedNode(None, selectedSegmentation,
+                                                                                  parameterNode.segmentationBrowser)
+            else:
+                segmentationSequenceNode = parameterNode.segmentationBrowser.GetSequenceNode(selectedSegmentation)
+
+
+        print('segmentationSequenceNode:', segmentationSequenceNode)
         
         selectedSegmentation = parameterNode.segmentation
         segmentationSequenceNode = parameterNode.segmentationBrowser.GetSequenceNode(selectedSegmentation)
