@@ -245,7 +245,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.overlayVisibilityButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueEye.png')))
         self.ui.clearAllLinesButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFillTrash.png')))
         self.ui.skipToUnlabelledButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFastForward.png')))
-        
+
         # Frame table
         self.ui.framesTableWidget.itemSelectionChanged.connect(self.onFramesTableSelectionChanged) 
 
@@ -1904,7 +1904,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
 
-
+#
+# AnnotateUltrasoundTest
+#
 class AnnotateUltrasoundTest(ScriptedLoadableModuleTest):
     """
     This is the test case for your scripted module.
