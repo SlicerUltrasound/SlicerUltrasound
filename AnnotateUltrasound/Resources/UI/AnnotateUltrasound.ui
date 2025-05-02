@@ -60,22 +60,31 @@
        <layout class="QHBoxLayout" name="horizontalLayout" stretch="2,3,2">
         <item>
          <widget class="QPushButton" name="previousButton">
+          <property name="toolTip">
+           <string>Loads previous scan</string>
+          </property>
           <property name="text">
-           <string>Previous</string>
+           <string/>
           </property>
          </widget>
         </item>
         <item>
          <widget class="QPushButton" name="saveButton">
+          <property name="toolTip">
+           <string>Saves annotations and loads next scan (Shortcut A key)</string>
+          </property>
           <property name="text">
-           <string>Save and load next scan [A]</string>
+           <string>Save &amp;&amp; next [A]</string>
           </property>
          </widget>
         </item>
         <item>
          <widget class="QPushButton" name="nextButton">
+          <property name="toolTip">
+           <string>Loads next scan</string>
+          </property>
           <property name="text">
-           <string>Next (no save)</string>
+           <string/>
           </property>
          </widget>
         </item>
@@ -83,8 +92,11 @@
       </item>
       <item>
        <widget class="QPushButton" name="skipToUnlabelledButton">
+        <property name="toolTip">
+         <string>Skips to next unlabelled scan</string>
+        </property>
         <property name="text">
-         <string>Skip to next unlabelled scan</string>
+         <string>Next unlabelled</string>
         </property>
        </widget>
       </item>
@@ -140,6 +152,9 @@
      <layout class="QGridLayout" name="gridLayout">
       <item row="3" column="1">
        <widget class="QPushButton" name="clearAllLinesButton">
+        <property name="toolTip">
+         <string>Clears all line annotations of current scan</string>
+        </property>
         <property name="text">
          <string>Clear all lines</string>
         </property>
@@ -150,8 +165,11 @@
       </item>
       <item row="1" column="0">
        <widget class="QPushButton" name="addPleuraButton">
+        <property name="toolTip">
+         <string>Adds new pleura line (Shortcut W key)</string>
+        </property>
         <property name="text">
-         <string>Add new pleura line [W]</string>
+         <string>Pleura line [W]</string>
         </property>
         <property name="checkable">
          <bool>true</bool>
@@ -167,8 +185,11 @@
       </item>
       <item row="3" column="0">
        <widget class="QPushButton" name="overlayVisibilityButton">
+        <property name="toolTip">
+         <string>Toggles overlay display (Shortcut Space bar)</string>
+        </property>
         <property name="text">
-         <string>Toggle overlay [Space]</string>
+         <string>Overlay [Space]</string>
         </property>
         <property name="checkable">
          <bool>true</bool>
@@ -180,8 +201,11 @@
       </item>
       <item row="2" column="0">
        <widget class="QPushButton" name="addBlineButton">
+        <property name="toolTip">
+         <string>Adds new B-line line (Shortcut S key)</string>
+        </property>
         <property name="text">
-         <string>Add new B-line [S]</string>
+         <string>B-line [S]</string>
         </property>
         <property name="checkable">
          <bool>true</bool>
@@ -197,15 +221,21 @@
       </item>
       <item row="1" column="1">
        <widget class="QPushButton" name="removePleuraButton">
+        <property name="toolTip">
+         <string>Removes last added pleura line (Shortcut E key)</string>
+        </property>
         <property name="text">
-         <string>Remove last pleura line [E]</string>
+         <string>Last pleura line [E]</string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
        <widget class="QPushButton" name="removeBlineButton">
+        <property name="toolTip">
+         <string>Removes last added B-line (Shortcut D key)</string>
+        </property>
         <property name="text">
-         <string>Remove last B-line [D]</string>
+         <string>Last B-line [D]</string>
         </property>
        </widget>
       </item>
