@@ -82,6 +82,13 @@
        </layout>
       </item>
       <item>
+       <widget class="QPushButton" name="skipToUnlabelledButton">
+        <property name="text">
+         <string>Skip to next unlabelled scan</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QLabel" name="currentFileLabel">
         <property name="text">
          <string>Current file: </string>
