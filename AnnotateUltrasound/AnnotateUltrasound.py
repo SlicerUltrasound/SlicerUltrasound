@@ -1362,10 +1362,15 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
     def clearAllLines(self):
         """
-        Remove all pleura lines and B-lines from the scene and from the list of lines. Adds current frame annotations to dictionary.
+        Remove all pleura lines and B-lines from the scene and from the list of lines.
+        Only updates the annotation if the current frame is already in the annotations.
         """
         self.clearSceneLines()
-        self.updateCurrentFrame()
+        # Only update annotation if current frame is already present
+        if self.sequenceBrowserNode is not None and self.annotations is not None and 'frame_annotations' in self.annotations:
+            currentFrameIndexStr = str(self.sequenceBrowserNode.GetSelectedItemNumber())
+            if currentFrameIndexStr in self.annotations['frame_annotations']:
+                self.updateCurrentFrame()
 
     def removeLastPleuraLine(self):
         """
