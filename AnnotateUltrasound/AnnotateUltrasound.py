@@ -187,6 +187,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         uiWidget = slicer.util.loadUI(self.resourcePath('UI/AnnotateUltrasound.ui'))
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
+        self.ui.currentFileLabel.setTextInteractionFlags(qt.Qt.TextSelectableByMouse)
+
 
         # Set scene in MRML widgets. Make sure that in Qt designer the top-level qMRMLWidget's
         # "mrmlSceneChanged(vtkMRMLScene*)" signal in is connected to each MRML widget's.
