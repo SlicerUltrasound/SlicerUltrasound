@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>432</width>
-    <height>832</height>
+    <height>912</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -170,8 +170,53 @@
         </property>
        </widget>
       </item>
-      <item row="7" column="0" colspan="2">
+      <item row="8" column="0" colspan="2">
        <widget class="QTableWidget" name="framesTableWidget"/>
+      </item>
+      <item row="2" column="0">
+       <widget class="QPushButton" name="addBlineButton">
+        <property name="toolTip">
+         <string>Adds new B-line line (Shortcut S key)</string>
+        </property>
+        <property name="text">
+         <string>B-line [S]</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>20</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>Annotated frames</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QPushButton" name="removeBlineButton">
+        <property name="toolTip">
+         <string>Removes last added B-line (Shortcut D key)</string>
+        </property>
+        <property name="text">
+         <string>Last B-line [D]</string>
+        </property>
+       </widget>
       </item>
       <item row="1" column="0">
        <widget class="QPushButton" name="addPleuraButton">
@@ -183,13 +228,6 @@
         </property>
         <property name="checkable">
          <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="1">
-       <widget class="QPushButton" name="removeCurrentFrameButton">
-        <property name="text">
-         <string>Remove selected frame</string>
         </property>
        </widget>
       </item>
@@ -209,20 +247,14 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0">
-       <widget class="QPushButton" name="addBlineButton">
-        <property name="toolTip">
-         <string>Adds new B-line line (Shortcut S key)</string>
-        </property>
+      <item row="6" column="1">
+       <widget class="QPushButton" name="removeCurrentFrameButton">
         <property name="text">
-         <string>B-line [S]</string>
-        </property>
-        <property name="checkable">
-         <bool>true</bool>
+         <string>Remove selected frame</string>
         </property>
        </widget>
       </item>
-      <item row="5" column="0">
+      <item row="6" column="0">
        <widget class="QPushButton" name="addCurrentFrameButton">
         <property name="text">
          <string>Add current frame</string>
@@ -239,35 +271,16 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QPushButton" name="removeBlineButton">
-        <property name="toolTip">
-         <string>Removes last added B-line (Shortcut D key)</string>
-        </property>
-        <property name="text">
-         <string>Last B-line [D]</string>
-        </property>
-       </widget>
-      </item>
       <item row="4" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-        <property name="minimumSize">
-         <size>
-          <width>0</width>
-          <height>20</height>
-         </size>
+       <widget class="QPushButton" name="autoOverlayButton">
+        <property name="toolTip">
+         <string>Run AI model and show mask overlay</string>
         </property>
         <property name="text">
-         <string>Annotated frames</string>
+         <string>Auto-Overlay [Enter]</string>
         </property>
-        <property name="alignment">
-         <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
+        <property name="checkable">
+         <bool>true</bool>
         </property>
        </widget>
       </item>
@@ -296,8 +309,8 @@
           <rect>
            <x>0</x>
            <y>0</y>
-           <width>392</width>
-           <height>60</height>
+           <width>388</width>
+           <height>67</height>
           </rect>
          </property>
          <layout class="QVBoxLayout" name="verticalLayout_4"/>
