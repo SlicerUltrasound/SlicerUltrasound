@@ -128,7 +128,7 @@ class AnonymizeUltrasoundParameterNode:
     """
     ultrasoundSequenceBrowser: vtkMRMLSequenceBrowserNode  # Sequence browser whose proxy node is ultrasoundVolume
     maskMarkups: vtkMRMLMarkupsFiducialNode                # Landmarks for masking
-    overlayVolume: vtkMRMLScalarVolumeNode                 # Overlay volume to represent masking
+    overlayVolume: vtkMRMLVectorVolumeNode                 # Overlay volume to represent masking
     maskVolume: vtkMRMLScalarVolumeNode                    # Volume node to store the mask
     status: AnonymizerStatus = AnonymizerStatus.INITIAL    # Current status of the anonymizer to decide what actions are allowed
     patientId: str = ""                                    # Currently loaded patient
@@ -236,6 +236,12 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self.ui.autoMaskCheckBox.checked = False
         self.ui.autoMaskCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.AUTO_MASK_SETTING, str(newValue)))
+
+        self.ui.autoOverlayCheckBox.checked = False
+        self.ui.autoOverlayCheckBox.connect('toggled(bool)', self.onAutoOverlayCheckBoxToggled)
+
+        # Developer gating for Auto‑Overlay check box
+        self._updateAutoOverlayCheckBoxVisibility()
         
         continueProgressStr = settings.value(self.CONTINUE_PROGRESS_SETTING)
         if continueProgressStr and continueProgressStr.lower() == "true":
@@ -550,6 +556,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         sliceCompositeNode.SetCompositing(2)
     
+    def onAutoOverlayCheckBoxToggled(self, checked):
+        self.logic.showAutoOverlay = checked  # Pass to logic
+        self.logic._composeAndPushOverlay()
+
+    def _updateAutoOverlayCheckBoxVisibility(self):
+        self.ui.autoOverlayCheckBox.setVisible(self.developerMode)
+
     #
     # Placement of mask markups
     #
@@ -637,8 +650,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                     sliceCompositeNode.SetForegroundVolumeID(maskContourVolumeNode.GetID())
                     sliceCompositeNode.SetForegroundOpacity(0.5)
                     displayNode = maskContourVolumeNode.GetDisplayNode()
-                    displayNode.SetWindow(1)
-                    displayNode.SetLevel(0.5)
+                    displayNode.SetWindow(255)
+                    displayNode.SetLevel(127)
 
     def onPointAdded(self, caller=None, event=None):
         logging.info('Point added')
@@ -818,6 +831,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         
         self.dicomDf = None
         self.nextDicomDfIndex = 0
+        self.showAutoOverlay = False
+        self._autoMaskRGB = None     # 1×H×W×3  uint8, red
+        self._manualMaskRGB = None   # 1×H×W×3  uint8, green
 
     def getParameterNode(self):
         return AnonymizeUltrasoundParameterNode(super().getParameterNode())
@@ -1338,6 +1354,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         mask_output = np.uint8(output[0, 1, :, :]) 
         mask_output = cv2.resize(np.uint8(output[0, 1, :, :]), original_frame_size)
         logging.info(f"({str(mask_output.shape)}) Mask generated successfully")
+
+        # Paint the red overlay where the model says the fan is
+        Hc, Wc = mask_output.shape
+        rgb = np.zeros((1, Hc, Wc, 3), dtype=np.uint8)
+        rgb[0, mask_output == 1, 0] = 255      # red channel only
+        self._autoMaskRGB = rgb
+        self._composeAndPushOverlay()
+
         approx_corners = self.find_four_corners(mask_output)
         
         if approx_corners is None:
@@ -1432,8 +1456,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             sliceCompositeNode.SetCompositing(2) # Add foreground and background
             # Set window and level so that mask is visible
             displayNode = maskContourVolumeNode.GetDisplayNode()
-            displayNode.SetWindow(1)
-            displayNode.SetLevel(0.5)
+            displayNode.SetWindow(255)
+            displayNode.SetLevel(127)
         else:
             slicer.util.setSliceViewerLayers(foreground=None)
 
@@ -1528,9 +1552,16 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         mask_contour_array_eroded = cv2.erode(mask_contour_array, masking_kernel, iterations=3)
         mask_contour_array = mask_contour_array - mask_contour_array_eroded
 
+        # Create RGB overlay mask
         maskContourVolumeNode = parameterNode.overlayVolume
+        overlay_shape = (1, imageArray.shape[1], imageArray.shape[2], 3)
+        rgb_mask = np.zeros(overlay_shape, dtype=np.uint8)
+        # Set green channel for mask contour
+        rgb_mask[0, :, :, 1] = (mask_contour_array > 0) * 255
+        self._manualMaskRGB = rgb_mask
+
         if maskContourVolumeNode is None:
-            maskContourVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "AnonymizeUltrasound Overlay")
+            maskContourVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", "AnonymizeUltrasound Overlay")
             parameterNode.overlayVolume = maskContourVolumeNode
             maskContourVolumeNode.CreateDefaultDisplayNodes()
             maskContourDisplayNode = maskContourVolumeNode.GetDisplayNode()
@@ -1542,7 +1573,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
         maskContourVolumeNode.SetIJKToRASMatrix(ijkToRas)
 
-        slicer.util.updateVolumeFromArray(maskContourVolumeNode, mask_contour_array)
+        # Allocate and set image data for vector volume
+        overlayImageData = vtk.vtkImageData()
+        overlayImageData.SetDimensions(imageArray.shape[2], imageArray.shape[1], 1)
+        overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
+        maskContourVolumeNode.SetAndObserveImageData(overlayImageData)
+        self._composeAndPushOverlay()
 
         # Add a dimension to the mask array
 
@@ -2143,6 +2179,29 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return dicomFilePath, sequenceInfoFilePath, dicomHeaderFilePath
 
+    def _composeAndPushOverlay(self):
+        """Merge masks according to parameter-node switches and
+        write into overlayVolume (always foreground)."""
+        pnode = self.getParameterNode()
+        # For now, always show both overlays if present
+        rgb = None
+        # Determine shape from available masks
+        if self._manualMaskRGB is not None:
+            _, h, w, _ = self._manualMaskRGB.shape
+        elif self._autoMaskRGB is not None:
+            _, h, w, _ = self._autoMaskRGB.shape
+        else:
+            return
+        rgb = np.zeros((1, h, w, 3), dtype=np.uint8)
+        # Optionally, you can add switches to pnode for visibility
+        manualVisible = True
+        autoVisible = self.showAutoOverlay
+        if manualVisible and self._manualMaskRGB is not None:
+            rgb[0] = np.maximum(rgb[0], self._manualMaskRGB[0])
+        if autoVisible and self._autoMaskRGB is not None:
+            rgb[0] = np.maximum(rgb[0], self._autoMaskRGB[0])
+        if pnode.overlayVolume is not None:
+            slicer.util.updateVolumeFromArray(pnode.overlayVolume, rgb)
 
 #
 # AnonymizeUltrasoundTest

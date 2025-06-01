@@ -292,6 +292,16 @@
        </widget>
       </item>
       <item>
+       <widget class="QCheckBox" name="autoOverlayCheckBox">
+        <property name="toolTip">
+        <string>If checked, show the automatic (red) overlay mask.</string>
+        </property>
+        <property name="text">
+        <string>Show automatic overlay</string>
+        </property>
+        </widget>
+      </item>
+      <item>
        <widget class="QCheckBox" name="skipSingleframeCheckBox">
         <property name="text">
          <string>Skip single-frame input DICOM files</string>
