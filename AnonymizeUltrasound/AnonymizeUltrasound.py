@@ -493,7 +493,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 statusText = "No more series to load"
                 self.ui.statusLabel.text = statusText
                 dialog.close()
-                return
             else:
                 self.ui.progressBar.value = currentDicomDfIndex
                 dialog.close()
@@ -539,9 +538,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Get the file path from the dataframe
         
-        filepath = self.logic.dicomDf.iloc[currentDicomDfIndex].Filepath
-        statusText += filepath
-        self.ui.statusLabel.text = statusText
+        if currentDicomDfIndex is not None:
+            filepath = self.logic.dicomDf.iloc[currentDicomDfIndex].Filepath
+            statusText += filepath
+            self.ui.statusLabel.text = statusText
         
         self.logic.updateMaskVolume()
         self.logic.showMaskContour()
@@ -988,7 +988,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # Increment nextDicomDfIndex
         nextIndex = self.incrementDicomDfIndex(None, outputDirectory, skip_existing=continueProgress)
         if nextIndex is None:
-            logging.info("No more DICOM files to process")
+            logging.debug("No more DICOM files to process")
             return None
 
         # Delete files from temporary folder
@@ -1175,8 +1175,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             logging.info(f"Next DICOM dataframe index: {self.nextDicomDfIndex}")
         else:
             self.nextDicomDfIndex = None
-            logging.info("No more DICOM files to process")
-        
+            logging.debug("No more DICOM files to process")
+
         return self.nextDicomDfIndex
     
     def getCurrentProxyNode(self):
