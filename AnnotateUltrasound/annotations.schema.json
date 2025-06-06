@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ImageRecord (Flat frame_annotations structure)",
+  "type": "object",
+  "properties": {
+    "SOPInstanceUID": {
+      "type": "string"
+    },
+    "GrayscaleConversion": {
+      "type": "boolean"
+    },
+    "mask_type": {
+      "type": "string"
+    },
+    "angle1": {
+      "type": "number"
+    },
+    "angle2": {
+      "type": "number"
+    },
+    "center_rows_px": {
+      "type": "integer"
+    },
+    "center_cols_px": {
+      "type": "integer"
+    },
+    "radius1": {
+      "type": "integer"
+    },
+    "radius2": {
+      "type": "integer"
+    },
+    "image_size_rows": {
+      "type": "integer"
+    },
+    "image_size_cols": {
+      "type": "integer"
+    },
+    "AnnotationLabels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "frame_annotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "frame_number": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "coordinate_space": {
+            "type": "string",
+            "enum": ["LPS", "RAS"],
+            "default": "RAS"
+          },
+          "pleura_lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "rater": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "object",
+                  "properties": {
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "points"
+                  ]
+                }
+              },
+              "required": [
+                "rater",
+                "line"
+              ]
+            }
+          },
+          "b_lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "rater": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "object",
+                  "properties": {
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "points"
+                  ]
+                }
+              },
+              "required": [
+                "rater",
+                "line"
+              ]
+            }
+          }
+        },
+        "required": [
+          "frame_number",
+          "pleura_lines",
+          "b_lines"
+        ]
+      }
+    }
+  },
+  "required": [
+    "SOPInstanceUID",
+    "frame_annotations"
+  ]
+}
