@@ -7,7 +7,7 @@
                 <x>0</x>
                 <y>0</y>
                 <width>432</width>
-                <height>966</height>
+                <height>912</height>
             </rect>
         </property>
         <layout class="QVBoxLayout" name="verticalLayout">
@@ -16,7 +16,7 @@
                     <item>
                         <widget class="QGroupBox" name="raterInfoGroupBox">
                             <property name="title">
-                                <string/>
+                                <string />
                             </property>
                             <layout class="QVBoxLayout" name="raterInfoVBox">
                                 <item>
@@ -24,7 +24,8 @@
                                         <item>
                                             <widget class="QLabel" name="raterNameLabel">
                                                 <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                                                    <sizepolicy hsizetype="Preferred"
+                                                        vsizetype="Fixed">
                                                         <horstretch>0</horstretch>
                                                         <verstretch>0</verstretch>
                                                     </sizepolicy>
@@ -37,7 +38,8 @@
                                         <item>
                                             <widget class="QLineEdit" name="raterName">
                                                 <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                                                    <sizepolicy hsizetype="Expanding"
+                                                        vsizetype="Fixed">
                                                         <horstretch>0</horstretch>
                                                         <verstretch>0</verstretch>
                                                     </sizepolicy>
@@ -56,7 +58,8 @@
                                     </layout>
                                 </item>
                                 <item>
-                                    <widget class="ctkCollapsibleButton" name="raterColorsCollapsibleButton">
+                                    <widget class="ctkCollapsibleButton"
+                                        name="raterColorsCollapsibleButton">
                                         <property name="text">
                                             <string>Rater Selection</string>
                                         </property>
@@ -94,14 +97,14 @@
                         <string>Input folder with DICOM and annotations files</string>
                     </property>
                     <layout class="QFormLayout" name="formLayout_2">
-                        <item row="1" column="0">
+                        <item row="0" column="0">
                             <widget class="QLabel" name="label">
                                 <property name="text">
                                     <string>Input directory:</string>
                                 </property>
                             </widget>
                         </item>
-                        <item row="1" column="1">
+                        <item row="0" column="1">
                             <widget class="ctkDirectoryButton" name="inputDirectoryButton">
                                 <property name="sizePolicy">
                                     <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
@@ -111,7 +114,7 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="2" column="0" colspan="2">
+                        <item row="1" column="0" colspan="2">
                             <widget class="QPushButton" name="readInputButton">
                                 <property name="enabled">
                                     <bool>true</bool>
@@ -159,8 +162,7 @@
                                     <widget class="QPushButton" name="saveAndLoadNextButton">
                                         <property name="toolTip">
                                             <string>Saves annotations and loads next scan (Shortcut
-                                                A
-                                                key)</string>
+                                                A key)</string>
                                         </property>
                                         <property name="text">
                                             <string>Save &amp;&amp; next [A]</string>
@@ -249,8 +251,53 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="7" column="0" colspan="2">
+                        <item row="8" column="0" colspan="2">
                             <widget class="QTableWidget" name="framesTableWidget" />
+                        </item>
+                        <item row="2" column="0">
+                            <widget class="QPushButton" name="addBlineButton">
+                                <property name="toolTip">
+                                    <string>Adds new B-line line (Shortcut S key)</string>
+                                </property>
+                                <property name="text">
+                                    <string>B-line [S]</string>
+                                </property>
+                                <property name="checkable">
+                                    <bool>true</bool>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="5" column="0">
+                            <widget class="QLabel" name="label_2">
+                                <property name="sizePolicy">
+                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+                                        <horstretch>0</horstretch>
+                                        <verstretch>0</verstretch>
+                                    </sizepolicy>
+                                </property>
+                                <property name="minimumSize">
+                                    <size>
+                                        <width>0</width>
+                                        <height>20</height>
+                                    </size>
+                                </property>
+                                <property name="text">
+                                    <string>Annotated frames</string>
+                                </property>
+                                <property name="alignment">
+                                    <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="2" column="1">
+                            <widget class="QPushButton" name="removeBlineButton">
+                                <property name="toolTip">
+                                    <string>Removes last added B-line (Shortcut D key)</string>
+                                </property>
+                                <property name="text">
+                                    <string>Last B-line [D]</string>
+                                </property>
+                            </widget>
                         </item>
                         <item row="1" column="0">
                             <widget class="QPushButton" name="addPleuraButton">
@@ -262,13 +309,6 @@
                                 </property>
                                 <property name="checkable">
                                     <bool>true</bool>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="5" column="1">
-                            <widget class="QPushButton" name="removeCurrentFrameButton">
-                                <property name="text">
-                                    <string>Remove selected frame</string>
                                 </property>
                             </widget>
                         </item>
@@ -288,20 +328,14 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="2" column="0">
-                            <widget class="QPushButton" name="addBlineButton">
-                                <property name="toolTip">
-                                    <string>Adds new B-line line (Shortcut S key)</string>
-                                </property>
+                        <item row="6" column="1">
+                            <widget class="QPushButton" name="removeCurrentFrameButton">
                                 <property name="text">
-                                    <string>B-line [S]</string>
-                                </property>
-                                <property name="checkable">
-                                    <bool>true</bool>
+                                    <string>Remove selected frame</string>
                                 </property>
                             </widget>
                         </item>
-                        <item row="5" column="0">
+                        <item row="6" column="0">
                             <widget class="QPushButton" name="addCurrentFrameButton">
                                 <property name="text">
                                     <string>Add current frame</string>
@@ -318,35 +352,26 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="2" column="1">
-                            <widget class="QPushButton" name="removeBlineButton">
+                        <item row="4" column="0">
+                            <widget class="QPushButton" name="autoOverlayButton">
                                 <property name="toolTip">
-                                    <string>Removes last added B-line (Shortcut D key)</string>
+                                    <string>Run AI model and show mask overlay</string>
                                 </property>
                                 <property name="text">
-                                    <string>Last B-line [D]</string>
+                                    <string>Auto-Overlay [Enter]</string>
+                                </property>
+                                <property name="checkable">
+                                    <bool>true</bool>
                                 </property>
                             </widget>
                         </item>
-                        <item row="4" column="0">
-                            <widget class="QLabel" name="label_2">
-                                <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-                                        <horstretch>0</horstretch>
-                                        <verstretch>0</verstretch>
-                                    </sizepolicy>
-                                </property>
-                                <property name="minimumSize">
-                                    <size>
-                                        <width>0</width>
-                                        <height>20</height>
-                                    </size>
+                        <item row="4" column="1">
+                            <widget class="QPushButton" name="autoPleuraButton">
+                                <property name="toolTip">
+                                    <string>Automatically find pleura lines (Shortcut P key)</string>
                                 </property>
                                 <property name="text">
-                                    <string>Annotated frames</string>
-                                </property>
-                                <property name="alignment">
-                                    <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
+                                    <string>Auto-Pleura [P]</string>
                                 </property>
                             </widget>
                         </item>
@@ -375,8 +400,8 @@
                                         <rect>
                                             <x>0</x>
                                             <y>0</y>
-                                            <width>410</width>
-                                            <height>68</height>
+                                            <width>388</width>
+                                            <height>67</height>
                                         </rect>
                                     </property>
                                     <layout class="QVBoxLayout" name="verticalLayout_4" />
