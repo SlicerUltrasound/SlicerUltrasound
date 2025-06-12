@@ -8,6 +8,7 @@ import json
 import logging
 import random
 import numpy as np
+import math
 import os
 import pathlib
 from PIL import Image
@@ -154,6 +155,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     HASH_PATIENT_ID_SETTING = "AnonymizeUltrasound/HashPatientId"
     FILENAME_PREFIX_SETTING = "AnonymizeUltrasound/FilenamePrefix"
     LABELS_PATH_SETTING = "AnonymizeUltrasound/LabelsPath"
+    THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -269,6 +271,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.namePrefixLineEdit.text = filenamePrefix
         self.ui.namePrefixLineEdit.connect('textChanged(QString)', lambda newValue: self.onSettingChanged(self.FILENAME_PREFIX_SETTING, newValue))
         
+        # Three-point fan mask setting
+        threePointStr = settings.value(self.THREE_POINT_FAN_SETTING)
+        if threePointStr and threePointStr.lower() == "true":
+            self.ui.threePointFanCheckBox.checked = True
+        else:
+            self.ui.threePointFanCheckBox.checked = False
+        self.ui.threePointFanCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.THREE_POINT_FAN_SETTING, str(newValue)))
+
         self.ui.settingsCollapsibleButton.collapsed = True
         
         # Annotation labels
@@ -396,7 +406,15 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             settings.setValue(settingName, newValue)
         else:
             settings.remove(settingName)
-    
+        if settingName == self.THREE_POINT_FAN_SETTING and self._parameterNode:
+            # clear any existing points and reset overlay
+            markupsNode = self._parameterNode.maskMarkups
+            if markupsNode is not None:
+                markupsNode.RemoveAllControlPoints()
+                # redraw mask (will be empty)
+                self.logic.updateMaskVolume(three_point=self.ui.threePointFanCheckBox.checked)
+                self.logic.showMaskContour()
+
     def _onParameterNodeModified(self, caller=None, event=None) -> None:
         """
         Update GUI based on parameter node values.
@@ -549,7 +567,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             statusText += filepath
             self.ui.statusLabel.text = statusText
         
-        self.logic.updateMaskVolume()
+        self.logic.updateMaskVolume(three_point=self.ui.threePointFanCheckBox.checked)
         self.logic.showMaskContour()
 
         # Set red slice compositing mode to 2
@@ -575,46 +593,54 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             logging.error(f"Landmark node not found: {self.logic.MASK_FAN_LANDMARKS}")
             return
         
+        # determine if three-point fan mode is active
+        three_point = self.ui.threePointFanCheckBox.checked
+
+        # Automatic mask via AI only when NOT in three-point fan mode
+        # TODO: Support for three-point fan mode auto mask
         autoMaskSuccessful = False
         if self.ui.autoMaskCheckBox.checked:
-            # Get the mask control points
-            maskMarkupsNode.RemoveAllControlPoints()
-            coords_IJK = self.logic.getAutoMask()
-            if coords_IJK is None:
-                logging.error("Auto mask not found")
+            if three_point:
+                logging.info("Auto mask not applied because in three-point fan mode")
             else:
-                autoMaskSuccessful = True
-            
-            # Try to apply the automatic mask markups
-            currentVolumeNode = self.logic.getCurrentProxyNode()
-            if autoMaskSuccessful == True and currentVolumeNode is not None:
-                ijkToRas = vtk.vtkMatrix4x4()
-                currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
+                # Get the mask control points
+                maskMarkupsNode.RemoveAllControlPoints()
+                coords_IJK = self.logic.getAutoMask()
+                if coords_IJK is None:
+                    logging.error("Auto mask not found")
+                else:
+                    autoMaskSuccessful = True
                 
-                num_points = coords_IJK.shape[0]
-                coords_RAS = np.zeros((num_points, 4))
-                for i in range(num_points):
-                    point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
-                    # convert to IJK
-                    coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
-                
-                for i in range(num_points):
-                    coord = coords_RAS[i, :]
-                    maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
+                # Try to apply the automatic mask markups
+                currentVolumeNode = self.logic.getCurrentProxyNode()
+                if autoMaskSuccessful == True and currentVolumeNode is not None:
+                    ijkToRas = vtk.vtkMatrix4x4()
+                    currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
                     
-                # Update the status
-                self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
-                self.ui.defineMaskButton.checked = False
-            else:
-                logging.error("Ultraosund volume node not found")
-                autoMaskSuccessful = False
+                    num_points = coords_IJK.shape[0]
+                    coords_RAS = np.zeros((num_points, 4))
+                    for i in range(num_points):
+                        point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
+                        # convert to IJK
+                        coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
+                    
+                    for i in range(num_points):
+                        coord = coords_RAS[i, :]
+                        maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
+                        
+                    # Update the status
+                    self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
+                    self.ui.defineMaskButton.checked = False
+                else:
+                    logging.error("Ultraosund volume node not found")
+                    autoMaskSuccessful = False
         
         # If markups are not automatically defined, start the manual process using mouse interactions
         
         if toggled and autoMaskSuccessful == False:
             maskMarkupsNode = self._parameterNode.maskMarkups
             maskMarkupsNode.RemoveAllControlPoints()
-            self.logic.updateMaskVolume()
+            self.logic.updateMaskVolume(three_point=self.ui.threePointFanCheckBox.checked)
             
             self._parameterNode.status = AnonymizerStatus.LANDMARK_PLACEMENT
             self.addObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointAddedEvent, self.onPointAdded)
@@ -641,8 +667,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             logging.error("Markups node not found")
             return
 
-        if markupsNode.GetNumberOfControlPoints() > 3:
-            self.logic.updateMaskVolume()
+        three_point = self.ui.threePointFanCheckBox.checked
+        required = 3 if three_point else 4
+        count = markupsNode.GetNumberOfControlPoints()
+        if count == required:
+            self.logic.updateMaskVolume(three_point=three_point)
             maskContourVolumeNode = self._parameterNode.overlayVolume
             if maskContourVolumeNode:
                 sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
@@ -655,26 +684,32 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def onPointAdded(self, caller=None, event=None):
         logging.info('Point added')
-        
+
         markupsNode = self._parameterNode.maskMarkups
-        if markupsNode.GetNumberOfControlPoints() > 3:
-            self.logic.updateMaskVolume()
+        # determine required points based on 3-point fan mode
+        three_point = self.ui.threePointFanCheckBox.checked
+        count = markupsNode.GetNumberOfControlPoints()
+        required = 3 if three_point else 4
+        if count == required:
+            # finalize mask placement
+            self.logic.updateMaskVolume(three_point=three_point)
             self.logic.showMaskContour()
         else:
             slicer.util.setSliceViewerLayers(foreground=None)
 
     def onPointDefined(self, caller=None, event=None):
         logging.info('Point defined')
-        
         markupsNode = self._parameterNode.maskMarkups
         if not markupsNode:
             logging.error("Markups node not found")
             return
-
-        if markupsNode.GetNumberOfControlPoints() > 2:
-            self.logic.updateMaskVolume()
-
-        if markupsNode.GetNumberOfControlPoints() > 3:
+        three_point = self.ui.threePointFanCheckBox.checked
+        count = markupsNode.GetNumberOfControlPoints()
+        required = 3 if three_point else 4
+        if count == required:
+            self.logic.updateMaskVolume(three_point=three_point)
+            self.logic.showMaskContour()
+            self.ui.defineMaskButton.checked = False
             self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
             self.removeObserver(markupsNode, slicer.vtkMRMLMarkupsNode.PointAddedEvent, self.onPointAdded)
             self.removeObserver(markupsNode, slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent, self.onPointDefined)
@@ -717,14 +752,15 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                     annotationLabels.append(checkBox.text)
         
         # If there are not mask markups, confirm with the user that they really want to proceed.
-        
-        if self._parameterNode.maskMarkups.GetNumberOfControlPoints() < 4:
+        required = 4 if not self.ui.threePointFanCheckBox.checked else 3
+        count = self._parameterNode.maskMarkups.GetNumberOfControlPoints()
+        if count < required:
             if not slicer.util.confirmOkCancelDisplay("No mask defined. Do you want to proceed without masking?"):
                 return
         
         # Mask images to erase the unwanted parts
-        
-        self.logic.maskSequence()
+        three_point_bool = self.ui.threePointFanCheckBox.checked
+        self.logic.maskSequence(three_point=three_point_bool)
         
         # Set up output directory and filename
         
@@ -834,9 +870,15 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         self.showAutoOverlay = False
         self._autoMaskRGB = None     # 1×H×W×3  uint8, red
         self._manualMaskRGB = None   # 1×H×W×3  uint8, green
+        self._parameterNode = self._getOrCreateParameterNode()
+
+    def _getOrCreateParameterNode(self):
+        if not hasattr(self, "_parameterNode"):
+            self._parameterNode = AnonymizeUltrasoundParameterNode(super().getParameterNode())
+        return self._parameterNode
 
     def getParameterNode(self):
-        return AnonymizeUltrasoundParameterNode(super().getParameterNode())
+        return self._parameterNode
     
     def updateDicomDf(self, inputDirectory: str, skipSingleFrame: bool) -> int:
         """
@@ -1473,23 +1515,36 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             parameterNode = self.getParameterNode()
             parameterNode.ultrasoundSequenceBrowser = node
 
-    def updateMaskVolume(self):
+    def updateMaskVolume(self, three_point=False):
         """
         Update the mask volume based on the current mask landmarks. Returns a string that can displayed as status message.
         """
         parameterNode = self.getParameterNode()
 
         fanMaskMarkupsNode = parameterNode.maskMarkups
-        if fanMaskMarkupsNode.GetNumberOfControlPoints() < 4:
+        # require 3 or 4 points depending on three-point setting
+        count = fanMaskMarkupsNode.GetNumberOfControlPoints()
+        required = 3 if three_point else 4
+        if count < required:
             # Clear the overlay volume
             maskContourVolumeNode = parameterNode.overlayVolume
             if maskContourVolumeNode is not None:
                 maskContourArray = slicer.util.arrayFromVolume(maskContourVolumeNode)
                 maskContourArray.fill(0)
                 slicer.util.updateVolumeFromArray(maskContourVolumeNode, maskContourArray)
-            
-            logging.info("At least four control points are needed to define a mask")
-            return("At least four control points are needed to define a mask")
+            msg = f"At least {required} control points are needed to define a mask"
+            logging.info(msg)
+            return msg
+        elif count > required: # I've never seen this happen, but just in case
+            # Clear all the points
+            fanMaskMarkupsNode.RemoveAllControlPoints()
+            # Clear the overlay volume
+            maskContourVolumeNode = parameterNode.overlayVolume                
+            msg = f"Only {required} control points are needed to define a mask"
+            logging.info(msg)
+            return msg
+
+
 
         # Compute the center of the mask points
 
@@ -1501,51 +1556,69 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         rasToIjk = vtk.vtkMatrix4x4()
         currentVolumeNode.GetRASToIJKMatrix(rasToIjk)
 
+        # Allocate for max 4 points, but only fill what we have
         controlPoints_ijk = np.zeros((4, 4))
-        for i in range(4):
-            fanMaskMarkupsNode.GetNthControlPointPosition(i, controlPoints_ijk[i, :3])
-            # pad control point with 1 to make it homogeneous
-            controlPoints_ijk[i, 3] = 1
-            # convert to IJK
-            controlPoints_ijk[i, :] = rasToIjk.MultiplyPoint(controlPoints_ijk[i, :])
+        actual_points = required  # 3 or 4
+        
+        for i in range(actual_points):
+            markupPoint = [0, 0, 0]
+            fanMaskMarkupsNode.GetNthControlPointPosition(i, markupPoint)
+            ijkPoint = rasToIjk.MultiplyPoint([markupPoint[0], markupPoint[1], markupPoint[2], 1.0])
+            controlPoints_ijk[i] = [ijkPoint[0], ijkPoint[1], ijkPoint[2], 1.0]
 
-        centerOfGravity = np.mean(controlPoints_ijk, axis=0)
+        if three_point:
+            # For 3-point mode: assign points based on Y position
+            # Point 0 (top) -> topLeft (apex)
+            # Points 1,2 (bottom) -> bottomLeft, bottomRight
+            points_by_y = sorted(range(actual_points), key=lambda i: controlPoints_ijk[i][1])
+            
+            topLeft = controlPoints_ijk[points_by_y[0]][:3]  # highest point (smallest Y)
+            bottomLeft = controlPoints_ijk[points_by_y[1]][:3]
+            bottomRight = controlPoints_ijk[points_by_y[2]][:3]
+            
+            # No topRight in 3-point mode
+            topRight = None
+        else:
+            centerOfGravity = np.mean(controlPoints_ijk[:4], axis=0)
 
-        topLeft = np.zeros(3)
-        topRight = np.zeros(3)
-        bottomLeft = np.zeros(3)
-        bottomRight = np.zeros(3)
+            topLeft = np.zeros(3)
+            topRight = np.zeros(3)
+            bottomLeft = np.zeros(3)
+            bottomRight = np.zeros(3)
 
-        for i in range(4):
-            if controlPoints_ijk[i, 0] < centerOfGravity[0] and controlPoints_ijk[i, 1] > centerOfGravity[1]:
-                bottomLeft = controlPoints_ijk[i, :3]
-            elif controlPoints_ijk[i, 0] > centerOfGravity[0] and controlPoints_ijk[i, 1] > centerOfGravity[1]:
-                bottomRight = controlPoints_ijk[i, :3]
-            elif controlPoints_ijk[i, 0] < centerOfGravity[0] and controlPoints_ijk[i, 1] < centerOfGravity[1]:
-                topLeft = controlPoints_ijk[i, :3]
-            elif controlPoints_ijk[i, 0] > centerOfGravity[0] and controlPoints_ijk[i, 1] < centerOfGravity[1]:
-                topRight = controlPoints_ijk[i, :3]
+            for i in range(4):
+                if controlPoints_ijk[i][0] < centerOfGravity[0] and controlPoints_ijk[i][1] < centerOfGravity[1]:
+                    topLeft = controlPoints_ijk[i][:3]
+                elif controlPoints_ijk[i][0] >= centerOfGravity[0] and controlPoints_ijk[i][1] < centerOfGravity[1]:
+                    topRight = controlPoints_ijk[i][:3]
+                elif controlPoints_ijk[i][0] < centerOfGravity[0] and controlPoints_ijk[i][1] >= centerOfGravity[1]:
+                    bottomLeft = controlPoints_ijk[i][:3]
+                elif controlPoints_ijk[i][0] >= centerOfGravity[0] and controlPoints_ijk[i][1] >= centerOfGravity[1]:
+                    bottomRight = controlPoints_ijk[i][:3]
 
-        if np.array_equal(topLeft, np.zeros(3)) or np.array_equal(topRight, np.zeros(3)) or \
-                np.array_equal(bottomLeft, np.zeros(3)) or np.array_equal(bottomRight, np.zeros(3)):
-            logging.debug("Could not determine mask corners")
-            return("Mask points should be in a fan or rectangular shape with two points in the top and two points in the bottom."
-                   "\nMove points to try again.")
+            if np.array_equal(topLeft, np.zeros(3)) or np.array_equal(topRight, np.zeros(3)) or \
+                    np.array_equal(bottomLeft, np.zeros(3)) or np.array_equal(bottomRight, np.zeros(3)):
+                logging.debug("Could not determine mask corners")
+                return("Mask points should be in a fan or rectangular shape with two points in the top and two points in the bottom."
+                    "\nMove points to try again.")
 
         imageArray = slicer.util.arrayFromVolume(currentVolumeNode)  # (z, y, x, channels)
 
-        # Detect if the mask is a fan or a rectangle
-
-        maskHeight = abs(topLeft[1] - bottomLeft[1])
-        tolerancePixels = round(0.1 * maskHeight)  #todo: Make this tolerance value a setting
-        if abs(topLeft[0] - bottomLeft[0]) < tolerancePixels and abs(topRight[0] - bottomRight[0]) < tolerancePixels:
-            # Mask is a rectangle
-            mask_array = self.createRectangleMask(imageArray, topLeft, topRight, bottomLeft, bottomRight)
+        # Create mask based on mode
+        if three_point:
+            # Always create fan mask for 3-point mode
+            assert topRight is None, "topRight should be None in 3-point mode"
+            mask_array = self.createFanMask(imageArray, topLeft, None, bottomLeft, bottomRight, value=1, three_point=True)
         else:
-            # Mask is a fan
-            mask_array = self.createFanMask(imageArray, topLeft, topRight, bottomLeft, bottomRight, value=1)
-
-        # Create a copy of the mask_array to use for computing the contour of the mask
+            # Detect if the mask is a fan or a rectangle for 4-point mode
+            maskHeight = abs(topLeft[1] - bottomLeft[1])
+            tolerancePixels = round(0.1 * maskHeight)  #todo: Make this tolerance value a setting
+            if abs(topLeft[0] - bottomLeft[0]) < tolerancePixels and abs(topRight[0] - bottomRight[0]) < tolerancePixels:
+                # Mask is a rectangle
+                mask_array = self.createRectangleMask(imageArray, topLeft, topRight, bottomLeft, bottomRight)
+            else:
+                # 4-point fan
+                mask_array = self.createFanMask(imageArray, topLeft, topRight, bottomLeft, bottomRight, value=1, three_point=False)
 
         mask_contour_array = np.copy(mask_array)
         masking_kernel = np.ones((3, 3), np.uint8)
@@ -1622,87 +1695,114 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return mask_array
 
-    def createFanMask(self, imageArray, topLeft, topRight, bottomLeft, bottomRight, value=255):
-        image_size_rows = imageArray.shape[1]
-        image_size_cols = imageArray.shape[2]
-        mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
-
-        # Compute the angle of the fan mask in degrees
-
-        if abs(topLeft[0] - bottomLeft[0]) < 0.001:
-            angle1 = 90.0
-        else:
-            angle1 = np.arctan((topLeft[1] - bottomLeft[1]) / (topLeft[0] - bottomLeft[0])) * 180 / np.pi + 180.0
-        if angle1 > 180.0:
-            angle1 -= 180.0
-        if angle1 < 0.0:
-            angle1 += 180.0
-        
-        if abs(topRight[0] - bottomRight[0]) < 0.001:
-            angle2 = 90.0
-        else:
-            angle2 = np.arctan((topRight[1] - bottomRight[1]) / (topRight[0] - bottomRight[0])) * 180 / np.pi
-        if angle2 > 180.0:
-            angle2 -= 180.0
-        if angle2 < 0.0:
-            angle2 += 180.0
-        
-        # Fit lines to the top and bottom points
-        leftLineA, leftLineB, leftLineC = self.line_coefficients(topLeft, bottomLeft)
-        rightLineA, rightLineB, rightLineC = self.line_coefficients(topRight, bottomRight)
-
-        # Handle the case when the lines are parallel
-        if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
-            logging.warning("Left and right lines are parallel")
+    def createFanMask(self, imageArray, topLeft, topRight, bottomLeft, bottomRight, value=255, three_point=False):
+        if three_point:
+            image_size_rows, image_size_cols = imageArray.shape[1], imageArray.shape[2]
+            mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
+            # apex is topLeft, bottom points are bottomLeft/bottomRight
+            cx, cy = int(round(topLeft[0])), int(round(topLeft[1]))
+            # compute radius as avg of the two bottom points radii
+            r1 = math.hypot(bottomLeft[0]-topLeft[0], bottomLeft[1]-topLeft[1])
+            r2 = math.hypot(bottomRight[0]-topLeft[0], bottomRight[1]-topLeft[1])
+            radius = int(round((r1 + r2) / 2))
+            # compute angles
+            angle1 = math.degrees(math.atan2(bottomLeft[1]-topLeft[1], bottomLeft[0]-topLeft[0]))
+            angle2 = math.degrees(math.atan2(bottomRight[1]-topLeft[1], bottomRight[0]-topLeft[0]))
+            if angle2 < angle1:
+                angle1, angle2 = angle2, angle1
+            mask_array = self.draw_circle_segment(mask_array, (cx, cy), radius, angle1, angle2, value)
+            self.maskParameters = {}
+            self.maskParameters["mask_type"] = "fan"
+            self.maskParameters["angle1"] = angle1
+            self.maskParameters["angle2"] = angle2
+            self.maskParameters["center_rows_px"] = cy
+            self.maskParameters["center_cols_px"] = cx
+            self.maskParameters["radius1"] = 0 # no radius for apex
+            self.maskParameters["radius2"] = radius
+            self.maskParameters["image_size_rows"] = image_size_rows
+            self.maskParameters["image_size_cols"] = image_size_cols
             return mask_array
-        
-        # Compute intersection point of the two lines
-        det = leftLineA * rightLineB - leftLineB * rightLineA
-        if det == 0:
-            logging.warning("No intersection point found")
+        else:
+            image_size_rows = imageArray.shape[1]
+            image_size_cols = imageArray.shape[2]
+            mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
+
+            # Compute the angle of the fan mask in degrees
+
+            if abs(topLeft[0] - bottomLeft[0]) < 0.001:
+                angle1 = 90.0
+            else:
+                angle1 = np.arctan((topLeft[1] - bottomLeft[1]) / (topLeft[0] - bottomLeft[0])) * 180 / np.pi + 180.0
+            if angle1 > 180.0:
+                angle1 -= 180.0
+            if angle1 < 0.0:
+                angle1 += 180.0
+            
+            if abs(topRight[0] - bottomRight[0]) < 0.001:
+                angle2 = 90.0
+            else:
+                angle2 = np.arctan((topRight[1] - bottomRight[1]) / (topRight[0] - bottomRight[0])) * 180 / np.pi
+            if angle2 > 180.0:
+                angle2 -= 180.0
+            if angle2 < 0.0:
+                angle2 += 180.0
+            
+            # Fit lines to the top and bottom points
+            leftLineA, leftLineB, leftLineC = self.line_coefficients(topLeft, bottomLeft)
+            rightLineA, rightLineB, rightLineC = self.line_coefficients(topRight, bottomRight)
+
+            # Handle the case when the lines are parallel
+            if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
+                logging.warning("Left and right lines are parallel")
+                return mask_array
+            
+            # Compute intersection point of the two lines
+            det = leftLineA * rightLineB - leftLineB * rightLineA
+            if det == 0:
+                logging.warning("No intersection point found")
+                return mask_array
+
+            intersectionX = (leftLineB * rightLineC - rightLineB * leftLineC) / det
+            intersectionY = (rightLineA * leftLineC - leftLineA * rightLineC) / det
+
+            # Compute average distance of top points to the intersection point
+
+            topDistance = np.sqrt((topLeft[0] - intersectionX) ** 2 + (topLeft[1] - intersectionY) ** 2) + \
+                        np.sqrt((topRight[0] - intersectionX) ** 2 + (topRight[1] - intersectionY) ** 2)
+            topDistance /= 2
+
+            # Compute average distance of bottom points to the intersection point
+
+            bottomDistance = np.sqrt((bottomLeft[0] - intersectionX) ** 2 + (bottomLeft[1] - intersectionY) ** 2) + \
+                            np.sqrt((bottomRight[0] - intersectionX) ** 2 + (bottomRight[1] - intersectionY) ** 2)
+            bottomDistance /= 2
+
+            # Mask parameters
+
+            center_rows_px = round(intersectionY)
+            center_cols_px = round(intersectionX)
+            radius1 = round(topDistance)
+            radius2 = round(bottomDistance)
+
+            # Create a mask image
+
+            # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
+            mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
+            mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
+            
+            self.maskParameters = {}
+            self.maskParameters["mask_type"] = "fan"
+            self.maskParameters["angle1"] = angle1
+            self.maskParameters["angle2"] = angle2
+            self.maskParameters["center_rows_px"] = center_rows_px
+            self.maskParameters["center_cols_px"] = center_cols_px
+            self.maskParameters["radius1"] = radius1
+            self.maskParameters["radius2"] = radius2
+            self.maskParameters["image_size_rows"] = image_size_rows
+            self.maskParameters["image_size_cols"] = image_size_cols
+
+            # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})") 
             return mask_array
-
-        intersectionX = (leftLineB * rightLineC - rightLineB * leftLineC) / det
-        intersectionY = (rightLineA * leftLineC - leftLineA * rightLineC) / det
-
-        # Compute average distance of top points to the intersection point
-
-        topDistance = np.sqrt((topLeft[0] - intersectionX) ** 2 + (topLeft[1] - intersectionY) ** 2) + \
-                      np.sqrt((topRight[0] - intersectionX) ** 2 + (topRight[1] - intersectionY) ** 2)
-        topDistance /= 2
-
-        # Compute average distance of bottom points to the intersection point
-
-        bottomDistance = np.sqrt((bottomLeft[0] - intersectionX) ** 2 + (bottomLeft[1] - intersectionY) ** 2) + \
-                          np.sqrt((bottomRight[0] - intersectionX) ** 2 + (bottomRight[1] - intersectionY) ** 2)
-        bottomDistance /= 2
-
-        # Mask parameters
-
-        center_rows_px = round(intersectionY)
-        center_cols_px = round(intersectionX)
-        radius1 = round(topDistance)
-        radius2 = round(bottomDistance)
-
-        # Create a mask image
-
-        # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
-        mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
-        mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
-        
-        self.maskParameters = {}
-        self.maskParameters["mask_type"] = "fan"
-        self.maskParameters["angle1"] = angle1
-        self.maskParameters["angle2"] = angle2
-        self.maskParameters["center_rows_px"] = center_rows_px
-        self.maskParameters["center_cols_px"] = center_cols_px
-        self.maskParameters["radius1"] = radius1
-        self.maskParameters["radius2"] = radius2
-        self.maskParameters["image_size_rows"] = image_size_rows
-        self.maskParameters["image_size_cols"] = image_size_cols
-
-        # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})") 
-        return mask_array
 
     def line_coefficients(self, p1, p2):
         """
@@ -1756,8 +1856,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # Combine the mask with the original image
         return cv2.bitwise_or(image, mask)
     
-    def maskSequence(self):
-        self.updateMaskVolume()
+    def maskSequence(self, three_point=False):
+        self.updateMaskVolume(three_point=three_point)
 
         parameterNode = self.getParameterNode()
         currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser

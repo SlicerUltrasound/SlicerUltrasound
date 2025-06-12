@@ -326,6 +326,16 @@
        </widget>
       </item>
       <item>
+        <widget class="QCheckBox" name="threePointFanCheckBox">
+        <property name="toolTip">
+          <string>Allow defining a fan mask with 1 top point and 2 bottom points</string>
+        </property>
+        <property name="text">
+          <string>Enable 3-Point Fan Mask</string>
+        </property>
+        </widget>
+      </item>
+      <item>
        <layout class="QVBoxLayout" name="verticalLayout_3">
         <item>
          <widget class="QLabel" name="label_4">
