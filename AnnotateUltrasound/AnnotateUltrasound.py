@@ -1,14 +1,3 @@
-'''
-Useful scripts for debugging
-
-moduleWidget = slicer.modules.annotateultrasound.widgetRepresentation().self()
-moduleLogic = moduleWidget.logic
-moduleNode = moduleLogic.getParameterNode()
-
-moduleLogic.updateOverlayVolume()
-'''
-
-
 import csv
 import json
 import logging

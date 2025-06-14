@@ -1,3 +1,4 @@
+
 from collections import defaultdict
 import csv
 import datetime
@@ -35,6 +36,15 @@ from slicer import vtkMRMLScalarVolumeNode, vtkMRMLVectorVolumeNode, vtkMRMLVolu
 from slicer import vtkMRMLSequenceBrowserNode, vtkMRMLSequenceNode
 from slicer import vtkMRMLMarkupsFiducialNode
 
+from common.BaseUltrasoundWidget import BaseUltrasoundWidget
+from common.BaseUltrasoundLogic import BaseUltrasoundLogic
+from common.DicomFileManager import DicomFileManager
+from common.DicomUtils import DicomUtils
+from common.SettingsManager import SettingsManager
+from common.MaskUtils import MaskUtils
+from common.UIHelpers import UIHelpers
+from common.ErrorHandler import ErrorHandler
+from common.LabelsManager import LabelsManager
 
 #
 # AnonymizeUltrasound
@@ -686,7 +696,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             maskMarkupsNode = self._parameterNode.maskMarkups
             maskMarkupsNode.RemoveAllControlPoints()
             self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
-            
+
             self._parameterNode.status = AnonymizerStatus.LANDMARK_PLACEMENT
             self.addObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointAddedEvent, self.onPointAdded)
             self.addObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent, self.onPointDefined)
@@ -806,7 +816,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Mask images to erase the unwanted parts
         self.logic.maskSequence(three_point=threePointFanModeEnabled)
-        
+
         # Set up output directory and filename
 
         hashPatientId = self.ui.hashPatientIdCheckBox.checked
@@ -1638,7 +1648,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             # Clear all the points
             fanMaskMarkupsNode.RemoveAllControlPoints()
             # Clear the overlay volume
-            maskContourVolumeNode = parameterNode.overlayVolume                
+            maskContourVolumeNode = parameterNode.overlayVolume
             msg = f"Only {required} control points are needed to define a mask"
             logging.info(msg)
             return msg
@@ -1656,7 +1666,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # Allocate for max 4 points, but only fill what we have
         controlPoints_ijk = np.zeros((4, 4))
         actual_points = required  # 3 or 4
-        
+
         for i in range(actual_points):
             markupPoint = [0, 0, 0]
             fanMaskMarkupsNode.GetNthControlPointPosition(i, markupPoint)
@@ -1668,11 +1678,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             # Point 0 (top) -> topLeft (apex)
             # Points 1,2 (bottom) -> bottomLeft, bottomRight
             points_by_y = sorted(range(actual_points), key=lambda i: controlPoints_ijk[i][1])
-            
+
             topLeft = controlPoints_ijk[points_by_y[0]][:3]  # highest point (smallest Y)
             bottomLeft = controlPoints_ijk[points_by_y[1]][:3]
             bottomRight = controlPoints_ijk[points_by_y[2]][:3]
-            
+
             # No topRight in 3-point mode
             topRight = None
         else:
@@ -1834,7 +1844,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 angle1 -= 180.0
             if angle1 < 0.0:
                 angle1 += 180.0
-            
+
             if abs(topRight[0] - bottomRight[0]) < 0.001:
                 angle2 = 90.0
             else:
@@ -1843,7 +1853,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 angle2 -= 180.0
             if angle2 < 0.0:
                 angle2 += 180.0
-            
+
             # Fit lines to the top and bottom points
             leftLineA, leftLineB, leftLineC = self.line_coefficients(topLeft, bottomLeft)
             rightLineA, rightLineB, rightLineC = self.line_coefficients(topRight, bottomRight)
@@ -1852,7 +1862,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
                 logging.warning("Left and right lines are parallel")
                 return mask_array
-            
+
             # Compute intersection point of the two lines
             det = leftLineA * rightLineB - leftLineB * rightLineA
             if det == 0:
@@ -1886,7 +1896,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
             mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
             mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
-            
+
             self.maskParameters = {}
             self.maskParameters["mask_type"] = "fan"
             self.maskParameters["angle1"] = angle1
@@ -1898,7 +1908,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             self.maskParameters["image_size_rows"] = image_size_rows
             self.maskParameters["image_size_cols"] = image_size_cols
 
-            # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})") 
+            # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})")
             return mask_array
 
     def line_coefficients(self, p1, p2):
@@ -2467,18 +2477,18 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         try:
             parameterNode = self.getParameterNode()
             maskMarkupsNode = parameterNode.maskMarkups
-            
+
             if not maskMarkupsNode or maskMarkupsNode.GetNumberOfControlPoints() < 3:
                 logging.info("Insufficient control points to cache mask")
                 return
-            
+
             # Extract control points
             control_points = []
             for i in range(maskMarkupsNode.GetNumberOfControlPoints()):
                 point = [0, 0, 0]
                 maskMarkupsNode.GetNthControlPointPosition(i, point)
                 control_points.append(point)
-            
+
             # Cache the mask
             self.cacheMaskForTransducer(
                 self.currentTransducerModel,
@@ -2486,7 +2496,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 self.maskParameters
             )
             logging.info(f"Saved current mask to cache for transducer {self.currentTransducerModel}")
-            
+
         except Exception as e:
             logging.error(f"Failed to save current mask to cache: {str(e)}")
 
