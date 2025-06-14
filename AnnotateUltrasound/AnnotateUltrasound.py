@@ -187,6 +187,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutEnter.setKey(qt.QKeySequence(qt.Qt.Key_Return))
         self.shortcutP = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutP.setKey(qt.QKeySequence('P'))
+        self.shortcutB = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutB.setKey(qt.QKeySequence('B'))
 
         # Add shortcuts for removing lines
         self.shortcutE = qt.QShortcut(slicer.util.mainWindow())  # "E" for removing last pleura line
@@ -210,6 +212,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutSpace.connect('activated()', lambda: self.ui.overlayVisibilityButton.toggle())
         self.shortcutEnter.connect('activated()', lambda: self.ui.autoOverlayButton.toggle())
         self.shortcutP.connect('activated()', lambda: self.ui.autoPleuraButton.click())
+        self.shortcutB.connect('activated()', lambda: self.ui.autoBlineButton.click())
 
         # New shortcuts for removing lines
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura"))  # "E" removes the last pleura line
@@ -288,6 +291,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.clearAllLinesButton.clicked.connect(self.onClearAllLines)
         self.ui.autoOverlayButton.toggled.connect(self.onAutoToggle)
         self.ui.autoPleuraButton.clicked.connect(self.onAutoPleura)
+        self.ui.autoBlineButton.clicked.connect(self.onAutoBline)
         self.ui.addCurrentFrameButton.clicked.connect(self.onAddCurrentFrame)
         self.ui.removeCurrentFrameButton.clicked.connect(self.onRemoveCurrentFrame)
 
@@ -304,6 +308,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.clearAllLinesButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFillTrash.png')))
         self.ui.autoOverlayButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueBot.png')))
         self.ui.autoPleuraButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueBot.png')))
+        self.ui.autoBlineButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueBot.png')))
         self.ui.skipToUnlabeledButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFastForward.png')))
 
         # Frame table
@@ -334,6 +339,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.clearAllLinesButton.setFixedHeight(buttonHeight)
         self.ui.autoOverlayButton.setFixedHeight(buttonHeight)
         self.ui.autoPleuraButton.setFixedHeight(buttonHeight)
+        self.ui.autoBlineButton.setFixedHeight(buttonHeight)
         self.ui.addCurrentFrameButton.setFixedHeight(buttonHeight)
         self.ui.removeCurrentFrameButton.setFixedHeight(buttonHeight)
         
@@ -1044,6 +1050,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         UI handler → run automatic pleura detection
         """
         self.logic.autoDetectPleuraLines()     # new logic routine
+        self.updateGuiFromAnnotations()        # refresh tables / counters
+        self._parameterNode.unsavedChanges = True
+
+    def onAutoBline(self):
+        """
+        UI handler → run automatic B-line detection
+        """
+        self.logic.autoDetectBlines()          # new logic routine
         self.updateGuiFromAnnotations()        # refresh tables / counters
         self._parameterNode.unsavedChanges = True
 
@@ -1956,7 +1970,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         • Guarantees that an AI overlay exists (runs applyAutoOverlay() if needed)  
         • Extracts the pleura mask (blue channel == 255)  
         • Finds connected components, fits a bounding box to each, and
-            creates a markup line using the left‑ & right‑most pixels.
+            creates a markup line using the left- & right-most pixels.
         """
         pnode = self.getParameterNode()
 
@@ -2001,6 +2015,33 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # 6. Sync JSON + overlay
         self.updateCurrentFrame()              # writes coordinates to annotations
         self.updateOverlayVolume()             # refreshes manual mask / % read‑out
+
+    def _clearBLines(self):
+        """helper: remove every B-line from the scene"""
+        while self.bLines:
+            self.removeLastBline()          # already defined :contentReference[oaicite:0]{index=0}
+
+    def _depthGuideMask(self, depth_ratio: float):
+        """
+        Returns a binary mask (uint8) of the depth-guide dashed line at `depth_ratio`.
+        """
+        h, w = self._autoMaskRGB.shape[:2]
+        guide_rgb = self.drawDepthGuideLine(h, w, depth_ratio=depth_ratio)
+        guide_gray = cv2.cvtColor(guide_rgb, cv2.COLOR_BGR2GRAY)
+        return (guide_gray > 0).astype(np.uint8)
+
+    def _getDepthGuideSearchList(self):
+        """
+        Pull search list from ParameterNode or fall back to default 0.25-0.75.
+        """
+        pnode = self.getParameterNode()
+        start = getattr(pnode, "depthGuideStart", 0.25)
+        stop  = getattr(pnode, "depthGuideStop" , 0.75)
+        step  = getattr(pnode, "depthGuideStep" , 0.05)
+        return np.arange(start, stop + 1e-6, step)
+
+    def autoDetectBlines(self):
+        print('autoDetectBlines')
 
     def removeLastPleuraLine(self):
         """
