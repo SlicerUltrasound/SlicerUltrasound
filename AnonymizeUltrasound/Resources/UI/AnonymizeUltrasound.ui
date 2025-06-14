@@ -279,6 +279,19 @@
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_2">
       <item>
+       <widget class="QCheckBox" name="enableMaskCacheCheckBox">
+        <property name="toolTip">
+         <string>If checked, cached mask will be used for DICOM transducer.</string>
+        </property>
+        <property name="text">
+         <string>Use cached mask</string>
+        </property>
+        <property name="invertThreshold" stdset="0">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QCheckBox" name="autoMaskCheckBox">
         <property name="toolTip">
          <string>If checked, values above threshold are set to 0. If unchecked, values below are set to 0.</string>
