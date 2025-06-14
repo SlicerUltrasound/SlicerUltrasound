@@ -480,7 +480,12 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     
     def onNextButton(self) -> None:
         logging.info("Next button clicked")
-        
+
+        # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
+        if self.logic.nextDicomDfIndex is None and self.ui.continueProgressCheckBox.checked:
+            self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
+            return
+
         # Remove observers for the mask markups node, because loading a new series will reset the scene and createa a new markups node
         
         maskMarkupsNode = self._parameterNode.maskMarkups
