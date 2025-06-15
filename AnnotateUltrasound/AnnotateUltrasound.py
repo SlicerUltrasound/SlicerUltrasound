@@ -2041,8 +2041,77 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return np.arange(start, stop + 1e-6, step)
 
     def autoDetectBlines(self):
-        print('autoDetectBlines')
+        """
+        • Clears existing B-lines                                                        
+        • Ensures an AI overlay exists (runs applyAutoOverlay() if needed)               
+        • Scans several depth-guide arcs (start→stop in step increments)                 
+        • For each B-line component:                                                     
+            - find the first arc that intersects it,                                     
+            - place a horizontal markup line across that intersection                    
+        • Updates annotation JSON and on-screen overlay                                  
+        """
+        pnode = self.getParameterNode()
 
+        # 1. Wipe old B-lines -----------------------------------------------------------
+        self._clearBLines()
+
+        # 2. Make sure the overlay (and therefore _autoMaskRGB) exists ------------------
+        if self._autoMaskRGB is None:
+            self.applyAutoOverlay()                                   # fills _autoMaskRGB
+            if self._autoMaskRGB is None:                             # bail-out safeguard
+                logging.error("Auto-overlay failed → no B-line mask.")
+                return
+
+        # 3. Pull the B-line mask (green channel) ---------------------------------------
+        bline_mask = (self._autoMaskRGB[:, :, 1] == 255).astype(np.uint8)
+        if bline_mask.sum() == 0:
+            logging.warning("No B-line pixels in auto-overlay.")
+            return
+
+        # 4. Connected component analysis on B-lines ------------------------------------
+        num_lbl, lbl_img, stats, _ = cv2.connectedComponentsWithStats(
+            bline_mask, connectivity=8
+        )
+
+        # 5. Iterate over components and search depth-guide arcs -------------------------
+        ijkToRas = vtk.vtkMatrix4x4()
+        pnode.inputVolume.GetIJKToRASMatrix(ijkToRas)
+        _, color_bline = self.getColorsForRater(pnode.rater)
+        depth_ratios = self._getDepthGuideSearchList()                # e.g. 0.25→0.75
+
+        for i in range(1, num_lbl):  # stats[0] is background
+            comp_mask = (lbl_img == i)
+            placed = False
+
+            for ratio in depth_ratios:                                # 5-a search arcs
+                guide_mask = self._depthGuideMask(ratio)
+                intersect = np.logical_and(comp_mask, guide_mask)
+
+                if intersect.sum() < 5:                               # negligible overlap
+                    continue
+
+                # 5-b pick intersection extent and add horizontal markup line
+                rows, cols = np.where(intersect)
+                y   = int(np.median(rows))                            # depth row
+                x1  = int(cols.min())
+                x2  = int(cols.max())
+
+                pt1_ras = list(ijkToRas.MultiplyPoint([x1, y, 0, 1]))[:3]
+                pt2_ras = list(ijkToRas.MultiplyPoint([x2, y, 0, 1]))[:3]
+
+                self.bLines.append(
+                    self.createMarkupLine("B-line", pnode.rater, [pt1_ras, pt2_ras], color_bline)
+                )
+                placed = True
+                break                                                 # stop scanning ratios
+
+            if not placed:
+                logging.debug(f"Component {i} had no guide intersection.")
+
+        # 6. Sync JSON + overlay ---------------------------------------------------------
+        self.updateCurrentFrame()       # writes coords to annotations JSON
+        self.updateOverlayVolume()      # refreshes overlay + B/P count
+    
     def removeLastPleuraLine(self):
         """
         Remove the last pleura line from the scene and from the list of pleura lines.        
