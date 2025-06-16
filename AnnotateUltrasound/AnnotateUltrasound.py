@@ -21,6 +21,8 @@ import qt
 import shutil
 import slicer
 import vtk
+from pathlib import Path
+import urllib.request
 import colorsys
 import copy
 
@@ -36,6 +38,27 @@ except ImportError:
     slicer.util.pip_install('opencv-python')
     import cv2
 
+try:
+    from matplotlib import pyplot as plt
+except ImportError:
+    logging.warning("AnnotateUltrasound: matplotlib not found, installing...")
+    slicer.util.pip_install('matplotlib')
+    from matplotlib import pyplot as plt
+
+try:
+    import torch
+except ImportError:
+    logging.warning("AnnotateUltrasound: torch not found, installing...")
+    slicer.util.pip_install('torch')
+    import torch
+
+try:
+    import yaml
+except ImportError:
+    logging.info("AnnotateUltrasound: yaml not found, installing...")
+    slicer.util.pip_install('PyYAML')
+    import yaml
+
 from collections import defaultdict
 from DICOMLib import DICOMUtils
 from typing import Annotated, Optional
@@ -48,6 +71,14 @@ from slicer.parameterNodeWrapper import (
 )
 from slicer import vtkMRMLScalarVolumeNode, vtkMRMLVectorVolumeNode
 from slicer import vtkMRMLNode
+
+from lib.scan_conversion import (
+    curvilinear_to_scanlines,
+    scanlines_to_curvilinear,
+    scan_interpolation_weights,
+    update_config_dict,
+    cartesian_coordinates,
+)
 
 #
 # AnnotateUltrasound
@@ -119,6 +150,8 @@ class AnnotateUltrasoundParameterNode:
     pleuraPercentage: float = -1.0
     unsavedChanges: bool = False
     depthGuideVisible: bool = True
+    manualVisible: bool = True      # shows manual mask
+    autoVisible:   bool = False     # shows auto   mask
     rater = ''
 
 #
@@ -150,6 +183,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutS.setKey(qt.QKeySequence('S'))
         self.shortcutSpace = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutSpace.setKey(qt.QKeySequence('Space'))
+        self.shortcutEnter = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutEnter.setKey(qt.QKeySequence(qt.Qt.Key_Return))
+        self.shortcutP = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutP.setKey(qt.QKeySequence('P'))
+        self.shortcutB = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutB.setKey(qt.QKeySequence('B'))
 
         # Add shortcuts for removing lines
         self.shortcutE = qt.QShortcut(slicer.util.mainWindow())  # "E" for removing last pleura line
@@ -171,6 +210,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
         self.shortcutS.connect('activated()', lambda: self.onAddLine("Bline", not self.ui.addBlineButton.isChecked()))
         self.shortcutSpace.connect('activated()', lambda: self.ui.overlayVisibilityButton.toggle())
+        self.shortcutEnter.connect('activated()', lambda: self.ui.autoOverlayButton.toggle())
+        self.shortcutP.connect('activated()', lambda: self.ui.autoPleuraButton.click())
+        self.shortcutB.connect('activated()', lambda: self.ui.autoBlineButton.click())
 
         # New shortcuts for removing lines
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura"))  # "E" removes the last pleura line
@@ -182,7 +224,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Disconnect shortcuts to avoid issues when the user leaves the module
         self.shortcutW.activated.disconnect()
         self.shortcutS.activated.disconnect()
-        self.shortcutSpace.activated.disconnect()      
+        self.shortcutSpace.activated.disconnect()
+        self.shortcutEnter.activated.disconnect()
         self.shortcutE.activated.disconnect()
         self.shortcutD.activated.disconnect()
         self.shortcutA.activated.disconnect()
@@ -244,8 +287,11 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.removePleuraButton.clicked.connect(lambda: self.onRemoveLine("Pleura"))
         self.ui.addBlineButton.toggled.connect(lambda checked: self.onAddLine("Bline", checked))
         self.ui.removeBlineButton.clicked.connect(lambda: self.onRemoveLine("Bline"))
-        self.ui.overlayVisibilityButton.toggled.connect(self.overlayVisibilityToggled)
+        self.ui.overlayVisibilityButton.toggled.connect(self.onManualToggle)
         self.ui.clearAllLinesButton.clicked.connect(self.onClearAllLines)
+        self.ui.autoOverlayButton.toggled.connect(self.onAutoToggle)
+        self.ui.autoPleuraButton.clicked.connect(self.onAutoPleura)
+        self.ui.autoBlineButton.clicked.connect(self.onAutoBline)
         self.ui.addCurrentFrameButton.clicked.connect(self.onAddCurrentFrame)
         self.ui.removeCurrentFrameButton.clicked.connect(self.onRemoveCurrentFrame)
 
@@ -260,6 +306,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.removeBlineButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueRemove.png')))
         self.ui.overlayVisibilityButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueEye.png')))
         self.ui.clearAllLinesButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFillTrash.png')))
+        self.ui.autoOverlayButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueBot.png')))
+        self.ui.autoPleuraButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueBot.png')))
+        self.ui.autoBlineButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueBot.png')))
         self.ui.skipToUnlabeledButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFastForward.png')))
 
         # Frame table
@@ -288,6 +337,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.removeBlineButton.setFixedHeight(buttonHeight)
         self.ui.overlayVisibilityButton.setFixedHeight(buttonHeight)
         self.ui.clearAllLinesButton.setFixedHeight(buttonHeight)
+        self.ui.autoOverlayButton.setFixedHeight(buttonHeight)
+        self.ui.autoPleuraButton.setFixedHeight(buttonHeight)
+        self.ui.autoBlineButton.setFixedHeight(buttonHeight)
         self.ui.addCurrentFrameButton.setFixedHeight(buttonHeight)
         self.ui.removeCurrentFrameButton.setFixedHeight(buttonHeight)
         
@@ -296,13 +348,16 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
+        # Developer gating for Auto‑Overlay button
+        self._updateAutoOverlayButtonVisibility()
+
         # --- Limit raterColorTable visible rows to about 4 programmatically ---
         if hasattr(self.ui, "raterColorTable"):
             vh = self.ui.raterColorTable.verticalHeader()
             self.ui.raterColorTable.setMaximumHeight(vh.defaultSectionSize * 4 + 2)
             self.ui.raterColorTable.cellClicked.connect(self.onRaterColorTableClicked)
             self.ui.raterColorTable.itemChanged.connect(self.onRaterColorSelectionChangedFromUser)
-    
+
     def saveUserSettings(self):
         settings = qt.QSettings()
         settings.setValue('AnnotateUltrasound/ShowPleuraPercentage', self.ui.showPleuraPercentageCheckBox.checked)
@@ -525,6 +580,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         showDepthGuide = self._parameterNode.depthGuideVisible
 
         currentDicomDfIndex = self.logic.loadNextSequence()
+        self.ui.overlayVisibilityButton.setChecked(True)
+        self.ui.autoOverlayButton.setChecked(False)
+
         # After loading the next sequence, extract seen raters and update checkboxes
         self.extractSeenRaters()
         self.selectedRaters = set(self.seenRaters)
@@ -655,6 +713,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         statusText = f"Current file ({self.logic.nextDicomDfIndex}/{len(self.logic.dicomDf)}): {currentDicomFilename}"
         self.ui.currentFileLabel.setText(statusText)
         slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+
+        self.updateGuiFromAnnotations()
+        self.ui.overlayVisibilityButton.setChecked(True)
+        self.ui.autoOverlayButton.setChecked(False)
 
         # Restore settings
         self._parameterNode.depthGuideVisible = showDepthGuide
@@ -970,6 +1032,34 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 logging.error(f"Error reading annotations file {annotationsFilepath}: {e}")
         
         return None
+
+    def onManualToggle(self, checked: bool):
+        self._parameterNode.manualVisible = checked
+        self.logic._composeAndPushOverlay()
+
+    def onAutoToggle(self, checked: bool):
+        self._parameterNode.autoVisible = checked
+        # (Re‑run model only when turning ON and no cached mask)
+        if checked and self.logic._autoMaskRGB is None:
+            self.logic.applyAutoOverlay()
+        else:
+            self.logic._composeAndPushOverlay()
+
+    def onAutoPleura(self):
+        """
+        UI handler → run automatic pleura detection
+        """
+        self.logic.autoDetectPleuraLines()     # new logic routine
+        self.updateGuiFromAnnotations()        # refresh tables / counters
+        self._parameterNode.unsavedChanges = True
+
+    def onAutoBline(self):
+        """
+        UI handler → run automatic B-line detection
+        """
+        self.logic.autoDetectBlines()          # new logic routine
+        self.updateGuiFromAnnotations()        # refresh tables / counters
+        self._parameterNode.unsavedChanges = True
 
     def overlayVisibilityToggled(self, checked):
         logging.info(f"overlayVisibilityToggled -- checked: {checked}")
@@ -1291,6 +1381,26 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self._parameterNode.pleuraPercentage = ratio * 100
         else:
             self._parameterNode.pleuraPercentage = 0.0
+            view=slicer.app.layoutManager().sliceWidget("Red").sliceView()
+            view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.UpperLeft,"")
+            view.forceRender()
+        
+        # Update collapse/expand buttons
+        if not self._parameterNode.dfLoaded:
+            self.ui.inputsCollapsibleButton.collapsed = False
+            self.ui.workflowCollapsibleButton.collapsed = True
+            self.ui.sectorAnnotationsCollapsibleButton.collapsed = True
+            self.ui.labelAnnotationsCollapsibleButton.collapsed = True
+        else:
+            self.ui.inputsCollapsibleButton.collapsed = True
+            self.ui.workflowCollapsibleButton.collapsed = False
+            self.ui.sectorAnnotationsCollapsibleButton.collapsed = False
+            self.ui.labelAnnotationsCollapsibleButton.collapsed = False
+        
+        self.ui.overlayVisibilityButton.setChecked(self._parameterNode.manualVisible)
+        self.ui.autoOverlayButton.setChecked(self._parameterNode.autoVisible)
+        self.logic.updateOverlayVolume()
+        self._parameterNode.pleuraPercentage = 0.0
         self._updateGUIFromParameterNode()
         self.ui.raterColorTable.repaint()
         self.ui.raterColorTable.update()
@@ -1302,6 +1412,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             item.setCheckState(qt.Qt.Unchecked if current_state == qt.Qt.Checked else qt.Qt.Checked)
         self.onRaterColorSelectionChangedFromUser()
 
+    def _updateAutoOverlayButtonVisibility(self):
+        self.ui.autoOverlayButton.setVisible(self.developerMode)
 
 #
 # AnnotateUltrasoundLogic
@@ -1334,6 +1446,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.sequenceBrowserNode = None
         self.depthGuideMode = 1
         logging.debug(f"Initialized depthGuideMode to {self.depthGuideMode}")
+        self._manualMaskRGB = None   # H×W×3  uint8
+        self._autoMaskRGB   = None   # H×W×3  uint8
         self.parameterNode = self._getOrCreateParameterNode()
 
     # Static variable to track seen raters and their order
@@ -1568,7 +1682,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.pleuraLines = []
         self.bLines = []
         self.sequenceBrowserNode = None
-
+        self._manualMaskRGB = None
+        self._autoMaskRGB   = None
+        
     def convert_lps_to_ras(self, annotations: list):
         for frame in annotations:
             if frame.get("coordinate_space", "RAS") == "LPS":
@@ -1603,6 +1719,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Clear the scene
         self.clearScene()
         parameterNode = self.getParameterNode()
+        parameterNode.manualVisible = True
+        parameterNode.autoVisible   = False
 
         if self.dicomDf is None:
             parameterNode.dfLoaded = False
@@ -1795,6 +1913,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         
     def onSequenceBrowserModified(self, caller, event):
         self.updateLineMarkups()
+        parameterNode = self.getParameterNode()
+        parameterNode.autoVisible = False
         ratio = self.updateOverlayVolume()
         if ratio is not None:
             parameterNode = self.getParameterNode()
@@ -1839,6 +1959,159 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if any(int(f.get("frame_number", -1)) == currentFrameIndex for f in self.annotations["frame_annotations"]):
                 self.updateCurrentFrame()
 
+    def _clearPleuraLines(self):
+        """helper: remove every pleura line from the scene"""
+        while self.pleuraLines:
+            self.removeLastPleuraLine()        # uses existing helper :contentReference[oaicite:0]{index=0}
+
+    def autoDetectPleuraLines(self):
+        """
+        • Clears existing pleura lines  
+        • Guarantees that an AI overlay exists (runs applyAutoOverlay() if needed)  
+        • Extracts the pleura mask (blue channel == 255)  
+        • Finds connected components, fits a bounding box to each, and
+            creates a markup line using the left- & right-most pixels.
+        """
+        pnode = self.getParameterNode()
+
+        # 1. Wipe old pleura
+        self._clearPleuraLines()
+
+        # 2. Make sure the overlay (and therefore _autoMaskRGB) exists
+        if self._autoMaskRGB is None:
+            self.applyAutoOverlay()            # defined earlier :contentReference[oaicite:1]{index=1}
+            if self._autoMaskRGB is None:      # bail‑out safeguard
+                logging.error("Auto-overlay failed → no pleura mask.")
+                return
+
+        # 3. Pull the pleura mask (blue channel)
+        mask = (self._autoMaskRGB[:, :, 2] == 255).astype(np.uint8)
+        if mask.sum() == 0:
+            logging.warning("No pleura pixels in auto-overlay.")
+            return
+
+        # 4. Connected‑component analysis → bounding boxes
+        num_lbl, lbl_img, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        # stats[0] is background → skip
+        for i in range(1, num_lbl):
+            x, y, w, h, area = stats[i]       # bounding box in IJK space
+            if area < 30:                     # ignore speckles
+                continue
+            # choose two endpoints centred vertically in the bbox
+            pt1_ijk = np.array([x          , y+h//2, 0, 1])
+            pt2_ijk = np.array([x+w-1     , y+h//2, 0, 1])
+
+            # convert IJK → RAS so the markup is in world coordinates
+            ijkToRas = vtk.vtkMatrix4x4()
+            pnode.inputVolume.GetIJKToRASMatrix(ijkToRas)
+            pt1_ras = list(ijkToRas.MultiplyPoint(pt1_ijk))[:3]
+            pt2_ras = list(ijkToRas.MultiplyPoint(pt2_ijk))[:3]
+
+            # 5. Create a blue “Pleura” line markup
+            self.pleuraLines.append(
+                self.createMarkupLine("Pleura", pnode.rater, [pt1_ras, pt2_ras], [0, 0.2, 1])
+            )                                  # createMarkupLine already exists :contentReference[oaicite:2]{index=2}
+
+        # 6. Sync JSON + overlay
+        self.updateCurrentFrame()              # writes coordinates to annotations
+        self.updateOverlayVolume()             # refreshes manual mask / % read‑out
+
+    def _clearBLines(self):
+        """helper: remove every B-line from the scene"""
+        while self.bLines:
+            self.removeLastBline()          # already defined :contentReference[oaicite:0]{index=0}
+
+    def _depthGuideMask(self, depth_ratio: float):
+        """
+        Returns a binary mask (uint8) of the depth-guide dashed line at `depth_ratio`.
+        """
+        h, w = self._autoMaskRGB.shape[:2]
+        guide_rgb = self.drawDepthGuideLine(h, w, depth_ratio=depth_ratio)
+        guide_gray = cv2.cvtColor(guide_rgb, cv2.COLOR_BGR2GRAY)
+        return (guide_gray > 0).astype(np.uint8)
+
+    def _getDepthGuideSearchList(self):
+        """
+        Pull search list from ParameterNode or fall back to default 0.25-0.75.
+        """
+        pnode = self.getParameterNode()
+        start = getattr(pnode, "depthGuideStart", 0.25)
+        stop  = getattr(pnode, "depthGuideStop" , 0.75)
+        step  = getattr(pnode, "depthGuideStep" , 0.05)
+        return np.arange(start, stop + 1e-6, step)
+
+    def autoDetectBlines(self):
+        """
+        • Clears existing B-lines                                                        
+        • Ensures an AI overlay exists (runs applyAutoOverlay() if needed)               
+        • Scans several depth-guide arcs (start→stop in step increments)                 
+        • For each B-line component:                                                     
+            - find the first arc that intersects it,                                     
+            - place a horizontal markup line across that intersection                    
+        • Updates annotation JSON and on-screen overlay                                  
+        """
+        pnode = self.getParameterNode()
+
+        # 1. Wipe old B-lines -----------------------------------------------------------
+        self._clearBLines()
+
+        # 2. Make sure the overlay (and therefore _autoMaskRGB) exists ------------------
+        if self._autoMaskRGB is None:
+            self.applyAutoOverlay()                                   # fills _autoMaskRGB
+            if self._autoMaskRGB is None:                             # bail-out safeguard
+                logging.error("Auto-overlay failed → no B-line mask.")
+                return
+
+        # 3. Pull the B-line mask (green channel) ---------------------------------------
+        bline_mask = (self._autoMaskRGB[:, :, 1] == 255).astype(np.uint8)
+        if bline_mask.sum() == 0:
+            logging.warning("No B-line pixels in auto-overlay.")
+            return
+
+        # 4. Connected component analysis on B-lines ------------------------------------
+        num_lbl, lbl_img, stats, _ = cv2.connectedComponentsWithStats(
+            bline_mask, connectivity=8
+        )
+
+        # 5. Iterate over components and search depth-guide arcs -------------------------
+        ijkToRas = vtk.vtkMatrix4x4()
+        pnode.inputVolume.GetIJKToRASMatrix(ijkToRas)
+        _, color_bline = self.getColorsForRater(pnode.rater)
+        depth_ratios = self._getDepthGuideSearchList()                # e.g. 0.25→0.75
+
+        for i in range(1, num_lbl):  # stats[0] is background
+            comp_mask = (lbl_img == i)
+            placed = False
+
+            for ratio in depth_ratios:                                # 5-a search arcs
+                guide_mask = self._depthGuideMask(ratio)
+                intersect = np.logical_and(comp_mask, guide_mask)
+
+                if intersect.sum() < 5:                               # negligible overlap
+                    continue
+
+                # 5-b pick intersection extent and add horizontal markup line
+                rows, cols = np.where(intersect)
+                y   = int(np.median(rows))                            # depth row
+                x1  = int(cols.min())
+                x2  = int(cols.max())
+
+                pt1_ras = list(ijkToRas.MultiplyPoint([x1, y, 0, 1]))[:3]
+                pt2_ras = list(ijkToRas.MultiplyPoint([x2, y, 0, 1]))[:3]
+
+                self.bLines.append(
+                    self.createMarkupLine("B-line", pnode.rater, [pt1_ras, pt2_ras], color_bline)
+                )
+                placed = True
+                break                                                 # stop scanning ratios
+
+            if not placed:
+                logging.debug(f"Component {i} had no guide intersection.")
+
+        # 6. Sync JSON + overlay ---------------------------------------------------------
+        self.updateCurrentFrame()       # writes coords to annotations JSON
+        self.updateOverlayVolume()      # refreshes overlay + B/P count
+    
     def removeLastPleuraLine(self):
         """
         Remove the last pleura line from the scene and from the list of pleura lines.        
@@ -2231,6 +2504,20 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         return translucent_band
 
+    def _composeAndPushOverlay(self):
+        """Merge masks according to parameter-node switches and
+        write into overlayVolume (always foreground)."""
+        pnode = self.getParameterNode()
+        _, h, w, _ = self._manualMaskRGB.shape  # batch, height, width, channels
+
+        rgb = np.zeros((1, h, w, 3), dtype=np.uint8)
+        if pnode.manualVisible and self._manualMaskRGB is not None:
+            rgb[0] = np.maximum(rgb[0], self._manualMaskRGB)
+        if pnode.autoVisible and self._autoMaskRGB is not None:
+            rgb[0] = np.maximum(rgb[0], self._autoMaskRGB)
+
+        slicer.util.updateVolumeFromArray(pnode.overlayVolume, rgb)
+
     def _applyDepthGuideToMask(self, maskArray, parameterNode=None):
         """
         Helper function to apply depth guide to a mask array if enabled.
@@ -2351,7 +2638,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         maskArray = self._applyDepthGuideToMask(maskArray, parameterNode)
 
         # Update the overlay volume
-        slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, maskArray)
+        self._manualMaskRGB = maskArray
+        self._composeAndPushOverlay()
 
         # Return the ratio of green pixels to blue pixels
         if bluePixels == 0:
@@ -2479,6 +2767,158 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+
+    def applyAutoOverlay(
+            self,
+            model_path: str = "Resources/Models/model.pt",
+            config_path: str = "Resources/Models/config.yaml",
+            *,
+            mock: bool = False) -> None:
+        """
+        →  Ensures model+config exist (auto-downloads from Dropbox if needed)
+        →  Reads input_shape from YAML (e.g. (128,128))
+        →  Runs the AI model / mock
+        →  Maps the mask back to curvilinear space and blends it.
+        """
+        # ------------------------------------------------------------------ #
+        # 0.  Ensure model & config are present (download if missing)
+        # ------------------------------------------------------------------ #
+        module_dir = Path(__file__).parent
+        model_path  = (module_dir / "Resources/Models/model.pt").resolve()
+        config_path = (module_dir / "Resources/Models/config.yaml").resolve()
+
+        model_url  = ("https://www.dropbox.com/scl/fi/zpynqe8vdb7vgsy6us5jg/"
+                    "model.pt?rlkey=ar9onu3166dsodbvlwrnk26hi&st=8uagerja&dl=1")
+        cfg_url    = ("https://www.dropbox.com/scl/fi/ps07grk7fp9g6ys93unzt/"
+                    "config.yaml?rlkey=g3fceom8lhbigpik8gey7gjy1&st=2d72kprj&dl=1")
+
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _download(url: str, dst: Path, title: str):
+            dialog = AnnotateUltrasoundWidget.createWaitDialog(None, title, f"Downloading {dst.name} …")
+            try:
+                urllib.request.urlretrieve(url, dst)
+                success = True
+            except urllib.error.URLError as e:
+                logging.error(f"Download failed: {e}")
+                success = False
+            dialog.close()
+            return success
+
+        if not model_path.exists():
+            if not _download(model_url, model_path, "Downloading AI model"):
+                return          # abort overlay
+
+        if not config_path.exists():
+            if not _download(cfg_url, config_path, "Downloading model config"):
+                return          # abort overlay
+
+        # ------------------------------------------------------------------ #
+        # 1.  Read model input shape from YAML  --->  (rows, cols)
+        # ------------------------------------------------------------------ #
+        with open(config_path, "r") as fp:
+            cfg_yaml = yaml.safe_load(fp)
+        try:
+            img_size = int(cfg_yaml["image_size"])
+            MODEL_NUM_SAMPLES = MODEL_NUM_LINES = img_size
+        except Exception as e:
+            logging.error(f"Cannot parse image_size in {config_path}: {e}")
+            return
+
+        MODEL_INPUT_SHAPE = (MODEL_NUM_SAMPLES, MODEL_NUM_LINES)  # H×W
+
+        # ------------------------------------------------------------------ #
+        # 2.  Locate current DICOM / annotation JSON from dataframe
+        # ------------------------------------------------------------------ #
+        if self.dicomDf is None or self.dicomDf.empty:
+            logging.error("dicomDf is empty – nothing to overlay.")
+            return
+        if not (0 <= self.nextDicomDfIndex < len(self.dicomDf)):
+            logging.error("nextDicomDfIndex out of range.")
+            return
+        row        = self.dicomDf.iloc[self.nextDicomDfIndex]
+        dicom_path = row["Filepath"]
+        json_path  = row["AnnotationsFilepath"]
+
+        pnode = self.getParameterNode()
+        if pnode.inputVolume is None or pnode.overlayVolume is None:
+            logging.error("inputVolume or overlayVolume not set.")
+            return
+
+        # ------------------------------------------------------------------ #
+        # 3.  Grab current curvilinear frame
+        # ------------------------------------------------------------------ #
+        frame_cv = slicer.util.arrayFromVolume(pnode.inputVolume)[0]
+        if frame_cv.ndim == 3:
+            frame_cv = frame_cv[:, :, 0]
+        Hc, Wc = frame_cv.shape
+
+        # ------------------------------------------------------------------ #
+        # 4.  Build / cache scan‑conversion config
+        # ------------------------------------------------------------------ #
+        if not hasattr(self, "_scanCfgSrc") or self._scanCfgSrc != json_path:
+            # don't need to read the json as it is already read into self.logic.annotations
+            cfg = update_config_dict(
+                self.annotations,
+                num_lines=MODEL_NUM_LINES,
+                num_samples_along_lines=MODEL_NUM_SAMPLES,
+                image_width=Wc,
+                image_height=Hc)
+
+            self._vertices, self._weights = scan_interpolation_weights(cfg)
+            self._x_cart, self._y_cart    = cartesian_coordinates(cfg)
+            self._scanCfg, self._scanCfgSrc = cfg, json_path
+        else:
+            cfg = self._scanCfg
+
+        # ------------------------------------------------------------------ #
+        # 5.  Curvilinear → scan‑lines & resize
+        # ------------------------------------------------------------------ #
+        scan_img = curvilinear_to_scanlines(
+            frame_cv, cfg, self._x_cart, self._y_cart, interpolation_order=1)
+        scan_img_rs = cv2.resize(scan_img, MODEL_INPUT_SHAPE[::-1],
+                                interpolation=cv2.INTER_LINEAR)
+
+        # ------------------------------------------------------------------ #
+        # 6.  Inference (or mock)
+        # ------------------------------------------------------------------ #
+        if mock:
+            mask_rs = np.zeros(MODEL_INPUT_SHAPE, dtype=np.uint8)
+            mask_rs[int(0.25*MODEL_NUM_SAMPLES):int(0.3*MODEL_NUM_SAMPLES), :] = 1
+            centre = MODEL_NUM_LINES // 2
+            mask_rs[:, centre-4:centre+4] = 2
+        else:
+            if not hasattr(self, "_autoOverlayModel"):
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                self._overlayDevice = torch.device(device)
+                self._autoOverlayModel = torch.jit.load(model_path)
+                self._autoOverlayModel.to(self._overlayDevice).eval()
+
+            with torch.no_grad():
+                inp = (torch.from_numpy(scan_img_rs)
+                        .float()
+                        .unsqueeze(0).unsqueeze(0)   # N,C,H,W
+                        .to(self._overlayDevice))
+                mask_rs = self._autoOverlayModel(inp).argmax(1).cpu().numpy()[0]
+
+        # Resize mask back to scan‑line size, then to curvilinear
+        mask_scan = cv2.resize(mask_rs, scan_img.shape[::-1],
+                            interpolation=cv2.INTER_NEAREST)
+        mask_curv = scanlines_to_curvilinear(
+            mask_scan, cfg, self._vertices, self._weights)
+
+        # ------------------------------------------------------------------ #
+        # 7.  RGB overlay & compose
+        # ------------------------------------------------------------------ #
+        rgb = np.zeros((1, Hc, Wc, 3), dtype=np.uint8)
+        rgb[0, mask_curv == 1, 2] = 255   # pleura → blue
+        rgb[0, mask_curv == 2, 1] = 255   # B‑line → green
+
+        self._autoMaskRGB = rgb[0]
+        self._composeAndPushOverlay()
+
+        logging.info(f"applyAutoOverlay done (mock={mock}) "
+                    f"on {Path(dicom_path).name}")
 
 
 #

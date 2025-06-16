@@ -1,488 +1,514 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
-    <class>AnnotateUltrasound</class>
-    <widget class="qMRMLWidget" name="AnnotateUltrasound">
-        <property name="geometry">
-            <rect>
-                <x>0</x>
-                <y>0</y>
-                <width>432</width>
-                <height>966</height>
-            </rect>
+ <class>AnnotateUltrasound</class>
+ <widget class="qMRMLWidget" name="AnnotateUltrasound">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>432</width>
+    <height>1014</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QHBoxLayout" name="annotatorLayout">
+     <item>
+      <widget class="QGroupBox" name="raterInfoGroupBox">
+       <property name="title">
+        <string/>
+       </property>
+       <layout class="QVBoxLayout" name="raterInfoVBox">
+        <item>
+         <layout class="QHBoxLayout" name="raterNameHBox">
+          <item>
+           <widget class="QLabel" name="raterNameLabel">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>Rater:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="raterName">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>16777215</width>
+              <height>24</height>
+             </size>
+            </property>
+            <property name="returnPressed" stdset="0">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="ctkCollapsibleButton" name="raterColorsCollapsibleButton">
+          <property name="text">
+           <string>Rater Selection</string>
+          </property>
+          <property name="collapsed">
+           <bool>true</bool>
+          </property>
+          <layout class="QVBoxLayout" name="annotatorVBox">
+           <item>
+            <widget class="QTableWidget" name="raterColorTable">
+             <property name="verticalScrollBarPolicy">
+              <enum>Qt::ScrollBarAsNeeded</enum>
+             </property>
+             <property name="editTriggers">
+              <set>QAbstractItemView::NoEditTriggers</set>
+             </property>
+             <property name="selectionMode">
+              <enum>QAbstractItemView::NoSelection</enum>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
+     <property name="text">
+      <string>Input folder with DICOM and annotations files</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_2">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Input directory:</string>
         </property>
-        <layout class="QVBoxLayout" name="verticalLayout">
-            <item>
-                <layout class="QHBoxLayout" name="annotatorLayout">
-                    <item>
-                        <widget class="QGroupBox" name="raterInfoGroupBox">
-                            <property name="title">
-                                <string/>
-                            </property>
-                            <layout class="QVBoxLayout" name="raterInfoVBox">
-                                <item>
-                                    <layout class="QHBoxLayout" name="raterNameHBox">
-                                        <item>
-                                            <widget class="QLabel" name="raterNameLabel">
-                                                <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-                                                        <horstretch>0</horstretch>
-                                                        <verstretch>0</verstretch>
-                                                    </sizepolicy>
-                                                </property>
-                                                <property name="text">
-                                                    <string>Rater:</string>
-                                                </property>
-                                            </widget>
-                                        </item>
-                                        <item>
-                                            <widget class="QLineEdit" name="raterName">
-                                                <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-                                                        <horstretch>0</horstretch>
-                                                        <verstretch>0</verstretch>
-                                                    </sizepolicy>
-                                                </property>
-                                                <property name="maximumSize">
-                                                    <size>
-                                                        <width>16777215</width>
-                                                        <height>24</height>
-                                                    </size>
-                                                </property>
-                                                <property name="returnPressed" stdset="0">
-                                                    <bool>true</bool>
-                                                </property>
-                                            </widget>
-                                        </item>
-                                    </layout>
-                                </item>
-                                <item>
-                                    <widget class="ctkCollapsibleButton" name="raterColorsCollapsibleButton">
-                                        <property name="text">
-                                            <string>Rater Selection</string>
-                                        </property>
-                                        <property name="collapsed">
-                                            <bool>true</bool>
-                                        </property>
-                                        <layout class="QVBoxLayout" name="annotatorVBox">
-                                            <item>
-                                                <widget class="QTableWidget" name="raterColorTable">
-                                                    <property name="selectionMode">
-                                                        <enum>QAbstractItemView::NoSelection</enum>
-                                                    </property>
-                                                    <property name="editTriggers">
-                                                        <set>QAbstractItemView::NoEditTriggers</set>
-                                                    </property>
-                                                    <property name="maximumHeight">
-                                                        <number>100</number>
-                                                    </property>
-                                                    <property name="verticalScrollBarPolicy">
-                                                        <enum>Qt::ScrollBarAsNeeded</enum>
-                                                    </property>
-                                                </widget>
-                                            </item>
-                                        </layout>
-                                    </widget>
-                                </item>
-                            </layout>
-                        </widget>
-                    </item>
-                </layout>
-            </item>
-            <item>
-                <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
-                    <property name="text">
-                        <string>Input folder with DICOM and annotations files</string>
-                    </property>
-                    <layout class="QFormLayout" name="formLayout_2">
-                        <item row="1" column="0">
-                            <widget class="QLabel" name="label">
-                                <property name="text">
-                                    <string>Input directory:</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="1" column="1">
-                            <widget class="ctkDirectoryButton" name="inputDirectoryButton">
-                                <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
-                                        <horstretch>0</horstretch>
-                                        <verstretch>0</verstretch>
-                                    </sizepolicy>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="2" column="0" colspan="2">
-                            <widget class="QPushButton" name="readInputButton">
-                                <property name="enabled">
-                                    <bool>true</bool>
-                                </property>
-                                <property name="toolTip">
-                                    <string>Run the algorithm.</string>
-                                </property>
-                                <property name="text">
-                                    <string>Read DICOM directory</string>
-                                </property>
-                            </widget>
-                        </item>
-                    </layout>
-                </widget>
-            </item>
-            <item>
-                <widget class="ctkCollapsibleButton" name="workflowCollapsibleButton">
-                    <property name="text">
-                        <string>Workflow progress</string>
-                    </property>
-                    <layout class="QVBoxLayout" name="verticalLayout_3">
-                        <item>
-                            <layout class="QHBoxLayout" name="horizontalLayout" stretch="2,1,3,2">
-                                <item>
-                                    <widget class="QPushButton" name="previousButton">
-                                        <property name="toolTip">
-                                            <string>Loads previous scan</string>
-                                        </property>
-                                        <property name="text">
-                                            <string />
-                                        </property>
-                                    </widget>
-                                </item>
-                                <item>
-                                    <widget class="QPushButton" name="saveButton">
-                                        <property name="toolTip">
-                                            <string>Saves annotations</string>
-                                        </property>
-                                        <property name="text">
-                                            <string>Save</string>
-                                        </property>
-                                    </widget>
-                                </item>
-                                <item>
-                                    <widget class="QPushButton" name="saveAndLoadNextButton">
-                                        <property name="toolTip">
-                                            <string>Saves annotations and loads next scan (Shortcut
-                                                A
-                                                key)</string>
-                                        </property>
-                                        <property name="text">
-                                            <string>Save &amp;&amp; next [A]</string>
-                                        </property>
-                                    </widget>
-                                </item>
-                                <item>
-                                    <widget class="QPushButton" name="nextButton">
-                                        <property name="toolTip">
-                                            <string>Loads next scan</string>
-                                        </property>
-                                        <property name="text">
-                                            <string />
-                                        </property>
-                                    </widget>
-                                </item>
-                            </layout>
-                        </item>
-                        <item>
-                            <widget class="QPushButton" name="skipToUnlabeledButton">
-                                <property name="toolTip">
-                                    <string>Skips to next unlabeled scan</string>
-                                </property>
-                                <property name="text">
-                                    <string>Next unlabeled</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <widget class="QLabel" name="currentFileLabel">
-                                <property name="text">
-                                    <string>Current file: </string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <widget class="QProgressBar" name="progressBar">
-                                <property name="value">
-                                    <number>0</number>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <layout class="QHBoxLayout" name="horizontalLayout_2">
-                                <item>
-                                    <widget class="QLabel" name="label_4">
-                                        <property name="text">
-                                            <string>Intensity shift: </string>
-                                        </property>
-                                    </widget>
-                                </item>
-                                <item>
-                                    <widget class="QSlider" name="intensitySlider">
-                                        <property name="minimum">
-                                            <number>-100</number>
-                                        </property>
-                                        <property name="maximum">
-                                            <number>100</number>
-                                        </property>
-                                        <property name="value">
-                                            <number>0</number>
-                                        </property>
-                                        <property name="orientation">
-                                            <enum>Qt::Horizontal</enum>
-                                        </property>
-                                    </widget>
-                                </item>
-                            </layout>
-                        </item>
-                    </layout>
-                </widget>
-            </item>
-            <item>
-                <widget class="ctkCollapsibleButton" name="sectorAnnotationsCollapsibleButton">
-                    <property name="text">
-                        <string>Sector annotations</string>
-                    </property>
-                    <layout class="QGridLayout" name="gridLayout">
-                        <item row="3" column="1">
-                            <widget class="QPushButton" name="clearAllLinesButton">
-                                <property name="toolTip">
-                                    <string>Clears all line annotations of current scan</string>
-                                </property>
-                                <property name="text">
-                                    <string>Clear all lines</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="7" column="0" colspan="2">
-                            <widget class="QTableWidget" name="framesTableWidget" />
-                        </item>
-                        <item row="1" column="0">
-                            <widget class="QPushButton" name="addPleuraButton">
-                                <property name="toolTip">
-                                    <string>Adds new pleura line (Shortcut W key)</string>
-                                </property>
-                                <property name="text">
-                                    <string>Pleura line [W]</string>
-                                </property>
-                                <property name="checkable">
-                                    <bool>true</bool>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="5" column="1">
-                            <widget class="QPushButton" name="removeCurrentFrameButton">
-                                <property name="text">
-                                    <string>Remove selected frame</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="3" column="0">
-                            <widget class="QPushButton" name="overlayVisibilityButton">
-                                <property name="toolTip">
-                                    <string>Toggles overlay display (Shortcut Space bar)</string>
-                                </property>
-                                <property name="text">
-                                    <string>Overlay [Space]</string>
-                                </property>
-                                <property name="checkable">
-                                    <bool>true</bool>
-                                </property>
-                                <property name="checked">
-                                    <bool>true</bool>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="2" column="0">
-                            <widget class="QPushButton" name="addBlineButton">
-                                <property name="toolTip">
-                                    <string>Adds new B-line line (Shortcut S key)</string>
-                                </property>
-                                <property name="text">
-                                    <string>B-line [S]</string>
-                                </property>
-                                <property name="checkable">
-                                    <bool>true</bool>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="5" column="0">
-                            <widget class="QPushButton" name="addCurrentFrameButton">
-                                <property name="text">
-                                    <string>Add current frame</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="1" column="1">
-                            <widget class="QPushButton" name="removePleuraButton">
-                                <property name="toolTip">
-                                    <string>Removes last added pleura line (Shortcut E key)</string>
-                                </property>
-                                <property name="text">
-                                    <string>Last pleura line [E]</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="2" column="1">
-                            <widget class="QPushButton" name="removeBlineButton">
-                                <property name="toolTip">
-                                    <string>Removes last added B-line (Shortcut D key)</string>
-                                </property>
-                                <property name="text">
-                                    <string>Last B-line [D]</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="4" column="0">
-                            <widget class="QLabel" name="label_2">
-                                <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-                                        <horstretch>0</horstretch>
-                                        <verstretch>0</verstretch>
-                                    </sizepolicy>
-                                </property>
-                                <property name="minimumSize">
-                                    <size>
-                                        <width>0</width>
-                                        <height>20</height>
-                                    </size>
-                                </property>
-                                <property name="text">
-                                    <string>Annotated frames</string>
-                                </property>
-                                <property name="alignment">
-                                    <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
-                                </property>
-                            </widget>
-                        </item>
-                    </layout>
-                </widget>
-            </item>
-            <item>
-                <widget class="ctkCollapsibleButton" name="labelAnnotationsCollapsibleButton">
-                    <property name="text">
-                        <string>Label annotations</string>
-                    </property>
-                    <layout class="QVBoxLayout" name="verticalLayout_2">
-                        <item>
-                            <widget class="QScrollArea" name="labelsScrollArea">
-                                <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                                        <horstretch>0</horstretch>
-                                        <verstretch>1</verstretch>
-                                    </sizepolicy>
-                                </property>
-                                <property name="widgetResizable">
-                                    <bool>true</bool>
-                                </property>
-                                <widget class="QWidget" name="labelsScrollAreaWidgetContents">
-                                    <property name="geometry">
-                                        <rect>
-                                            <x>0</x>
-                                            <y>0</y>
-                                            <width>410</width>
-                                            <height>68</height>
-                                        </rect>
-                                    </property>
-                                    <layout class="QVBoxLayout" name="verticalLayout_4" />
-                                </widget>
-                            </widget>
-                        </item>
-                    </layout>
-                </widget>
-            </item>
-            <item>
-                <spacer name="verticalSpacer">
-                    <property name="orientation">
-                        <enum>Qt::Vertical</enum>
-                    </property>
-                    <property name="sizeHint" stdset="0">
-                        <size>
-                            <width>20</width>
-                            <height>40</height>
-                        </size>
-                    </property>
-                </spacer>
-            </item>
-            <item>
-                <widget class="QLabel" name="statusLabel">
-                    <property name="sizePolicy">
-                        <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
-                            <horstretch>0</horstretch>
-                            <verstretch>0</verstretch>
-                        </sizepolicy>
-                    </property>
-                    <property name="text">
-                        <string>Read DICOM directory first</string>
-                    </property>
-                    <property name="wordWrap">
-                        <bool>true</bool>
-                    </property>
-                </widget>
-            </item>
-            <item>
-                <widget class="ctkCollapsibleButton" name="advancedCollapsibleButton">
-                    <property name="text">
-                        <string>Settings</string>
-                    </property>
-                    <property name="checked">
-                        <bool>true</bool>
-                    </property>
-                    <property name="collapsed">
-                        <bool>false</bool>
-                    </property>
-                    <layout class="QVBoxLayout" name="verticalLayout_5">
-                        <item>
-                            <widget class="QCheckBox" name="depthGuideCheckBox">
-                                <property name="text">
-                                    <string>Depth Guide Toggle</string>
-                                </property>
-                                <property name="SlicerParameterName" stdset="0">
-                                    <string>depthGuideVisible</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <widget class="QCheckBox" name="showPleuraPercentageCheckBox">
-                                <property name="text">
-                                    <string>Show pleura percentage</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <widget class="QLabel" name="label_3">
-                                <property name="text">
-                                    <string>Labels CSV file: </string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <widget class="ctkPathLineEdit" name="labelsFileSelector" />
-                        </item>
-                    </layout>
-                </widget>
-            </item>
-        </layout>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="ctkDirectoryButton" name="inputDirectoryButton">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QPushButton" name="readInputButton">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="toolTip">
+         <string>Run the algorithm.</string>
+        </property>
+        <property name="text">
+         <string>Read DICOM directory</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
     </widget>
-    <customwidgets>
-        <customwidget>
-            <class>ctkCollapsibleButton</class>
-            <extends>QWidget</extends>
-            <header>ctkCollapsibleButton.h</header>
-            <container>1</container>
-        </customwidget>
-        <customwidget>
-            <class>ctkDirectoryButton</class>
-            <extends>QWidget</extends>
-            <header>ctkDirectoryButton.h</header>
-        </customwidget>
-        <customwidget>
-            <class>ctkPathLineEdit</class>
-            <extends>QWidget</extends>
-            <header>ctkPathLineEdit.h</header>
-        </customwidget>
-        <customwidget>
-            <class>qMRMLWidget</class>
-            <extends>QWidget</extends>
-            <header>qMRMLWidget.h</header>
-            <container>1</container>
-        </customwidget>
-    </customwidgets>
-    <resources />
-    <connections />
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="workflowCollapsibleButton">
+     <property name="text">
+      <string>Workflow progress</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_3">
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout" stretch="2,1,3,2">
+        <item>
+         <widget class="QPushButton" name="previousButton">
+          <property name="toolTip">
+           <string>Loads previous scan</string>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="saveButton">
+          <property name="toolTip">
+           <string>Saves annotations</string>
+          </property>
+          <property name="text">
+           <string>Save</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="saveAndLoadNextButton">
+          <property name="toolTip">
+           <string>Saves annotations and loads next scan (Shortcut
+                                                A key)</string>
+          </property>
+          <property name="text">
+           <string>Save &amp;&amp; next [A]</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="nextButton">
+          <property name="toolTip">
+           <string>Loads next scan</string>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QPushButton" name="skipToUnlabeledButton">
+        <property name="toolTip">
+         <string>Skips to next unlabeled scan</string>
+        </property>
+        <property name="text">
+         <string>Next unlabeled</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="currentFileLabel">
+        <property name="text">
+         <string>Current file: </string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QProgressBar" name="progressBar">
+        <property name="value">
+         <number>0</number>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_2">
+        <item>
+         <widget class="QLabel" name="label_4">
+          <property name="text">
+           <string>Intensity shift: </string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSlider" name="intensitySlider">
+          <property name="minimum">
+           <number>-100</number>
+          </property>
+          <property name="maximum">
+           <number>100</number>
+          </property>
+          <property name="value">
+           <number>0</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="sectorAnnotationsCollapsibleButton">
+     <property name="text">
+      <string>Sector annotations</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout">
+      <item row="1" column="1">
+       <widget class="QPushButton" name="removePleuraButton">
+        <property name="toolTip">
+         <string>Removes last added pleura line (Shortcut E key)</string>
+        </property>
+        <property name="text">
+         <string>Last pleura line [E]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QPushButton" name="addBlineButton">
+        <property name="toolTip">
+         <string>Adds new B-line line (Shortcut S key)</string>
+        </property>
+        <property name="text">
+         <string>B-line [S]</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QPushButton" name="overlayVisibilityButton">
+        <property name="toolTip">
+         <string>Toggles overlay display (Shortcut Space bar)</string>
+        </property>
+        <property name="text">
+         <string>Overlay [Space]</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="7" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>20</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>Annotated frames</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
+        </property>
+       </widget>
+      </item>
+      <item row="8" column="0">
+       <widget class="QPushButton" name="addCurrentFrameButton">
+        <property name="text">
+         <string>Add current frame</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="0" colspan="2">
+       <widget class="QTableWidget" name="framesTableWidget"/>
+      </item>
+      <item row="3" column="1">
+       <widget class="QPushButton" name="clearAllLinesButton">
+        <property name="toolTip">
+         <string>Clears all line annotations of current scan</string>
+        </property>
+        <property name="text">
+         <string>Clear all lines</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QPushButton" name="removeBlineButton">
+        <property name="toolTip">
+         <string>Removes last added B-line (Shortcut D key)</string>
+        </property>
+        <property name="text">
+         <string>Last B-line [D]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QPushButton" name="addPleuraButton">
+        <property name="toolTip">
+         <string>Adds new pleura line (Shortcut W key)</string>
+        </property>
+        <property name="text">
+         <string>Pleura line [W]</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="8" column="1">
+       <widget class="QPushButton" name="removeCurrentFrameButton">
+        <property name="text">
+         <string>Remove selected frame</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QPushButton" name="autoPleuraButton">
+        <property name="toolTip">
+         <string>Automatically find pleura lines (Shortcut P key)</string>
+        </property>
+        <property name="text">
+         <string>Auto Pleura [P]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QPushButton" name="autoBlineButton">
+        <property name="text">
+         <string>Auto B-line [B]</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0">
+       <widget class="QPushButton" name="autoOverlayButton">
+        <property name="toolTip">
+         <string>Run AI model and show mask overlay</string>
+        </property>
+        <property name="text">
+         <string>Auto Overlay [Enter]</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="labelAnnotationsCollapsibleButton">
+     <property name="text">
+      <string>Label annotations</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_2">
+      <item>
+       <widget class="QScrollArea" name="labelsScrollArea">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+          <horstretch>0</horstretch>
+          <verstretch>1</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="widgetResizable">
+         <bool>true</bool>
+        </property>
+        <widget class="QWidget" name="labelsScrollAreaWidgetContents">
+         <property name="geometry">
+          <rect>
+           <x>0</x>
+           <y>0</y>
+           <width>388</width>
+           <height>67</height>
+          </rect>
+         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_4"/>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="text">
+      <string>Read DICOM directory first</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="advancedCollapsibleButton">
+     <property name="text">
+      <string>Settings</string>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+     <property name="collapsed">
+      <bool>false</bool>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_5">
+      <item>
+       <widget class="QCheckBox" name="depthGuideCheckBox">
+        <property name="text">
+         <string>Depth Guide Toggle</string>
+        </property>
+        <property name="SlicerParameterName" stdset="0">
+         <string>depthGuideVisible</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="showPleuraPercentageCheckBox">
+        <property name="text">
+         <string>Show pleura percentage</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_3">
+        <property name="text">
+         <string>Labels CSV file: </string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="ctkPathLineEdit" name="labelsFileSelector"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkDirectoryButton</class>
+   <extends>QWidget</extends>
+   <header>ctkDirectoryButton.h</header>
+  </customwidget>
+  <customwidget>
+   <class>ctkPathLineEdit</class>
+   <extends>QWidget</extends>
+   <header>ctkPathLineEdit.h</header>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
 </ui>
