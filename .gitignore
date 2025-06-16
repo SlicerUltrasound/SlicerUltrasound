@@ -2,7 +2,8 @@
 .vscode/
 */__pycache__/*
 *~
+*.pyc
+AnnotateUltrasound/Resources/Models/
+AnonymizeUltrasound/Resources/checkpoints/
 */**/data/
 */**/.venv/
-# AI model checkpoints
-AnonymizeUltrasound/Resources/checkpoints/*

@@ -16,9 +16,11 @@ set(MODULE_ICON_PNGS
   Resources/Icons/BlueFillTrash.png
   Resources/Icons/blueRemove.png
   Resources/Icons/blueSave.png
+  Resources/Icons/blueBot.png
 )
 
 set(MODULE_PYTHON_RESOURCES
+  lib/scan_conversion.py
   ${MODULE_ICON_PNGS}
   Resources/UI/${MODULE_NAME}.ui
   )
