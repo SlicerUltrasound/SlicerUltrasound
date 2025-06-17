@@ -973,7 +973,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             redSliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceCompositeNode()
             redSliceCompositeNode.SetForegroundVolumeID(self._parameterNode.overlayVolume.GetID())
             redSliceCompositeNode.SetForegroundOpacity(0.12)
-            redSliceCompositeNode.SetCompositing(2)
+            redSliceCompositeNode.SetCompositing(slicer.vtkMRMLSliceCompositeNode.Alpha)
             displayNode = self._parameterNode.overlayVolume.GetDisplayNode()
             displayNode.SetWindow(255)
             displayNode.SetLevel(127)
@@ -1032,7 +1032,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         self.compositingModeExit = sliceCompositeNode.GetCompositing()
-        sliceCompositeNode.SetCompositing(2)
+        sliceCompositeNode.SetCompositing(slicer.vtkMRMLSliceCompositeNode.Alpha)
 
         # Load labels for annotations
         
@@ -1784,7 +1784,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         redSliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceCompositeNode()
         redSliceCompositeNode.SetForegroundVolumeID(overlayVolume.GetID())
         redSliceCompositeNode.SetForegroundOpacity(0.12)
-        redSliceCompositeNode.SetCompositing(2)
+        redSliceCompositeNode.SetCompositing(slicer.vtkMRMLSliceCompositeNode.Alpha)
         displayNode = overlayVolume.GetDisplayNode()
         displayNode.SetWindow(255)
         displayNode.SetLevel(127)
