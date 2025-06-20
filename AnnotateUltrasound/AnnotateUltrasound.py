@@ -124,6 +124,7 @@ class AnnotateUltrasoundParameterNode:
     depthGuideVisible: bool = True
     rater = ''
     showInvalidated: bool = True
+    adjudicatorMode: bool = False
 
 #
 # AnnotateUltrasoundWidget
@@ -165,6 +166,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutA = qt.QShortcut(slicer.util.mainWindow())  # "A" for save and load next scan
         self.shortcutA.setKey(qt.QKeySequence('A'))
 
+        # shortcuts for adjudication actions
+        self.shortcutV = qt.QShortcut(slicer.util.mainWindow())  # "V" for validate line
+        self.shortcutV.setKey(qt.QKeySequence('V'))
+        self.shortcutI = qt.QShortcut(slicer.util.mainWindow())  # "I" for invalidate line
+        self.shortcutI.setKey(qt.QKeySequence('I'))
+
         self.raterNameDebounceTimer = qt.QTimer()
         self.raterNameDebounceTimer.setSingleShot(True)
         self.raterNameDebounceTimer.setInterval(300)  # ms of idle time before triggering
@@ -182,6 +189,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.shortcutA.connect('activated()', self.onSaveAndLoadNextButton)  # "A" to save and load next scan
 
+        # shortcuts for adjudication actions
+        self.shortcutV.connect('activated()', self.onValidateLine)  # "V" to validate selected line
+        self.shortcutI.connect('activated()', self.onInvalidateLine)  # "I" to invalidate selected line
+
     def disconnectKeyboardShortcuts(self):
         # Disconnect shortcuts to avoid issues when the user leaves the module
         self.shortcutW.activated.disconnect()
@@ -190,6 +201,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutE.activated.disconnect()
         self.shortcutD.activated.disconnect()
         self.shortcutA.activated.disconnect()
+        self.shortcutV.activated.disconnect()
+        self.shortcutI.activated.disconnect()
 
     def setup(self) -> None:
         """
@@ -1585,6 +1598,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         slicer.util.showStatusMessage(f"{'Showing' if checked else 'Hiding'} invalidated lines.", 3000)
 
     def onAdjudicatorModeToggled(self, enabled):
+        logging.info(f"Adjudicator mode toggled: {enabled}") # Added this line
+        if self._parameterNode:
+            self._parameterNode.adjudicatorMode = enabled
         # Show/hide or enable/disable adjudication controls
         controls = [
             getattr(self.ui, 'validateLineButton', None),
@@ -1977,13 +1993,17 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         Load the next sequence in the dataframe.
         Returns the index of the loaded sequence in the dataframe or None if no more sequences are available.
         """
-        # Save current depth guide mode
+        # Save current depth guide and adjudicator modes
         currentDepthGuideMode = self.depthGuideMode
-        logging.debug(f"Saving depthGuideMode {currentDepthGuideMode} before loading next sequence")
+        parameterNode = self.getParameterNode()
+        currentAdjudicatorMode = parameterNode.adjudicatorMode
+        logging.debug(f"Saving depthGuideMode {currentDepthGuideMode} and adjudicatorMode {currentAdjudicatorMode} before loading next sequence")
 
         # Clear the scene
         self.clearScene()
-        parameterNode = self.getParameterNode()
+        if not parameterNode:
+            logging.error("No parameter node found, cannot load next sequence.")
+            return None
 
         if self.dicomDf is None:
             parameterNode.dfLoaded = False
@@ -1994,23 +2014,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if self.nextDicomDfIndex >= len(self.dicomDf):
             return None
 
-        nextDicomFilepath = self.dicomDf.iloc[self.nextDicomDfIndex]['Filepath']
-
-        # --- Begin: Custom annotation file selection logic ---
-        base_file_path = self.dicomDf.iloc[self.nextDicomDfIndex]['Filepath']
-        base_prefix = os.path.splitext(base_file_path)[0]
-        current_rater = self.getParameterNode().rater.strip().lower()
-        candidates = [
-            f"{base_prefix}.{current_rater}.json",
-            f"{base_prefix}.json"
-        ]
-        nextAnnotationsFilepath = None
-        for candidate in candidates:
-            if os.path.exists(candidate):
-                nextAnnotationsFilepath = candidate
-                break
-        if nextAnnotationsFilepath is None:
-            nextAnnotationsFilepath = f"{base_prefix}.{current_rater}.json"
+        # We advance the index here, so for loading annotations we use `self.nextDicomDfIndex` which was just incremented
         self.nextDicomDfIndex += 1
 
         # Make sure a temporary folder for the DICOM files exists
@@ -2022,6 +2026,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         for file in os.listdir(tempDicomDir):
             os.remove(os.path.join(tempDicomDir, file))
 
+        # Get the filepath for the current index
+        nextDicomFilepath = self.dicomDf.iloc[self.nextDicomDfIndex - 1]['Filepath']
         # Copy DICOM file to temporary folder
         shutil.copy(nextDicomFilepath, tempDicomDir)
 
@@ -2061,9 +2067,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         parameterNode.inputVolume = inputUltrasoundNode
         parameterNode.unsavedChanges = False  # Reset unsaved changes when loading new sequence
 
-        # Restore depth guide mode
+        # Restore depth guide and adjudicator modes
         self.depthGuideMode = currentDepthGuideMode
-        logging.debug(f"Restored depthGuideMode to {self.depthGuideMode} after loading sequence")
+        parameterNode.adjudicatorMode = currentAdjudicatorMode
+        logging.debug(f"Restored depthGuideMode to {self.depthGuideMode} and adjudicatorMode to {currentAdjudicatorMode} after loading sequence")
 
         ultrasoundArray = slicer.util.arrayFromVolume(inputUltrasoundNode)
         # Mask array should be the same size as the ultrasound array, but with 3 channels
@@ -2080,82 +2087,30 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         overlayImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
         overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
         overlayVolume.SetAndObserveImageData(overlayImageData)
-        # overlayVolume.CreateDefaultDisplayNodes()
         slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
         parameterNode.overlayVolume = overlayVolume
 
-        # Load all annotations with the same base prefix and deeply merge frame_annotations by frame_number
-        self.seenRaters = []
-        merged_data = {}
-        merged_data["frame_annotations"] = []
-        filepaths = glob.glob(f"{base_prefix}.json") + glob.glob(f"{base_prefix}.*.json")
-        for filepath in filepaths:
-            try:
-                with open(filepath, 'r') as f:
-                    ann = json.load(f)
-                    self.convert_lps_to_ras(ann.get("frame_annotations", []))
-                    # Merge non-frame_annotations keys with conflict check
-                    for k, v in ann.items():
-                        if k == "frame_annotations":
-                            continue
-                        if k not in merged_data:
-                            merged_data[k] = v
-                        elif merged_data[k] in [None, "", [], {}]:
-                            merged_data[k] = v
-                        elif isinstance(merged_data[k], list) and isinstance(v, list):
-                            merged_data[k].extend(v)
-                            merged_data[k] = list(dict.fromkeys(merged_data[k]))
-                        elif merged_data[k] != v:
-                            logging.warning(f"Conflicting values for key '{k}': {merged_data[k]} vs {v}, keeping first value")
-                    # Only merge pleura_lines and b_lines for frames with matching frame_number
-                    for frame in ann.get("frame_annotations", []):
-                        frame_number = frame["frame_number"]
-                        matched = next((f for f in merged_data["frame_annotations"] if f["frame_number"] == frame_number), None)
-                        if matched:
-                            matched["pleura_lines"].extend(frame.get("pleura_lines", []))
-                            matched["b_lines"].extend(frame.get("b_lines", []))
-                            # Add new raters from pleura_lines
-                            for entry in frame.get("pleura_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-                            # Add new raters from b_lines
-                            for entry in frame.get("b_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-                        else:
-                            merged_data["frame_annotations"].append({
-                                "frame_number": frame["frame_number"],
-                                "coordinate_space": frame.get("coordinate_space", "RAS"),
-                                "pleura_lines": frame.get("pleura_lines", []),
-                                "b_lines": frame.get("b_lines", [])
-                            })
-                            # Add new raters from pleura_lines
-                            for entry in frame.get("pleura_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-                            # Add new raters from b_lines
-                            for entry in frame.get("b_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-            except Exception as e:
-                logging.warning(f"Failed to load annotation file {filepath}: {e}")
+        # Load annotations using the dedicated method. The adjudicator mode flag comes from the widget's parameter node.
+        self.loadAnnotations(self.nextDicomDfIndex - 1, self.parameterNode.adjudicatorMode)
 
-        self.annotations = merged_data
+        # Extract all unique raters from the loaded annotations
+        self.seenRaters = []
+        if self.annotations and 'frame_annotations' in self.annotations:
+            for frame in self.annotations['frame_annotations']:
+                for line_type in ['pleura_lines', 'b_lines']:
+                    for line in frame.get(line_type, []):
+                        rater = line.get('rater')
+                        if rater and rater not in self.seenRaters:
+                            self.seenRaters.append(rater)
+
+        current_rater = self.getParameterNode().rater.strip().lower()
+        if current_rater in self.seenRaters:
+            self.seenRaters.remove(current_rater)
+        self.seenRaters = [current_rater] + sorted(self.seenRaters)
+        self.setSelectedRaters(set(self.seenRaters))
 
         # Preallocate markup nodes based on loaded annotations
         self.preallocateMarkupNodesFromAnnotations()
-
-        if current_rater in self.seenRaters:
-            self.seenRaters.remove(current_rater)
-        # put current rater at the top
-        self.seenRaters = [current_rater] + sorted(self.seenRaters)
-        self.setSelectedRaters(self.seenRaters)
-
-        #self.highlightedRaters = set(self.seenRaters)
 
         # Set programmatic update flag to prevent unsavedChanges from being set
         self._updateMarkupsAndOverlayProgrammatically(parameterNode)
@@ -2176,6 +2131,97 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Return the index of the loaded sequence in the dataframe
         return self.nextDicomDfIndex
+
+    def loadAnnotations(self, dicom_index, adjudicator_mode):
+        """
+        Load annotations for the given dicom_index.
+        In adjudicator_mode, it loads the '.adjudication.json' file if it exists.
+        Otherwise, it merges all rater files.
+        Sets self.annotations.
+        """
+        base_file_path = self.dicomDf.iloc[dicom_index]['Filepath']
+        dir_path = os.path.dirname(base_file_path)
+        base_prefix = os.path.splitext(base_file_path)[0]
+
+        adjudication_file = None
+        adjudication_file_correct = f"{base_prefix}.adjudication.json"
+        adjudication_file_typo = f"{base_prefix}.adjucator.json" # Common typo
+
+        # A more robust check for the file's existence, bypassing os.path.exists which can fail in some environments.
+        try:
+            dir_contents = os.listdir(dir_path)
+            base_correct = os.path.basename(adjudication_file_correct)
+            base_typo = os.path.basename(adjudication_file_typo)
+
+            if base_correct in dir_contents:
+                adjudication_file = adjudication_file_correct
+            elif base_typo in dir_contents:
+                adjudication_file = adjudication_file_typo
+                logging.warning(f"Found misspelled adjudication file: {adjudication_file_typo}. Using it, but please consider renaming.")
+        except OSError as e:
+            logging.error(f"Could not read directory {dir_path}: {e}")
+            # Fallback to the original check, just in case
+            if os.path.exists(adjudication_file_correct):
+                 adjudication_file = adjudication_file_correct
+            elif os.path.exists(adjudication_file_typo):
+                 adjudication_file = adjudication_file_typo
+
+        # Always clear existing annotations before loading new ones
+        self.annotations = {"frame_annotations": []}
+
+        if adjudicator_mode and adjudication_file:
+            logging.info(f"Adjudicator mode: Loading single adjudication file: {adjudication_file}")
+            try:
+                with open(adjudication_file, 'r') as f:
+                    # Directly load the adjudicated data, which includes fan mask info
+                    self.annotations = json.load(f)
+
+                    if "frame_annotations" in self.annotations:
+                        self.convert_lps_to_ras(self.annotations.get("frame_annotations", []))
+                    else:
+                        # ensure frame_annotations key exists even if file is empty or malformed
+                        self.annotations["frame_annotations"] = []
+            except Exception as e:
+                logging.error(f"Failed to load adjudication file {adjudication_file}: {e}")
+        else:
+            logging.info("Rater mode or no adjudication file: Merging all rater annotation files.")
+            merged_data = {"frame_annotations": []}
+            is_first_file = True
+            # Find all json files for this scan, excluding any adjudication files
+            # Reverted to a simpler filter that was known to work, but handles both spellings.
+            glob_files = glob.glob(f"{base_prefix}*.json")
+            filepaths = [f for f in glob_files if not f.endswith('.adjudication.json') and not f.endswith('.adjucator.json')]
+
+            for filepath in filepaths:
+                try:
+                    with open(filepath, 'r') as f:
+                        ann = json.load(f)
+
+                        # Copy top-level keys (like fan mask info) from the first file that has them
+                        if is_first_file:
+                            for key, value in ann.items():
+                                if key != "frame_annotations":
+                                    merged_data[key] = value
+                            if any(k in ann for k in ["mask_type", "radius1"]): # Heuristic to check if fan info was found
+                                is_first_file = False
+
+                        # Individual rater files are dicts with a "frame_annotations" key
+                        frame_annotations = ann.get("frame_annotations", [])
+                        self.convert_lps_to_ras(frame_annotations)
+                        for frame in frame_annotations:
+                            frame_number = frame.get("frame_number")
+                            if frame_number is None:
+                                continue
+
+                            matched_frame = next((f for f in merged_data["frame_annotations"] if f.get("frame_number") == frame_number), None)
+                            if matched_frame:
+                                matched_frame["pleura_lines"].extend(frame.get("pleura_lines", []))
+                                matched_frame["b_lines"].extend(frame.get("b_lines", []))
+                            else:
+                                merged_data["frame_annotations"].append(frame)
+                except Exception as e:
+                    logging.warning(f"Failed to load or merge annotation file {filepath}: {e}")
+            self.annotations = merged_data
 
     def onSequenceBrowserModified(self, caller, event):
         self._updateMarkupsAndOverlayProgrammatically(None)
@@ -2499,6 +2545,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
             # Set visibility and opacity based on validation status and UI controls
             status = validation.get("status", "unadjudicated")
+            logging.info(f"Node: {node.GetName()}, Rater: {rater}, Validation Status: {status}")
             if status == "invalidated":
                 showInvalidated = self.parameterNode.showInvalidated if self.parameterNode else True
                 node.GetDisplayNode().SetVisibility(showInvalidated)
@@ -2535,6 +2582,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
             # Set visibility and opacity based on validation status and UI controls
             status = validation.get("status", "unadjudicated")
+            logging.info(f"Node: {node.GetName()}, Rater: {rater}, Validation Status: {status}")
             if status == "invalidated":
                 showInvalidated = self.parameterNode.showInvalidated if self.parameterNode else True
                 node.GetDisplayNode().SetVisibility(showInvalidated)
@@ -3062,57 +3110,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
-
-    def loadAnnotations(self, dicom_index, adjudicator_mode):
-        """
-        Load annotations for the given dicom_index and adjudicator_mode.
-        Sets self.annotations.
-        """
-        base_file_path = self.dicomDf.iloc[dicom_index]['Filepath']
-        base_prefix = os.path.splitext(base_file_path)[0]
-        adjudication_file = f"{base_prefix}.adjudication.json"
-        if adjudicator_mode and os.path.exists(adjudication_file):
-            with open(adjudication_file, 'r') as f:
-                self.annotations = json.load(f)
-        else:
-            merged_data = {}
-            merged_data["frame_annotations"] = []
-            filepaths = glob.glob(f"{base_prefix}.json") + glob.glob(f"{base_prefix}.*.json")
-            for filepath in filepaths:
-                if filepath == adjudication_file:
-                    continue
-                try:
-                    with open(filepath, 'r') as f:
-                        ann = json.load(f)
-                        self.convert_lps_to_ras(ann.get("frame_annotations", []))
-                        for k, v in ann.items():
-                            if k == "frame_annotations":
-                                continue
-                            if k not in merged_data:
-                                merged_data[k] = v
-                            elif merged_data[k] in [None, "", [], {}]:
-                                merged_data[k] = v
-                            elif isinstance(merged_data[k], list) and isinstance(v, list):
-                                merged_data[k].extend(v)
-                                merged_data[k] = list(dict.fromkeys(merged_data[k]))
-                            elif merged_data[k] != v:
-                                logging.warning(f"Conflicting values for key '{k}': {merged_data[k]} vs {v}, keeping first value")
-                        for frame in ann.get("frame_annotations", []):
-                            frame_number = frame["frame_number"]
-                            matched = next((f for f in merged_data["frame_annotations"] if f["frame_number"] == frame_number), None)
-                            if matched:
-                                matched["pleura_lines"].extend(frame.get("pleura_lines", []))
-                                matched["b_lines"].extend(frame.get("b_lines", []))
-                            else:
-                                merged_data["frame_annotations"].append({
-                                    "frame_number": frame["frame_number"],
-                                    "coordinate_space": frame.get("coordinate_space", "RAS"),
-                                    "pleura_lines": frame.get("pleura_lines", []),
-                                    "b_lines": frame.get("b_lines", [])
-                                })
-                except Exception as e:
-                    logging.warning(f"Failed to load annotation file {filepath}: {e}")
-            self.annotations = merged_data
 
 #
 # AnnotateUltrasoundTest
