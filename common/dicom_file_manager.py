@@ -117,13 +117,10 @@ class DicomFileManager:
 
         current_index = self.next_dicom_df_index - 1 if self.next_dicom_df_index is not None and self.next_dicom_df_index > 0 else 0
 
-        if next_index_val:
+        if next_index_val or self.next_dicom_df_index is not None:
             return current_index, sequence_browser
-        else:
-            if self.next_dicom_df_index is not None:
-                return current_index, sequence_browser
-            else:
-                return None, None
+
+        return None, None
 
     def get_number_of_instances(self) -> int:
         """Get number of instances in dataframe"""

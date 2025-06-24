@@ -4,11 +4,8 @@ import tempfile
 import shutil
 import pandas as pd
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
-from pydicom.uid import generate_uid
-import tempfile
 import os
-from datetime import datetime
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 # Mock slicer module for testing
