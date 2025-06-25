@@ -2856,22 +2856,16 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
     def loadAnnotationTime(self):
         key = self.getCurrentDicomKey()
         rater = self.getParameterNode().rater.strip().lower()
-        if self.annotations is not None and 'timing' in self.annotations:
-            timing = self.annotations['timing']
-            if rater in timing and key in timing[rater]:
-                self._annotationTimer = timing[rater][key]
-                return
+        if self.annotations is not None and 'annotation_time_seconds' in self.annotations:
+            self._annotationTimer = self.annotations['annotation_time_seconds']
+            return
         self._annotationTimer = 0.0
     def saveAnnotationTime(self):
         key = self.getCurrentDicomKey()
         rater = self.getParameterNode().rater.strip().lower()
         if self.annotations is None:
             return
-        if 'timing' not in self.annotations:
-            self.annotations['timing'] = {}
-        if rater not in self.annotations['timing']:
-            self.annotations['timing'][rater] = {}
-        self.annotations['timing'][rater][key] = self.getAnnotationTimerSeconds()
+        self.annotations['annotation_time_seconds'] = self.getAnnotationTimerSeconds()
         # Save to JSON immediately
         if self.dicomDf is not None and self.nextDicomDfIndex > 0:
             annotationsFilepath = self.dicomDf.iloc[self.nextDicomDfIndex-1]['AnnotationsFilepath']
