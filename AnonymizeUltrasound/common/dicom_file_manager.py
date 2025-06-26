@@ -126,7 +126,7 @@ class DicomFileManager:
         """Get number of instances in dataframe"""
         return len(self.dicom_df) if self.dicom_df is not None else 0
 
-    def _extract_dicom_info(self, file_path: str, skip_single_frame: bool) -> Optional[List]:
+    def _extract_dicom_info(self, file_path: str, skip_single_frame: bool) -> Optional[dict]:
         """Extract DICOM information from file"""
         try:
             dicom_ds = pydicom.dcmread(file_path, stop_before_pixels=True)
@@ -158,9 +158,20 @@ class DicomFileManager:
             to_patch = physical_delta_x is None or physical_delta_y is None
             transducer_model = self.get_transducer_model(dicom_ds.get('TransducerType', ''))
 
-            return [file_path, exp_filename, patient_uid, study_uid, series_uid,
-                    instance_uid, physical_delta_x, physical_delta_y,
-                    content_date, content_time, to_patch, transducer_model]
+            return {
+                'Filepath': file_path,
+                'AnonFilename': exp_filename,
+                'PatientUID': patient_uid,
+                'StudyUID': study_uid,
+                'SeriesUID': series_uid,
+                'InstanceUID': instance_uid,
+                'PhysicalDeltaX': physical_delta_x,
+                'PhysicalDeltaY': physical_delta_y,
+                'ContentDate': content_date,
+                'ContentTime': content_time,
+                'Patch': to_patch,
+                'TransducerModel': transducer_model
+            }
 
         except Exception as e:
             logging.error(f"Failed to read DICOM file {file_path}: {e}")
@@ -222,11 +233,12 @@ class DicomFileManager:
 
     def _create_dataframe(self, dicom_data: List):
         """Create pandas DataFrame from DICOM data"""
-        columns = ['Filepath', 'AnonFilename', 'PatientUID', 'StudyUID',
-                    'SeriesUID', 'InstanceUID', 'PhysicalDeltaX', 'PhysicalDeltaY',
-                    'ContentDate', 'ContentTime', 'Patch', 'TransducerModel']
+        if not dicom_data:
+            self.dicom_df = pd.DataFrame()
+            return
 
-        self.dicom_df = pd.DataFrame(dicom_data, columns=columns)
+        # Create DataFrame directly from list of dictionaries
+        self.dicom_df = pd.DataFrame(dicom_data)
 
         # Sort and add series numbers
         self.dicom_df = self.dicom_df.sort_values(by=['Filepath', 'ContentDate', 'ContentTime'])
