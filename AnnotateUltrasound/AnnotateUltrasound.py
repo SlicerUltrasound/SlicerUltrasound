@@ -553,15 +553,15 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         if not self.confirmUnsavedChanges():
             return
 
+        # --- Save timer for current scan before navigating ---
+        self.logic.saveAnnotationTime()
+        # --- Pause timer during scan loading ---
+        self.logic.pauseAnnotationTimer()   
+
         if self.logic.nextDicomDfIndex >= len(self.logic.dicomDf):
             # If we are at the last DICOM file, show a message that clears in 5 seconds and return
             slicer.util.mainWindow().statusBar().showMessage('⚠️ No more DICOM files', 5000)
             return
-
-        # --- Save timer for current scan before navigating ---
-        self.logic.saveAnnotationTime()
-        # --- Pause timer during scan loading ---
-        self.logic.pauseAnnotationTimer()
 
         # Create a dialog to ask the user to wait while the next sequence is loaded.
 
@@ -842,9 +842,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         Saves current annotations to json file only
         """
         logging.info('onSaveButton (save')
-        self.saveAnnotations()
-        # --- Save timer on manual save ---
+         # --- Save timer on manual save ---
         self.logic.saveAnnotationTime()
+        self.saveAnnotations()
 
     def onSaveAndLoadNextButton(self):
         """
@@ -1314,17 +1314,18 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.raterColorTable.clearContents()
         colors = list(self.logic.getAllRaterColors())
         self.ui.raterColorTable.setRowCount(len(colors))
-        self.ui.raterColorTable.setColumnCount(3)
-        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line"])
+        self.ui.raterColorTable.setColumnCount(4)  # Changed from 3 to 4 columns
+        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line", "Time"])  # Added "Time" column
         header = self.ui.raterColorTable.horizontalHeader()
         header.setSectionResizeMode(0, qt.QHeaderView.Stretch)
         # Columns 1 & 2: Color indicators — just enough to show the color
         header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)  # Timer column
 
         self.ui.raterColorTable.setColumnWidth(1, 30)
         self.ui.raterColorTable.setColumnWidth(2, 30)
+        self.ui.raterColorTable.setColumnWidth(3, 80)  # Timer column width
         for row, (r, (pleura_color, bline_color)) in enumerate(colors):
             rater_item = qt.QTableWidgetItem(r)
             rater_item.setFlags(qt.Qt.ItemIsUserCheckable | qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
@@ -1341,9 +1342,23 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             bline_item.setFlags(qt.Qt.ItemIsEnabled)
             bline_item.setBackground(qt.QColor(*(int(c * 255) for c in bline_color)))
 
+            # Timer item - only show for current rater
+            timer_item = qt.QTableWidgetItem()
+            timer_item.setFlags(qt.Qt.ItemIsEnabled)
+            if r == self._parameterNode.rater:
+                # Get current timer value and format it
+                seconds = self.logic.getAnnotationTimerSeconds()
+                mins = int(seconds // 60)
+                secs = int(seconds % 60)
+                timer_text = f"{mins:02d}:{secs:02d}"
+                timer_item.setText(timer_text)
+            else:
+                timer_item.setText("--:--")
+
             self.ui.raterColorTable.setItem(row, 0, rater_item)
             self.ui.raterColorTable.setItem(row, 1, pleura_item)
             self.ui.raterColorTable.setItem(row, 2, bline_item)
+            self.ui.raterColorTable.setItem(row, 3, timer_item)  # Added timer item
         self.ui.raterColorTable.blockSignals(False)
 
     def getSelectedRatersFromTable(self):
@@ -1402,8 +1417,18 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def updateAnnotationTimerLabel(self, seconds):
         mins = int(seconds // 60)
         secs = int(seconds % 60)
-        text = f"Time spent: {mins:02d}:{secs:02d}"
-        self.ui.annotationTimerLabel.setText(text)
+        text = f"{mins:02d}:{secs:02d}"
+        
+        # Update timer in rater table instead of separate label
+        if hasattr(self.ui, 'raterColorTable'):
+            table = self.ui.raterColorTable
+            for row in range(table.rowCount):
+                rater_item = table.item(row, 0)
+                if rater_item and rater_item.text() == self._parameterNode.rater:
+                    timer_item = table.item(row, 3)
+                    if timer_item:
+                        timer_item.setText(text)
+                    break
 
     def onIdleStarted(self):
         self.logic.onIdleStarted()
@@ -2865,7 +2890,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         rater = self.getParameterNode().rater.strip().lower()
         if self.annotations is None:
             return
-        self.annotations['annotation_time_seconds'] = self.getAnnotationTimerSeconds()
         # Save to JSON immediately
         if self.dicomDf is not None and self.nextDicomDfIndex > 0:
             annotationsFilepath = self.dicomDf.iloc[self.nextDicomDfIndex-1]['AnnotationsFilepath']

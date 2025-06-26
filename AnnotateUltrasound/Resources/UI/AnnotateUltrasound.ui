@@ -195,13 +195,6 @@
                             </widget>
                         </item>
                         <item>
-                            <widget class="QLabel" name="annotationTimerLabel">
-                                <property name="text">
-                                    <string>Time spent: 00:00</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
                             <widget class="QProgressBar" name="progressBar">
                                 <property name="value">
                                     <number>0</number>
