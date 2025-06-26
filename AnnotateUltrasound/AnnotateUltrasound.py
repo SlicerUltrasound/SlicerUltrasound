@@ -234,8 +234,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.inputDirectoryButton.directory = slicer.app.settings().value("AnnotateUltrasound/InputDirectory", "")
 
         # Set up frames table
-        self.ui.framesTableWidget.setColumnCount(3)
-        self.ui.framesTableWidget.setHorizontalHeaderLabels(["Frame index", "Pleura lines (N)", "B-lines (N)"])
+        self.ui.framesTableWidget.setColumnCount(4)
+        self.ui.framesTableWidget.setHorizontalHeaderLabels(["Frame index", "Pleura lines (N)", "B-lines (N)", "Pleura %"])
         header = self.ui.framesTableWidget.horizontalHeader()
         header.setSectionResizeMode(qt.QHeaderView.Stretch)
         self.ui.framesTableWidget.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
@@ -326,6 +326,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         ratio = self.logic.updateOverlayVolume()
         if ratio is not None:
             self._parameterNode.pleuraPercentage = ratio * 100
+
+        # Save pleura percentage for current frame
+        self.logic.savePleuraPercentageForCurrentFrame()
+
         self._updateGUIFromParameterNode()
 
     def onIntensitySliderValueChanged(self, value):
@@ -343,6 +347,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         if ratio is not None:
             self._parameterNode.pleuraPercentage = ratio * 100
             self._parameterNode.unsavedChanges = True
+
+        # Save pleura percentage for current frame
+        self.logic.savePleuraPercentageForCurrentFrame()
+
         self.updateGuiFromAnnotations()
 
     def onFramesTableSelectionChanged(self):
@@ -366,11 +374,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             return
         else:
             self.logic.sequenceBrowserNode.SetSelectedItemNumber(selectedFrameIndex)
+            # Update rater color table to reflect the new frame's data
+            self.populateRaterColorTable()
 
     def onAddCurrentFrame(self):
         logging.info('onAddCurrentFrame')
         self.logic.updateCurrentFrame()
         self.updateGuiFromAnnotations()
+        
 
     def _updateMarkupsAndOverlayProgrammatically(self, setUnsavedChanges=False):
         """
@@ -384,6 +395,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 self._parameterNode.pleuraPercentage = ratio * 100
             else:
                 self._parameterNode.pleuraPercentage = 0.0
+
+            # Save pleura percentage for current frame
+            self.logic.savePleuraPercentageForCurrentFrame()
+
         finally:
             self.logic._isProgrammaticUpdate = False
         if setUnsavedChanges:
@@ -666,6 +681,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 bline_item.setData(qt.Qt.DisplayRole, bline_count)
                 self.ui.framesTableWidget.setItem(row, 2, bline_item)
 
+                # Add pleura percentage column
+                pleura_percentage = frame_annotations.get("pleura_percentage", 0.0)
+                pleura_percentage_item = qt.QTableWidgetItem()
+                pleura_percentage_item.setData(qt.Qt.DisplayRole, f"{pleura_percentage:.1f}")
+                self.ui.framesTableWidget.setItem(row, 3, pleura_percentage_item)
+
         # reenable sorting afer populating the table
         self.ui.framesTableWidget.setSortingEnabled(True)
 
@@ -787,7 +808,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                     "frame_number": frame["frame_number"],
                     "coordinate_space": "RAS",
                     "pleura_lines": pleura,
-                    "b_lines": b_lines
+                    "b_lines": b_lines,
+                    "pleura_percentage": frame.get("pleura_percentage", 0.0)
                 })
 
         # if we have frames from the current rater or we deleted all lines so unsavedChanges is true
@@ -864,6 +886,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             ratio = self.logic.updateOverlayVolume()
             if ratio is not None:
                 self._parameterNode.pleuraPercentage = ratio * 100
+
+            # Save pleura percentage for current frame
+            self.logic.savePleuraPercentageForCurrentFrame()
+
             return
 
         # Put interaction model to place line markup
@@ -936,6 +962,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.logic.updateCurrentFrame()
         self.updateGuiFromAnnotations()
         self._parameterNode.unsavedChanges = True
+
+        # Save pleura percentage for current frame
+        self.logic.savePleuraPercentageForCurrentFrame()
+        
+        # Update rater color table to reflect new best performance
+        self.populateRaterColorTable()
 
     def onLabelsFileSelected(self, labelsFilepath=None):
         # Use self.resourcePath to get the correct path to resources (consistent with other resource usage in this module)
@@ -1283,17 +1315,22 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.raterColorTable.clearContents()
         colors = list(self.logic.getAllRaterColors())
         self.ui.raterColorTable.setRowCount(len(colors))
-        self.ui.raterColorTable.setColumnCount(3)
-        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line"])
+        self.ui.raterColorTable.setColumnCount(4)  # Added one more column for highest percentage
+        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line", "Highest %"])
         header = self.ui.raterColorTable.horizontalHeader()
         header.setSectionResizeMode(0, qt.QHeaderView.Stretch)
         # Columns 1 & 2: Color indicators — just enough to show the color
         header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)
 
         self.ui.raterColorTable.setColumnWidth(1, 30)
         self.ui.raterColorTable.setColumnWidth(2, 30)
+        self.ui.raterColorTable.setColumnWidth(3, 80)  # Width for highest percentage column
+        
+        # Get highest percentage for each rater
+        best_performance = self.logic.getHighestPercentageFramePerRater()
+        
         for row, (r, (pleura_color, bline_color)) in enumerate(colors):
             rater_item = qt.QTableWidgetItem(r)
             rater_item.setFlags(qt.Qt.ItemIsUserCheckable | qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
@@ -1310,9 +1347,27 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             bline_item.setFlags(qt.Qt.ItemIsEnabled)
             bline_item.setBackground(qt.QColor(*(int(c * 255) for c in bline_color)))
 
+            # Highest percentage item
+            best_item = qt.QTableWidgetItem()
+            best_item.setFlags(qt.Qt.ItemIsEnabled)
+            if r in best_performance:
+                best_percentage, frame_number = best_performance[r]
+                best_item.setText(f"{best_percentage:.1f}% (F{frame_number})")
+                # Color code based on performance: green for low (good), yellow for medium, red for high (bad)
+                if best_percentage <= 15:
+                    best_item.setBackground(qt.QColor(100, 255, 100))  # Green (good condition)
+                elif best_percentage <= 30:
+                    best_item.setBackground(qt.QColor(255, 255, 100))  # Yellow (moderate condition)
+                else:
+                    best_item.setBackground(qt.QColor(255, 100, 100))  # Red (poor condition)
+            else:
+                best_item.setText("No data")
+                best_item.setBackground(qt.QColor(200, 200, 200))  # Gray
+
             self.ui.raterColorTable.setItem(row, 0, rater_item)
             self.ui.raterColorTable.setItem(row, 1, pleura_item)
             self.ui.raterColorTable.setItem(row, 2, bline_item)
+            self.ui.raterColorTable.setItem(row, 3, best_item)
         self.ui.raterColorTable.blockSignals(False)
 
     def getSelectedRatersFromTable(self):
@@ -1580,33 +1635,78 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         existing['pleura_lines'] = []  # Reset the list of pleura lines
 
-        # Add pleura lines to annotations with new format
+        # Add pleura lines to annotations with new format - only save visible ones
         for markupNode in self.pleuraLines:
-            coordinates = []
+            # Only save markup nodes that are currently visible (belong to current frame)
+            if markupNode.GetDisplayNode().GetVisibility():
+                coordinates = []
 
-            for i in range(markupNode.GetNumberOfControlPoints()):
-                coord = [0, 0, 0]
-                markupNode.GetNthControlPointPosition(i, coord)
-                coordinates.append(coord)
+                for i in range(markupNode.GetNumberOfControlPoints()):
+                    coord = [0, 0, 0]
+                    markupNode.GetNthControlPointPosition(i, coord)
+                    coordinates.append(coord)
 
-            if coordinates:
-                existing['pleura_lines'].append(
-                    {"rater": markupNode.GetAttribute("rater"), "line": {"points": coordinates}})
+                if coordinates:
+                    existing['pleura_lines'].append(
+                        {"rater": markupNode.GetAttribute("rater"), "line": {"points": coordinates}})
 
         existing['b_lines'] = []  # Reset the list of B-lines
 
-        # Add B-lines to annotations with new format
+        # Add B-lines to annotations with new format - only save visible ones
         for markupNode in self.bLines:
-            coordinates = []
+            # Only save markup nodes that are currently visible (belong to current frame)
+            if markupNode.GetDisplayNode().GetVisibility():
+                coordinates = []
 
-            for i in range(markupNode.GetNumberOfControlPoints()):
-                coord = [0, 0, 0]
-                markupNode.GetNthControlPointPosition(i, coord)
-                coordinates.append(coord)
+                for i in range(markupNode.GetNumberOfControlPoints()):
+                    coord = [0, 0, 0]
+                    markupNode.GetNthControlPointPosition(i, coord)
+                    coordinates.append(coord)
 
-            if coordinates:
-                existing['b_lines'].append(
-                    {"rater": markupNode.GetAttribute("rater"),  "line": {"points": coordinates}})
+                if coordinates:
+                    existing['b_lines'].append(
+                        {"rater": markupNode.GetAttribute("rater"),  "line": {"points": coordinates}})
+
+        # Save pleura percentage for current frame
+        self.savePleuraPercentageForCurrentFrame()
+
+    def savePleuraPercentageForCurrentFrame(self):
+        """
+        Save the current pleura percentage for the current frame in the annotations.
+        This function should only update the pleura percentage if there are already annotations for that frame.
+        """
+        if self.sequenceBrowserNode is None:
+            logging.warning("No sequence browser node found")
+            return
+
+        if self.annotations is None:
+            logging.warning("No annotations loaded")
+            return
+
+        # Get the current frame index from the sequence browser
+        currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())
+
+        # Check if annotations already has a list of frame annotations
+        if 'frame_annotations' not in self.annotations:
+            logging.debug("No frame annotations exist yet")
+            return
+
+        # Find existing frame annotation for currentFrameIndex
+        existing = next((f for f in self.annotations['frame_annotations']
+                         if int(f.get("frame_number", -1)) == currentFrameIndex), None)
+        if not existing:
+            logging.debug(f"No existing annotation for frame {currentFrameIndex}")
+            return
+
+        # Get the pleura percentage from the parameter node
+        parameterNode = self.getParameterNode()
+        ratio = parameterNode.pleuraPercentage
+        if ratio is not None:
+            existing['pleura_percentage'] = ratio
+        else:
+            existing['pleura_percentage'] = 0.0
+
+        logging.info(f"Updated pleura percentage to {existing['pleura_percentage']:.1f}% for frame {currentFrameIndex}")
 
     def removeFrame(self, frameIndex):
         logging.info(f"removeFrame -- frameIndex: {frameIndex}")
@@ -1943,6 +2043,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 parameterNode = self.getParameterNode()
                 parameterNode.pleuraPercentage = ratio * 100
 
+            # Save pleura percentage for current frame
+            self.savePleuraPercentageForCurrentFrame()
+
     def removeLastBline(self):
         """
         Remove the last B-line from the scene and from the list of B-lines.
@@ -1958,15 +2061,37 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 parameterNode = self.getParameterNode()
                 parameterNode.pleuraPercentage = ratio * 100
 
+            # Save pleura percentage for current frame
+            self.savePleuraPercentageForCurrentFrame()
+
     def onPointModified(self, caller, event):
         parameterNode = self.getParameterNode()
         ratio = self.updateOverlayVolume()
         if ratio is not None:
             parameterNode.pleuraPercentage = ratio * 100
 
+        # Save pleura percentage for current frame
+        self.savePleuraPercentageForCurrentFrame()
+
         # Only set unsavedChanges if this is a user-initiated modification
         if not self._isProgrammaticUpdate:
             parameterNode.unsavedChanges = True
+            # Update annotation data for current frame
+            self._isProgrammaticUpdate = True
+            try:
+                self.updateCurrentFrame()
+            finally:
+                self._isProgrammaticUpdate = False
+            
+            # Update GUI to reflect changes in the frames table
+            try:
+                # Get the widget instance and update the GUI
+                if hasattr(slicer.modules, 'annotateultrasound'):
+                    widget = slicer.modules.annotateultrasound.widgetRepresentation().self()
+                    if widget:
+                        widget.updateGuiFromAnnotations()
+            except Exception as e:
+                logging.warning(f"Could not update GUI after point modification: {e}")
 
     def onPointPositionDefined(self, caller, event):
         parameterNode = self.getParameterNode()
@@ -1978,6 +2103,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         ratio = self.updateOverlayVolume()
         if ratio is not None:
             parameterNode.pleuraPercentage = ratio * 100
+
+        # Save pleura percentage for current frame
+        self.savePleuraPercentageForCurrentFrame()
 
         # Set unsavedChanges when user finishes placing a line (only if not programmatic)
         if not self._isProgrammaticUpdate:
@@ -2743,6 +2871,53 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+
+    def getHighestPercentageFramePerRater(self):
+        """
+        Find the frame with the highest pleura percentage for each rater in the current annotations.
+        Returns a dict mapping rater names to (highest_percentage, frame_number) tuples.
+        """
+        if self.annotations is None or 'frame_annotations' not in self.annotations:
+            return {}
+        
+        rater_performance = {}
+        
+        # For each frame, check which raters have lines and update their performance
+        for frame in self.annotations['frame_annotations']:
+            frame_number = int(frame.get('frame_number', -1))
+            pleura_percentage = float(frame.get('pleura_percentage', 0.0))
+            
+            # Find all raters that have lines in this frame
+            raters_in_frame = set()
+            
+            # Check pleura lines
+            for line in frame.get('pleura_lines', []):
+                rater = line.get('rater', '').strip().lower()
+                if rater:
+                    raters_in_frame.add(rater)
+            
+            # Check B-lines
+            for line in frame.get('b_lines', []):
+                rater = line.get('rater', '').strip().lower()
+                if rater:
+                    raters_in_frame.add(rater)
+            
+            # Update performance for each rater in this frame
+            for rater in raters_in_frame:
+                if rater not in rater_performance or pleura_percentage > rater_performance[rater][0]:
+                    rater_performance[rater] = (pleura_percentage, frame_number)
+        
+        return rater_performance
+
+    def getAllRaterColors(self):
+        """
+        Returns a list of (rater, (pleura_color, bline_color)) for all seen raters.
+        """
+        colors = []
+        for r in self.seenRaters:
+            pleura_color, bline_color = self.getColorsForRater(r)
+            colors.append((r, (pleura_color, bline_color)))
+        return colors
 
 
 #
