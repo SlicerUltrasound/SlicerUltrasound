@@ -1152,7 +1152,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self._updateGUIFromParameterNode()
 
-        self.logic.onScanLoaded()
+        # Remove this line - timer should only start when a scan is loaded, not when entering the module
+        # self.logic.onScanLoaded()
 
     def exit(self) -> None:
         """
@@ -2890,6 +2891,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         rater = self.getParameterNode().rater.strip().lower()
         if self.annotations is None:
             return
+        # Update the annotation time in the annotations dictionary
+        self.annotations['annotation_time_seconds'] = self.getAnnotationTimerSeconds()
         # Save to JSON immediately
         if self.dicomDf is not None and self.nextDicomDfIndex > 0:
             annotationsFilepath = self.dicomDf.iloc[self.nextDicomDfIndex-1]['AnnotationsFilepath']
