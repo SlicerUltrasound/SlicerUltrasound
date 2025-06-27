@@ -8,6 +8,7 @@ import json
 import logging
 import random
 import numpy as np
+import math
 import os
 import pathlib
 from PIL import Image
@@ -77,7 +78,7 @@ def onSlicerStartupCompleted():
     Perform some initialization tasks that require the application to be fully started up.
     """
     # Install required packages
-    
+
     global pd
     try:
         import pandas as pd
@@ -85,14 +86,14 @@ def onSlicerStartupCompleted():
         logging.info("AnonymizeUltrasound: Pandas not found, installing...")
         slicer.util.pip_install('pandas')
         import pandas as pd
-        
+
     global cv2
     try:
         import cv2
     except ImportError:
         slicer.util.pip_install('opencv-python')
         import cv2
-    
+
     global torch
     try:
         import torch
@@ -100,7 +101,7 @@ def onSlicerStartupCompleted():
         logging.info("AnonymizeUltrasound: torch not found, installing...")
         slicer.util.pip_install('torch')
         import torch
-    
+
     global yaml
     try:
         import yaml
@@ -108,7 +109,7 @@ def onSlicerStartupCompleted():
         logging.info("AnonymizeUltrasound: yaml not found, installing...")
         slicer.util.pip_install('PyYAML')
         import yaml
-    
+
 #
 # AnonymizeUltrasoundParameterNode
 #
@@ -144,7 +145,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
-    
+
     INPUT_FOLDER_SETTING = "AnonymizeUltrasound/InputFolder"
     OUTPUT_FOLDER_SETTING = "AnonymizeUltrasound/OutputFolder"
     HEADERS_FOLDER_SETTING = "AnonymizeUltrasound/HeadersFolder"
@@ -154,6 +155,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     HASH_PATIENT_ID_SETTING = "AnonymizeUltrasound/HashPatientId"
     FILENAME_PREFIX_SETTING = "AnonymizeUltrasound/FilenamePrefix"
     LABELS_PATH_SETTING = "AnonymizeUltrasound/LabelsPath"
+    THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
+    ENABLE_MASK_CACHE_SETTING = "AnonymizeUltrasound/enableMaskCache"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -163,6 +166,19 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self._parameterNode = None
         self._parameterNodeGuiTag = None
         self.compositingModeExit = None
+
+        # --- Keyboard shortcuts ---
+        # M: toggle Define Mask, N: next scan, Space: toggle auto overlay, E: export scan, A: export and load next scan
+        self.shortcutM = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutM.setKey(qt.QKeySequence('M'))
+        self.shortcutN = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutN.setKey(qt.QKeySequence('N'))
+        self.shortcutC = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutC.setKey(qt.QKeySequence('C'))
+        self.shortcutE = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutE.setKey(qt.QKeySequence('E'))
+        self.shortcutA = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutA.setKey(qt.QKeySequence('A'))
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -190,9 +206,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
         # Buttons
-        
+
         settings = slicer.app.settings()
-        
+
         inputFolder = settings.value(self.INPUT_FOLDER_SETTING)
         if inputFolder:
             if os.path.exists(inputFolder):
@@ -201,7 +217,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 logging.info(f"Settings input folder {inputFolder} does not exist")
         self.ui.inputDirectoryButton.connect("directoryChanged(QString)",
                                              lambda newValue: self.onSettingChanged(self.INPUT_FOLDER_SETTING, newValue))
-        
+
         outputFolder = settings.value(self.OUTPUT_FOLDER_SETTING)
         if outputFolder:
             if os.path.exists(outputFolder):
@@ -210,7 +226,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 logging.info(f"Settings output folder {outputFolder} does not exist")
         self.ui.outputDirectoryButton.connect("directoryChanged(QString)",
                                               lambda newValue: self.onSettingChanged(self.OUTPUT_FOLDER_SETTING, newValue))
-        
+
         headersFolder = settings.value(self.HEADERS_FOLDER_SETTING)
         if headersFolder:
             if os.path.exists(headersFolder):
@@ -219,17 +235,27 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 logging.info(f"Settings headers folder {headersFolder} does not exist")
         self.ui.headersDirectoryButton.connect("directoryChanged(QString)",
                                                lambda newValue: self.onSettingChanged(self.HEADERS_FOLDER_SETTING, newValue))
-        
+
         self.ui.importDicomButton.connect("clicked(bool)", self.onImportDicomButton)
-        
+
         # Workflow control buttons
-        
+
         self.ui.nextButton.clicked.connect(self.onNextButton)
         self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
         self.ui.exportButton.clicked.connect(self.onExportScanButton)
-        
+        if hasattr(self.ui, 'exportAndNextButton'):
+            self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextShortcut)
+
         # Settings widgets
-        
+
+        enableMaskCache = settings.value(self.ENABLE_MASK_CACHE_SETTING)
+        if enableMaskCache and enableMaskCache.lower() == "true":
+            self.ui.enableMaskCacheCheckBox.checked = True
+        else:
+            self.ui.enableMaskCacheCheckBox.checked = False
+        self.ui.enableMaskCacheCheckBox.connect('toggled(bool)',
+                                                lambda newValue: self.onSettingChanged(self.ENABLE_MASK_CACHE_SETTING, str(newValue)))
+
         autoMaskStr = settings.value(self.AUTO_MASK_SETTING)
         if autoMaskStr and autoMaskStr.lower() == "true":
             self.ui.autoMaskCheckBox.checked = True
@@ -242,63 +268,74 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Developer gating for Auto‑Overlay check box
         self._updateAutoOverlayCheckBoxVisibility()
-        
+
         continueProgressStr = settings.value(self.CONTINUE_PROGRESS_SETTING)
         if continueProgressStr and continueProgressStr.lower() == "true":
             self.ui.continueProgressCheckBox.checked = True
         else:
             self.ui.continueProgressCheckBox.checked = False
         self.ui.continueProgressCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.CONTINUE_PROGRESS_SETTING, str(newValue)))
-        
+
         skipSingleFrameStr = settings.value(self.SKIP_SINGLE_FRAME_SETTING)
         if skipSingleFrameStr and skipSingleFrameStr.lower() == "true":
             self.ui.skipSingleframeCheckBox.checked = True
         else:
             self.ui.skipSingleframeCheckBox.checked = False
         self.ui.skipSingleframeCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.SKIP_SINGLE_FRAME_SETTING, str(newValue)))
-        
+
         hashPatientIdStr = settings.value(self.HASH_PATIENT_ID_SETTING)
         if hashPatientIdStr and hashPatientIdStr.lower() == "true":
             self.ui.hashPatientIdCheckBox.checked = True
         else:
             self.ui.hashPatientIdCheckBox.checked = False
         self.ui.hashPatientIdCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.HASH_PATIENT_ID_SETTING, str(newValue)))
-        
+
         filenamePrefix = settings.value(self.FILENAME_PREFIX_SETTING)  # This has been moved to Processing tab on the UI
         if filenamePrefix:
             self.ui.namePrefixLineEdit.text = filenamePrefix
         self.ui.namePrefixLineEdit.connect('textChanged(QString)', lambda newValue: self.onSettingChanged(self.FILENAME_PREFIX_SETTING, newValue))
-        
+
+        # Three-point fan mask setting
+        threePointStr = settings.value(self.THREE_POINT_FAN_SETTING)
+        if threePointStr and threePointStr.lower() == "true":
+            self.ui.threePointFanCheckBox.checked = True
+        else:
+            self.ui.threePointFanCheckBox.checked = False
+        self.ui.threePointFanCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.THREE_POINT_FAN_SETTING, str(newValue)))
+
         self.ui.settingsCollapsibleButton.collapsed = True
-        
+
         # Annotation labels
-        
+
         self.ui.labelsFileSelector.connect('currentPathChanged(QString)', self.onLabelsPathChanged)
         labelsPath = settings.value(self.LABELS_PATH_SETTING)
         if not labelsPath or labelsPath == '':
             labelsPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'Resources/default_labels.csv')
         self.ui.labelsFileSelector.currentPath = labelsPath
         self.ui.labelsCollapsibleButton.collapsed = True
-        
+
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
-        
+
         # Start on red-only view. Allow other layouts later.
         slicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUpRedSliceView)
+
+        self.connectKeyboardShortcuts()
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
         self.removeObservers()
+        self.disconnectKeyboardShortcuts()
 
     def enter(self) -> None:
         """Called each time the user opens this module."""
         # Make sure parameter node exists and observed
         self.initializeParameterNode()
-        
+
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         self.compositingModeExit = sliceCompositeNode.GetCompositing()  # Save compositing mode to restore it when exiting the module
         sliceCompositeNode.SetCompositing(2)
-                
+
         # Collapse DataProbe widget
         mw = slicer.util.mainWindow()
         if mw:
@@ -314,10 +351,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
             self._parameterNodeGuiTag = None
             self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._onParameterNodeModified)
-        
+
         # Restore compositing mode to the value it was before entering the module
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         sliceCompositeNode.SetCompositing(self.compositingModeExit)
+
+        # Remove keyboard shortcuts when leaving the module
+        self.disconnectKeyboardShortcuts()
 
     def onSceneStartClose(self, caller, event) -> None:
         """Called just before the scene is closed."""
@@ -370,7 +410,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             logging.error(f"Cannot read labels file: {filePath}, error: {e}")
 
         # Remove all existing labels from the scroll area
-        for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())): 
+        for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())):
             self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget().deleteLater()
 
         # Populate labels scroll area
@@ -382,9 +422,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 categoryLayout.addWidget(checkBox)
             categoryGroupBox.setLayout(categoryLayout)
             self.ui.labelsScrollAreaWidgetContents.layout().addWidget(categoryGroupBox)
-        
+
         self.ui.labelsScrollAreaWidgetContents.layout().addStretch(1)
-    
+
     def onSettingChanged(self, settingName: str, newValue: str) -> None:
         """
         Update setting value and GUI based on user selection.
@@ -396,7 +436,20 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             settings.setValue(settingName, newValue)
         else:
             settings.remove(settingName)
-    
+        if settingName == self.THREE_POINT_FAN_SETTING and self._parameterNode:
+            # clear any existing points and reset overlay
+            markupsNode = self._parameterNode.maskMarkups
+            threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+            if markupsNode is not None:
+                markupsNode.RemoveAllControlPoints()
+                # redraw mask (will be empty)
+                self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
+                self.logic.showMaskContour()
+
+        if settingName == self.ENABLE_MASK_CACHE_SETTING and newValue.lower() == "false":
+            logging.info("Mask cache disabled, clearing existing cache")
+            self.logic.clearMaskCache()
+
     def _onParameterNodeModified(self, caller=None, event=None) -> None:
         """
         Update GUI based on parameter node values.
@@ -404,7 +457,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if not self._parameterNode:
             logging.error("Parameter node not set")
             return
-        
+
         numInstances = self.logic.getNumberOfInstances()
         if numInstances > 0:
             self.ui.progressBar.maximum = numInstances
@@ -419,13 +472,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.labelsCollapsibleButton.enabled = False
             self.ui.statusLabel.text = "Select input folder and press Read DICOM folder button to load DICOM files"
 
-        
-        
+
+
     def onImportDicomButton(self) -> None:
         logging.info("Import DICOM button clicked")
-        
+
         # Check input and output folders
-        
+
         inputDirectory = self.ui.inputDirectoryButton.directory
         if not inputDirectory:
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Please select an input directory")
@@ -433,7 +486,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if not os.path.exists(inputDirectory):
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Input directory does not exist")
             return
-        
+
         outputDirectory = self.ui.outputDirectoryButton.directory
         if not outputDirectory:
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Please select an output directory")
@@ -441,7 +494,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if not os.path.exists(outputDirectory):
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Output directory does not exist")
             return
-        
+
         outputHeadersDirectory = self.ui.headersDirectoryButton.directory
         if not outputHeadersDirectory:
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Please select a headers directory")
@@ -449,25 +502,25 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if not os.path.exists(outputHeadersDirectory):
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Headers directory does not exist")
             return
-        
+
         numFiles = self.logic.updateDicomDf(inputDirectory, self.ui.skipSingleframeCheckBox.checked)
         logging.info(f"Found {numFiles} DICOM files in input folder")
-        
+
         if numFiles > 0:
             self._parameterNode.status = AnonymizerStatus.INPUT_READY
         else:
             self._parameterNode.status = AnonymizerStatus.INITIAL
-        
+
         # Export self.logic.dicomDf as a CSV file in the headers directory
         outputFilePath = os.path.join(outputHeadersDirectory, "keys.csv")
         self.logic.dicomDf.to_csv(outputFilePath, index=False)
-        
+
         statusText = str(numFiles)
         if self.ui.skipSingleframeCheckBox.checked:
             statusText += " multi-frame dicom files found in input folder."
         else:
             statusText += " dicom files found in input folder."
-        
+
         if self.ui.continueProgressCheckBox.checked:
             numDone = self.logic.updateProgressDicomDf(inputDirectory, outputDirectory)
             if numDone is None:
@@ -477,28 +530,29 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             else:
                 statusText += '\n' + str(numDone) + ' files already processed in output folder. Continue at next.'
         self.ui.statusLabel.text = statusText
-    
+
     def onNextButton(self) -> None:
-        logging.info("Next button clicked")
+
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+        continueProgress = self.ui.continueProgressCheckBox.checked
 
         # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
-        if self.logic.nextDicomDfIndex is None and self.ui.continueProgressCheckBox.checked:
+        if self.logic.nextDicomDfIndex is None and continueProgress:
             self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
             return
 
         # Remove observers for the mask markups node, because loading a new series will reset the scene and createa a new markups node
-        
+
         maskMarkupsNode = self._parameterNode.maskMarkups
         if maskMarkupsNode:
             self.removeObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointModifiedEvent, self.onPointModified)
-        
+
         # Load the next series
-        
+
         dialog = self.createWaitDialog("Loading series", "Please wait until the DICOM file is loaded...")
         currentDicomDfIndex = None
         try:
             outputDirectory = self.ui.outputDirectoryButton.directory
-            continueProgress = self.ui.continueProgressCheckBox.checked
             currentDicomDfIndex = self.logic.loadNextSequence(outputDirectory, continueProgress)
             if currentDicomDfIndex is None:
                 statusText = "No more series to load"
@@ -510,21 +564,21 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         except Exception as e:
             dialog.close()
             logging.warning("Error loading series: " + str(e))  # Known error is raised on Windows if loading from outside C: drive
-        
+
         # Add observers for the mask markups node
-        
+
         maskMarkupsNode = self._parameterNode.maskMarkups
         if maskMarkupsNode:
             self.addObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointModifiedEvent, self.onPointModified)
-        
+
         # Uncheck all label checkboxes
 
-        for i in range(self.ui.labelsScrollAreaWidgetContents.layout().count()): 
+        for i in range(self.ui.labelsScrollAreaWidgetContents.layout().count()):
             groupBox = self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget()
             if groupBox is None:
                 continue
             # Find all checkboxes in groupBox
-            for j in range(groupBox.layout().count()): 
+            for j in range(groupBox.layout().count()):
                 checkBox = groupBox.layout().itemAt(j).widget()
                 if isinstance(checkBox, qt.QCheckBox):
                     checkBox.setChecked(False)
@@ -548,19 +602,23 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         statusText = f"Instance {instanceUID} loaded from file:\n"
 
         # Get the file path from the dataframe
-        
+
         if currentDicomDfIndex is not None:
             filepath = self.logic.dicomDf.iloc[currentDicomDfIndex].Filepath
             statusText += filepath
             self.ui.statusLabel.text = statusText
-        
-        self.logic.updateMaskVolume()
+        self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
         self.logic.showMaskContour()
 
         # Set red slice compositing mode to 2
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         sliceCompositeNode.SetCompositing(2)
-    
+
+        # Reactivate the main window to ensure keyboard shortcuts work
+        slicer.util.mainWindow().activateWindow()
+        slicer.util.mainWindow().raise_()
+        slicer.util.mainWindow().setFocus()
+
     def onAutoOverlayCheckBoxToggled(self, checked):
         self.logic.showAutoOverlay = checked  # Pass to logic
         self.logic._composeAndPushOverlay()
@@ -571,7 +629,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     #
     # Placement of mask markups
     #
-    
+
     def onMaskLandmarksButton(self, toggled):
         logging.info('Mask landmarks button pressed')
 
@@ -579,47 +637,55 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if maskMarkupsNode is None:
             logging.error(f"Landmark node not found: {self.logic.MASK_FAN_LANDMARKS}")
             return
-        
+
+        # determine if three-point fan mode is active
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+
+        # Automatic mask via AI only when NOT in three-point fan mode
+        # TODO: Support for three-point fan mode auto mask
         autoMaskSuccessful = False
         if self.ui.autoMaskCheckBox.checked:
-            # Get the mask control points
-            maskMarkupsNode.RemoveAllControlPoints()
-            coords_IJK = self.logic.getAutoMask()
-            if coords_IJK is None:
-                logging.error("Auto mask not found")
+            if threePointFanModeEnabled:
+                logging.info("Auto mask not applied because in three-point fan mode")
             else:
-                autoMaskSuccessful = True
-            
-            # Try to apply the automatic mask markups
-            currentVolumeNode = self.logic.getCurrentProxyNode()
-            if autoMaskSuccessful == True and currentVolumeNode is not None:
-                ijkToRas = vtk.vtkMatrix4x4()
-                currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
-                
-                num_points = coords_IJK.shape[0]
-                coords_RAS = np.zeros((num_points, 4))
-                for i in range(num_points):
-                    point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
-                    # convert to IJK
-                    coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
-                
-                for i in range(num_points):
-                    coord = coords_RAS[i, :]
-                    maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
-                    
-                # Update the status
-                self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
-                self.ui.defineMaskButton.checked = False
-            else:
-                logging.error("Ultraosund volume node not found")
-                autoMaskSuccessful = False
-        
+                # Get the mask control points
+                maskMarkupsNode.RemoveAllControlPoints()
+                coords_IJK = self.logic.getAutoMask()
+                if coords_IJK is None:
+                    logging.error("Auto mask not found")
+                else:
+                    autoMaskSuccessful = True
+
+                # Try to apply the automatic mask markups
+                currentVolumeNode = self.logic.getCurrentProxyNode()
+                if autoMaskSuccessful == True and currentVolumeNode is not None:
+                    ijkToRas = vtk.vtkMatrix4x4()
+                    currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
+
+                    num_points = coords_IJK.shape[0]
+                    coords_RAS = np.zeros((num_points, 4))
+                    for i in range(num_points):
+                        point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
+                        # convert to IJK
+                        coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
+
+                    for i in range(num_points):
+                        coord = coords_RAS[i, :]
+                        maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
+
+                    # Update the status
+                    self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
+                    self.ui.defineMaskButton.checked = False
+                else:
+                    logging.error("Ultraosund volume node not found")
+                    autoMaskSuccessful = False
+
         # If markups are not automatically defined, start the manual process using mouse interactions
-        
+
         if toggled and autoMaskSuccessful == False:
             maskMarkupsNode = self._parameterNode.maskMarkups
             maskMarkupsNode.RemoveAllControlPoints()
-            self.logic.updateMaskVolume()
+            self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
             
             self._parameterNode.status = AnonymizerStatus.LANDMARK_PLACEMENT
             self.addObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointAddedEvent, self.onPointAdded)
@@ -630,7 +696,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             selectionNode = slicer.app.applicationLogic().GetSelectionNode()
             selectionNode.SetReferenceActivePlaceNodeClassName(maskMarkupsNode.GetClassName())
             selectionNode.SetReferenceActivePlaceNodeID(maskMarkupsNode.GetID())
-            
+
             # Switch mouse mode to place mode
             interactionNode = slicer.app.applicationLogic().GetInteractionNode()
             interactionNode.SwitchToPersistentPlaceMode()
@@ -639,15 +705,18 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             # Make sure mouse mode is default
             interactionNode = slicer.app.applicationLogic().GetInteractionNode()
             interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
-    
+
     def onPointModified(self, caller=None, event=None):
         markupsNode = self._parameterNode.maskMarkups
         if not markupsNode:
             logging.error("Markups node not found")
             return
 
-        if markupsNode.GetNumberOfControlPoints() > 3:
-            self.logic.updateMaskVolume()
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+        required = 3 if threePointFanModeEnabled else 4
+        count = markupsNode.GetNumberOfControlPoints()
+        if count == required:
+            self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
             maskContourVolumeNode = self._parameterNode.overlayVolume
             if maskContourVolumeNode:
                 sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
@@ -660,58 +729,65 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def onPointAdded(self, caller=None, event=None):
         logging.info('Point added')
-        
         markupsNode = self._parameterNode.maskMarkups
-        if markupsNode.GetNumberOfControlPoints() > 3:
-            self.logic.updateMaskVolume()
+        # determine required points based on 3-point fan mode
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+        count = markupsNode.GetNumberOfControlPoints()
+        required = 3 if threePointFanModeEnabled else 4
+        if count == required:
+            # finalize mask placement
+            self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
             self.logic.showMaskContour()
         else:
             slicer.util.setSliceViewerLayers(foreground=None)
 
     def onPointDefined(self, caller=None, event=None):
         logging.info('Point defined')
-        
         markupsNode = self._parameterNode.maskMarkups
         if not markupsNode:
             logging.error("Markups node not found")
             return
-
-        if markupsNode.GetNumberOfControlPoints() > 2:
-            self.logic.updateMaskVolume()
-
-        if markupsNode.GetNumberOfControlPoints() > 3:
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+        count = markupsNode.GetNumberOfControlPoints()
+        required = 3 if threePointFanModeEnabled else 4
+        if count == required:
+            self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
+            self.logic.showMaskContour()
+            self.ui.defineMaskButton.checked = False
             self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
             self.removeObserver(markupsNode, slicer.vtkMRMLMarkupsNode.PointAddedEvent, self.onPointAdded)
             self.removeObserver(markupsNode, slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent, self.onPointDefined)
-            
+
             # Switch mouse mode to default
             interactionNode = slicer.app.applicationLogic().GetInteractionNode()
             interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
-            
+
             # Pop the markup button
             self.ui.defineMaskButton.checked = False
+
     #
     # Export scan
-    # 
-    
+    #
+
     def onExportScanButton(self):
         """
         Callback function for the export scan button.
         """
         logging.info('Export scan button pressed')
 
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
         currentSequenceBrowser = self._parameterNode.ultrasoundSequenceBrowser
         if currentSequenceBrowser is None:
             self.ui.statusLabel.text = "Load a DICOM sequence before trying to export"
             logging.info("No sequence browser found, nothing exported.")
             return
-        
+
         selectedItemNumber = currentSequenceBrowser.GetSelectedItemNumber()  # Save current frame index for sequence so we can restore it after exporting the scan
-        
+
         # Check if any labels are checked. If yes, we need to save them as annotations
-        
+
         annotationLabels = []
-        for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())): 
+        for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())):
             groupBox = self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget()
             if groupBox is None:
                 continue
@@ -720,41 +796,45 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 checkBox = groupBox.layout().itemAt(j).widget()
                 if isinstance(checkBox, qt.QCheckBox) and checkBox.isChecked():
                     annotationLabels.append(checkBox.text)
-        
+
         # If there are not mask markups, confirm with the user that they really want to proceed.
-        
-        if self._parameterNode.maskMarkups.GetNumberOfControlPoints() < 4:
+        required = 4 if not threePointFanModeEnabled else 3
+        count = self._parameterNode.maskMarkups.GetNumberOfControlPoints()
+        if count < required:
             if not slicer.util.confirmOkCancelDisplay("No mask defined. Do you want to proceed without masking?"):
                 return
-        
+
         # Mask images to erase the unwanted parts
-        
-        self.logic.maskSequence()
+        self.logic.maskSequence(three_point=threePointFanModeEnabled)
         
         # Set up output directory and filename
-        
+
         hashPatientId = self.ui.hashPatientIdCheckBox.checked
-        
+
         # If hashPatientId is not checked, confirm with the user that they really want to proceed.
-        
+
         if not hashPatientId:
             if not slicer.util.confirmOkCancelDisplay("Patient name will not be masked. Do you want to proceed?"):
                 return
-        
+
         outputDirectory = self.ui.outputDirectoryButton.directory
         headersDirectory = self.ui.headersDirectoryButton.directory
-        
+
         filename, patient_uid, file_uid = self.logic.generateNameFromDicomData(self.logic.currentDicomDataset, hashPatientId)
-        
+
         dialog = self.createWaitDialog("Exporting scan", "Please wait until the scan is exported...")
-        
+
         if hashPatientId:
             new_patient_name = f"{self.ui.namePrefixLineEdit.text}_{patient_uid}"
             new_patient_id = patient_uid
         else:
             new_patient_name = None
             new_patient_id = None
-        
+
+        # Save current mask to cache before exporting
+        if self.ui.enableMaskCacheCheckBox.checked:
+            self.logic.saveCurrentMaskToCache()
+
         # Export the scan
         dicomFilePath, jsonFilePath, dicomHeaderFilePath = self.logic.exportDicom(
             outputDirectory=outputDirectory,
@@ -763,14 +843,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             labels = annotationLabels,
             new_patient_name = new_patient_name,
             new_patient_id = new_patient_id)
-        
+
         # Restore selected item number in sequence browser
         currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
-        
+
         # Display file paths in the status label
 
         statusText = "DICOM saved to: " + dicomFilePath + "\nAnnotations saved to: " + jsonFilePath\
-                        + "\nDICOM header saved to: " + dicomHeaderFilePath
+            + "\nDICOM header saved to: " + dicomHeaderFilePath
 
         self.ui.statusLabel.text = statusText
 
@@ -780,8 +860,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     #
     # Dialog helpers
-    #    
-    
+    #
+
     def createWaitDialog(self, title, message):
         dialog = qt.QDialog(slicer.util.mainWindow())
         dialog.setWindowTitle(title)
@@ -797,7 +877,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         slicer.app.processEvents()
 
         return dialog
-    
+
     def createWaitDialog(self, title, message):
         dialog = qt.QDialog(slicer.util.mainWindow())
         dialog.setWindowTitle(title)
@@ -813,7 +893,34 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         slicer.app.processEvents()
 
         return dialog
- 
+
+    def connectKeyboardShortcuts(self):
+        """Connect shortcut keys to their corresponding actions."""
+        self.shortcutM.connect('activated()', lambda: self.ui.defineMaskButton.toggle())
+        self.shortcutN.connect('activated()', self.onNextButton)
+        self.shortcutC.connect('activated()', lambda: self.ui.threePointFanCheckBox.toggle())
+        self.shortcutE.connect('activated()', self.onExportScanButton)
+        self.shortcutA.connect('activated()', self.onExportAndNextShortcut)
+
+    def disconnectKeyboardShortcuts(self):
+        """Disconnect shortcut keys when leaving the module to avoid unwanted interactions."""
+        try:
+            self.shortcutM.activated.disconnect()
+            self.shortcutN.activated.disconnect()
+            self.shortcutC.activated.disconnect()
+            self.shortcutE.activated.disconnect()
+            self.shortcutA.activated.disconnect()
+        except Exception:
+            # If shortcuts were not connected yet, ignore
+            pass
+
+    def onExportAndNextShortcut(self):
+        """Helper slot to export the current scan and immediately load the next one (shortcut 'A')."""
+        self.onExportScanButton()
+        # Load next only if export did not show blocking dialogs (user may have canceled)
+        # We simply attempt; internal checks will guard.
+        self.onNextButton()
+
 
 #
 # AnonymizeUltrasoundLogic
@@ -833,23 +940,41 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
     def __init__(self) -> None:
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
-        
+
         self.dicomDf = None
         self.nextDicomDfIndex = 0
         self.showAutoOverlay = False
         self._autoMaskRGB = None     # 1×H×W×3  uint8, red
         self._manualMaskRGB = None   # 1×H×W×3  uint8, green
+        self._parameterNode = self._getOrCreateParameterNode()
+        self.transducerMaskCache = {}   # TransducerModel -> mask volume node
+        self.currentTransducerModel = 'unknown'
+
+    def _getOrCreateParameterNode(self):
+        if not hasattr(self, "_parameterNode"):
+            self._parameterNode = AnonymizeUltrasoundParameterNode(super().getParameterNode())
+        return self._parameterNode
 
     def getParameterNode(self):
-        return AnonymizeUltrasoundParameterNode(super().getParameterNode())
-    
+        return self._parameterNode
+
+    def getTransducerModel(self, transducerType: str) -> str:
+        """
+        Parse the transducer type string and return the transducer model or 'unknown'.
+        For example, if transducerType is 'SC6-1s,02597', it returns 'sc6-1s'.
+        """
+        if not transducerType or transducerType == '':
+            return 'unknown'
+
+        return transducerType.split(",")[0].lower()
+
     def updateDicomDf(self, inputDirectory: str, skipSingleFrame: bool) -> int:
         """
         Update dicomDf with a list of all DICOM files in the input directory.
         """
         logging.info(f"Reading DICOM files from {inputDirectory}")
         dicom_data = []
-    
+
         # Get the total number of files
         total_files = sum([len(files) for root, dirs, files in os.walk(inputDirectory)])
 
@@ -868,14 +993,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 progress_dialog.setValue(file_count)
                 file_count += 1
                 slicer.app.processEvents()
-                
+
                 # Construct the full file path
                 file_path = os.path.join(root, file)
 
                 try:
                     # Try to read the file as a DICOM file
                     dicom_ds = pydicom.dcmread(file_path, stop_before_pixels=True)
-                    
+
                     # Try to get image spacing.
                     physical_delta_x = None
                     physical_delta_y = None
@@ -887,48 +1012,68 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                                 physical_delta_x = region.PhysicalDeltaX
                                 physical_delta_y = region.PhysicalDeltaY
                                 to_patch = False
-                    
+
                     # Extract required information
                     patient_id = dicom_ds.PatientID if 'PatientID' in dicom_ds else None
                     study_uid = dicom_ds.StudyInstanceUID if 'StudyInstanceUID' in dicom_ds else None
                     series_uid = dicom_ds.SeriesInstanceUID if 'SeriesInstanceUID' in dicom_ds else None
                     instance_uid = dicom_ds.SOPInstanceUID if 'SOPInstanceUID' in dicom_ds else None
-                    
+
                     content_date = dicom_ds.ContentDate if 'ContentDate' in dicom_ds else '19000101'
                     content_time = dicom_ds.ContentTime if 'ContentTime' in dicom_ds else '000000'
-                    
+
+                    transducer_model = self.getTransducerModel(dicom_ds.TransducerType) if 'TransducerType' in dicom_ds else 'unknown'
+
+                    if transducer_model == 'unknown':
+                        logging.warning(f"Unknown transducer type in file {file_path}")
+
                     if patient_id is None:
                         logging.warning(f"Patient ID missing in file {file_path}")
-                    
+
                     exp_filename, _, _ = self.generateNameFromDicomData(dicom_ds)
-                    
+
                     if skipSingleFrame and ('NumberOfFrames' not in dicom_ds or dicom_ds.NumberOfFrames < 2):
                         continue
 
                     # Append the information to the list, if PatientID, StudyInstanceUID, and SeriesInstanceUID are present
                     if patient_id and study_uid and series_uid and instance_uid:
-                        dicom_data.append([file_path, exp_filename, patient_id, study_uid, series_uid, instance_uid, physical_delta_x, physical_delta_y, content_date, content_time, to_patch])
+                        dicom_data.append([
+                            file_path,
+                            exp_filename,
+                            patient_id,
+                            study_uid,
+                            series_uid,
+                            instance_uid,
+                            physical_delta_x,
+                            physical_delta_y,
+                            content_date,
+                            content_time,
+                            to_patch,
+                            transducer_model
+                        ])
                 except Exception as e:
                     # If the file is not a valid DICOM file, continue to the next file
                     continue
 
         # Update dicomDf
-        self.dicomDf = pd.DataFrame(dicom_data, columns=['Filepath', 'AnonFilename', 'PatientUID', 'StudyUID',
-            'SeriesUID', 'InstanceUID', 'PhysicalDeltaX', 'PhysicalDeltaY', 'ContentDate', 'ContentTime', 'Patch'])
+        self.dicomDf = pd.DataFrame(dicom_data, columns=[
+            'Filepath', 'AnonFilename', 'PatientUID', 'StudyUID',
+            'SeriesUID', 'InstanceUID', 'PhysicalDeltaX', 'PhysicalDeltaY', 'ContentDate', 'ContentTime', 'Patch', 'TransducerModel'
+        ])
         self.dicomDf = self.dicomDf.sort_values(by=['Filepath', 'ContentDate', 'ContentTime'])  # This makes a difference on Mac, not on Windows.
-        
+
         # Add a new column to dicomDf named 'SeriesNumber' that is the index of the row in the group of rows with the same PatientUID and StudyUID.
         self.dicomDf['SeriesNumber'] = self.dicomDf.groupby(['PatientUID', 'StudyUID']).cumcount() + 1
-        
+
         # This is a workaround for the issue that some DICOM files do not have spacing information. The information may be used when loading each file,
         # but patching the DICOM files before importing them would be a better option.
         self.dicomDf['PhysicalDeltaX'] = self.dicomDf.groupby('StudyUID')['PhysicalDeltaX'].transform(lambda x: x.ffill().bfill())
         self.dicomDf['PhysicalDeltaY'] = self.dicomDf.groupby('StudyUID')['PhysicalDeltaY'].transform(lambda x: x.ffill().bfill())
-        
+
         # If PhysicalDeltaX is still missing from at least one row, log a warning.
         if self.dicomDf['PhysicalDeltaX'].isnull().sum() > 0:
             logging.warning("Some ultrasound scans have missing spacing information.")
-        
+
         self.nextDicomDfIndex = 0
 
         # Close the progress dialog
@@ -937,14 +1082,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Return the number of rows in the dataframe
         return len(self.dicomDf)
-    
+
     def loadNextSequence(self, outputDirectory, continueProgress=True):
         """
         Load next sequence in the list of DICOM files.
         Returns the index of the loaded sequence in the dataframe of DICOM files, or None if no more sequences are available.
         """
         self.resetScene()
-        
+
         parameterNode = self.getParameterNode()
 
         # Get next filepath from dicomDf. If nextDicomDfIndex is larger than the number of rows in dicomDf, then
@@ -958,15 +1103,15 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         logging.info("Temporary DICOM directory: " + tempDicomDir)
         if not os.path.exists(tempDicomDir):
             os.makedirs(tempDicomDir)
-        
+
         # Delete all files in the temporary folder
         for file in os.listdir(tempDicomDir):
             os.remove(os.path.join(tempDicomDir, file))
-        
+
         # Copy DICOM file to temporary folder
         shutil.copy(nextDicomDfRow['Filepath'], tempDicomDir)
         logging.info(f"Copied DICOM file {nextDicomDfRow['Filepath']} to {tempDicomDir}")
-        
+
         # TODO: Make this an option in the settings becuase some already patched dcm files are not loading with this option
         # # Patch the DICOM file to add spacing information if it is missing, but available from other rows
         # temporaryDicomFilepath = os.path.join(tempDicomDir, os.path.basename(nextDicomDfRow['Filepath']))
@@ -1006,6 +1151,20 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if "Pixel Data" in self.currentDicomHeader:
             del self.currentDicomHeader["Pixel Data"]
 
+        # After loading the DICOM, try to find a cached mask for the transducer model
+        # If found, apply it. If not, the user will need to define it manually.
+        if hasattr(self, 'currentDicomDataset') and self.currentDicomDataset:
+            transducerType = self.currentDicomDataset.get("TransducerType", "unknown")
+            self.currentTransducerModel = self.getTransducerModel(transducerType)
+            cached_mask = self.getCachedMaskForTransducer(self.currentTransducerModel)
+
+            if cached_mask:
+                logging.info(f"Found cached mask for transducer {self.currentTransducerModel}")
+                if self.applyCachedMask(cached_mask):
+                    logging.info("Successfully applied cached mask")
+                else:
+                    logging.warning("Failed to apply cached mask, will need manual definition")
+
         # Increment nextDicomDfIndex
         nextIndex = self.incrementDicomDfIndex(None, outputDirectory, skip_existing=continueProgress)
         if nextIndex is None:
@@ -1015,7 +1174,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # Delete files from temporary folder
         for file in os.listdir(tempDicomDir):
             os.remove(os.path.join(tempDicomDir, file))
-        
+
         # Make this sequence browser node the current one in the toolbar
         slicer.modules.sequences.setToolBarActiveBrowserNode(currentSequenceBrowser)
 
@@ -1036,9 +1195,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             sliceLogic = layoutManager.sliceWidget('Red').sliceLogic()
             compositeNode = sliceLogic.GetSliceCompositeNode()
             compositeNode.SetBackgroundVolumeID(backgroundVolumeNode.GetID())
-        
+
         return self.nextDicomDfIndex - 1
-    
+
     def dicomHeaderDictForBrowserNode(self, browserNode):
         """
         Return DICOM header for the given browser node.
@@ -1096,58 +1255,33 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 parent[elem.name] = elem.value
         return parent
 
-    def resetScene(self, leaveMaskFiducials=True):
+    def resetScene(self):
         """
         Reset the scene by clearing it and setting it up again.
-
-        leaveMaskFiducials: If True, then leave the mask fiducials in the scene. If False, then remove them.
         """
         parameterNode = self.getParameterNode()
-        
-        # Save mask fiducials
-        maskFiducialsList = []
-        if leaveMaskFiducials:
-            # Save mask fiducials    
-            maskFiducials = parameterNode.maskMarkups
-            if maskFiducials is not None:
-                # Store all control point coordinates in a list
-                for i in range(maskFiducials.GetNumberOfControlPoints()):
-                    coord = [0, 0, 0]
-                    maskFiducials.GetNthControlPointPosition(i, coord)
-                    maskFiducialsList.append(coord)
-        
-        logging.info(f"Saved {len(maskFiducialsList)} mask fiducials")
 
         # Clear the scene
         slicer.mrmlScene.Clear(0)
         self.currentDicomDataset = None
         self.currentDicomHeader = None
-        self.setupScene(maskControlPointsList=maskFiducialsList)
+        self.setupScene()
 
-        logging.info(f"Restored {len(maskFiducialsList)} mask fiducials")   
-    
-    def setupScene(self, maskControlPointsList=None):
-        # Make sure fan mask markups fudicual node exists and referenced by the parameter node
-
+    def setupScene(self):
         parameterNode = self.getParameterNode()
         markupsNode = parameterNode.maskMarkups
         if not markupsNode:
             markupsNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "MaskFiducials")
             markupsNode.GetDisplayNode().SetTextScale(0.0)
             parameterNode.maskMarkups = markupsNode
-        
-        if maskControlPointsList:
-            markupsNode.RemoveAllControlPoints()
-            for controlPoint in maskControlPointsList:
-                markupsNode.AddControlPoint(controlPoint)
-        
+
         # Add observer for node added to mrmlScene
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeAddedEvent, self.onNodeAdded)
 
     def updateProgressDicomDf(self, input_folder, output_folder, keep_folders=False):
         """
         Check the output folder to see what input files are already processed.
-        
+
         :param input_folder: full path to the input folder where input DCM files are.
         :param output_folder: full path to the output folder where already processed files can be found.
         :param keep_folders: If True, output files are expected by the same name in the same subfolders as input files.
@@ -1156,41 +1290,41 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         self.nextDicomDfIndex = None
         self.incrementDicomDfIndex(input_folder, output_folder, skip_existing=True)
         return self.nextDicomDfIndex
-    
+
     def incrementDicomDfIndex(self, input_folder=None, output_directory=None, skip_existing=False):
         """
         Increment the index of the DICOM dataframe. If skipExistingOutput is True, then skip the rows that have already been processed.
-        
+
         :param skip_existing: If True, skip the rows that have already been processed.
         :param keep_folders: If True, keep the folder structure of the input DICOM files in the output directory.
         :return: None
         """
         listOfIndices = self.dicomDf.index.tolist()
         listOfIndices.sort()
-        
+
         if self.nextDicomDfIndex is None:
             nextIndexIndex = 0
         else:
             nextIndexIndex = listOfIndices.index(self.nextDicomDfIndex)
             nextIndexIndex += 1
-        
+
         if skip_existing:
             while nextIndexIndex < len(listOfIndices):
                 nextDicomDfRow = self.dicomDf.iloc[listOfIndices[nextIndexIndex]]
-                
+
                 output_path = output_directory
                 output_filename = nextDicomDfRow['AnonFilename']
                 output_fullpath = os.path.join(output_path, output_filename)
-                
+
                 # Make sure output_fullpath has a .dcm extension
                 if not output_fullpath.endswith('.dcm'):
                     output_fullpath += '.dcm'
-                
+
                 if not os.path.exists(output_fullpath):
                     break
-                
+
                 nextIndexIndex += 1
-        
+
         if nextIndexIndex < len(listOfIndices):
             self.nextDicomDfIndex = listOfIndices[nextIndexIndex]
             logging.info(f"Next DICOM dataframe index: {self.nextDicomDfIndex}")
@@ -1199,7 +1333,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             slicer.util.mainWindow().statusBar().showMessage("No more DICOM files to process", 3000)
 
         return self.nextDicomDfIndex
-    
+
     def getCurrentProxyNode(self):
         """
         Get the proxy node of the master sequence node of the currently selected sequence browser node
@@ -1223,7 +1357,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             return None
 
         return proxyNode
-    
+
     def getFileForBrowserNode(self, browserNode):
         if browserNode is None:
             return None
@@ -1273,7 +1407,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if model is None:
             return None
         return self.findMaskAutomatic(model, input_shape, device)
-    
+
     def downloadAndPrepareModel(self):
         """ Download the AI model and prepare it for inference """
         # Set the Device to run the model on
@@ -1281,17 +1415,17 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         torch.backends.cudnn.benchmark = False
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logging.info(f"The model will run on Device: {device}")
-        
+
         script_dir = os.path.dirname(os.path.abspath(__file__))
         checkpoint_dir = os.path.join(script_dir, 'Resources/checkpoints/')
         os.makedirs(os.path.dirname(checkpoint_dir), exist_ok=True)
 
         model_path = os.path.join(checkpoint_dir, 'model_traced.pt')
         model_config_path = os.path.join(checkpoint_dir, 'model_config.yaml')
-    
+
         model_url = "https://www.dropbox.com/scl/fi/abgn6ln13thh0v9mq5kqj/model_traced.pt?rlkey=8a9eugxbqeuzwrglz55sh7hkd&st=mwclwtgv&dl=1"
-        config_url = "https://www.dropbox.com/scl/fi/klnwakbysn95nae85lmjz/model_config.yaml?rlkey=p1jada30bvbsihtfiw80dq7h2&st=7a8y0ewy&dl=1"  
-    
+        config_url = "https://www.dropbox.com/scl/fi/klnwakbysn95nae85lmjz/model_config.yaml?rlkey=p1jada30bvbsihtfiw80dq7h2&st=7a8y0ewy&dl=1"
+
         if not os.path.exists(model_path):
             logging.info(f"The AI model does not exist. Starting download...")
             dialog = AnonymizeUltrasoundWidget.createWaitDialog(self, "Downloading AI Model", "The AI model does not exist. Downloading...")
@@ -1299,20 +1433,22 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             dialog.close()
             if not success:
                 return None, None, None
-    
+
         if not os.path.exists(model_config_path):
             logging.info(f"The model config file does not exist. Starting download...")
             success = self.download_model(config_url, model_config_path)
-            if not success:            
+            if not success:
                 return None, None, None
+
         # Check if the model loaded successfully
         try:
             model = torch.jit.load(model_path).to(device).eval()
         except Exception as e:
             logging.error(f"Failed to load the model: {e}")
-            logging.error("Automatic mode is disabled. Please define the mask manually.")            
+            logging.error("Automatic mode is disabled. Please define the mask manually.")
             # TODO: Disable the button of Auto mask generation?
             return None, None, None
+
         # Check if the model config loaded successfully
         try:
             with open(model_config_path, 'r') as file:
@@ -1321,12 +1457,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             input_shape = tuple(map(int, input_shape_str.strip('()').split(',')))
         except Exception as e:
             logging.error(f"Failed to load the model config: {e}")
-            logging.error("Automatic mode is disabled. Please define the mask manually.")            
+            logging.error("Automatic mode is disabled. Please define the mask manually.")
             # TODO: Disable the button of Auto mask generation?
             return None, None, None
-    
+
         return model, input_shape, device
-    
+
     def findMaskAutomatic(self, model, input_shape, device):
         """ Generate a mask automatically using the AI model """
         slicer.app.pauseRender()
@@ -1336,14 +1472,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         currentVolumeNode = masterSequenceNode.GetNthDataNode(0)
         currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
         maxVolumeArray = np.copy(currentVolumeArray)
-        
+
         for i in range(1, masterSequenceNode.GetNumberOfDataNodes()):
             currentVolumeNode = masterSequenceNode.GetNthDataNode(i)
             currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
             maxVolumeArray = np.maximum(maxVolumeArray, currentVolumeArray)
         frame_item = maxVolumeArray[0, :, :]
         slicer.app.resumeRender()
-    
+
         if len(frame_item.shape) == 3 and frame_item.shape[2] == 3:
             frame_item = cv2.cvtColor(frame_item, cv2.COLOR_RGB2GRAY)
         original_frame_size = frame_item.shape[::-1]
@@ -1354,9 +1490,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         with torch.no_grad():
             input_tensor = torch.tensor(np.expand_dims(np.expand_dims(np.array(frame_item), axis=0), axis=0)).float()
             input_tensor = input_tensor.to(device)
-            output = model(input_tensor)
+        output = model(input_tensor)
         output = (torch.softmax(output, dim=1) > 0.5).cpu().numpy()
-        mask_output = np.uint8(output[0, 1, :, :]) 
+        mask_output = np.uint8(output[0, 1, :, :])
         mask_output = cv2.resize(np.uint8(output[0, 1, :, :]), original_frame_size)
         logging.info(f"({str(mask_output.shape)}) Mask generated successfully")
 
@@ -1368,14 +1504,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         self._composeAndPushOverlay()
 
         approx_corners = self.find_four_corners(mask_output)
-        
+
         if approx_corners is None:
             logging.error("Could not find the four corners of the foreground in the mask")
         else:
             top_left, top_right, bottom_right, bottom_left = approx_corners
             logging.debug(f"Approximate corners - Top-left: {top_left}, Top-right: {top_right}, Bottom-right: {bottom_right}, Bottom-left: {bottom_left}")
         return approx_corners
-    
+
     def download_model(self, url, output_path):
         """ Download a file from a URL """
         try:
@@ -1387,13 +1523,13 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             with open(output_path, 'wb') as file:
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
-            logging.info(f"Downloaded file saved to {output_path}")
+                logging.info(f"Downloaded file saved to {output_path}")
             return True
         except requests.exceptions.RequestException as e:
             logging.error(f"Failed to download the file: {e}")
             # TODO: Disable the button of Auto mask generation?
             return False
-    
+
     def find_extreme_corners(self, points):
         # Convert points to a numpy array for easier manipulation
         points = np.array(points)
@@ -1411,7 +1547,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         num_unique_corners = len(unique_corners)
 
         # If there are 3 unique corners, then the mask is a triangle
-        epsilon = 2 
+        epsilon = 2
         if num_unique_corners == 3:
             # Define the top point (which one is higher from top-left and top-right, higher means less y)
             top_point = top_left if top_left[1] < top_right[1] else top_right
@@ -1421,13 +1557,13 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             # Adjust x coordinates
             top_left[0] -= epsilon
             top_right[0] += epsilon
-    
+
         # TODO: Is it possible?!
         if num_unique_corners < 3:
             return None
-    
+
         return np.array([top_left, top_right, bottom_left, bottom_right])
-    
+
     def find_four_corners(self, mask):
         """ Find the four corners of the foreground in the mask. """
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -1478,23 +1614,34 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             parameterNode = self.getParameterNode()
             parameterNode.ultrasoundSequenceBrowser = node
 
-    def updateMaskVolume(self):
+    def updateMaskVolume(self, three_point=False):
         """
         Update the mask volume based on the current mask landmarks. Returns a string that can displayed as status message.
         """
         parameterNode = self.getParameterNode()
 
         fanMaskMarkupsNode = parameterNode.maskMarkups
-        if fanMaskMarkupsNode.GetNumberOfControlPoints() < 4:
+        # require 3 or 4 points depending on three-point setting
+        count = fanMaskMarkupsNode.GetNumberOfControlPoints()
+        required = 3 if three_point else 4
+        if count < required:
             # Clear the overlay volume
             maskContourVolumeNode = parameterNode.overlayVolume
             if maskContourVolumeNode is not None:
                 maskContourArray = slicer.util.arrayFromVolume(maskContourVolumeNode)
                 maskContourArray.fill(0)
                 slicer.util.updateVolumeFromArray(maskContourVolumeNode, maskContourArray)
-            
-            logging.info("At least four control points are needed to define a mask")
-            return("At least four control points are needed to define a mask")
+            msg = f"At least {required} control points are needed to define a mask"
+            logging.info(msg)
+            return msg
+        elif count > required: # I've never seen this happen, but just in case
+            # Clear all the points
+            fanMaskMarkupsNode.RemoveAllControlPoints()
+            # Clear the overlay volume
+            maskContourVolumeNode = parameterNode.overlayVolume                
+            msg = f"Only {required} control points are needed to define a mask"
+            logging.info(msg)
+            return msg
 
         # Compute the center of the mask points
 
@@ -1506,51 +1653,69 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         rasToIjk = vtk.vtkMatrix4x4()
         currentVolumeNode.GetRASToIJKMatrix(rasToIjk)
 
+        # Allocate for max 4 points, but only fill what we have
         controlPoints_ijk = np.zeros((4, 4))
-        for i in range(4):
-            fanMaskMarkupsNode.GetNthControlPointPosition(i, controlPoints_ijk[i, :3])
-            # pad control point with 1 to make it homogeneous
-            controlPoints_ijk[i, 3] = 1
-            # convert to IJK
-            controlPoints_ijk[i, :] = rasToIjk.MultiplyPoint(controlPoints_ijk[i, :])
+        actual_points = required  # 3 or 4
+        
+        for i in range(actual_points):
+            markupPoint = [0, 0, 0]
+            fanMaskMarkupsNode.GetNthControlPointPosition(i, markupPoint)
+            ijkPoint = rasToIjk.MultiplyPoint([markupPoint[0], markupPoint[1], markupPoint[2], 1.0])
+            controlPoints_ijk[i] = [ijkPoint[0], ijkPoint[1], ijkPoint[2], 1.0]
 
-        centerOfGravity = np.mean(controlPoints_ijk, axis=0)
+        if three_point:
+            # For 3-point mode: assign points based on Y position
+            # Point 0 (top) -> topLeft (apex)
+            # Points 1,2 (bottom) -> bottomLeft, bottomRight
+            points_by_y = sorted(range(actual_points), key=lambda i: controlPoints_ijk[i][1])
+            
+            topLeft = controlPoints_ijk[points_by_y[0]][:3]  # highest point (smallest Y)
+            bottomLeft = controlPoints_ijk[points_by_y[1]][:3]
+            bottomRight = controlPoints_ijk[points_by_y[2]][:3]
+            
+            # No topRight in 3-point mode
+            topRight = None
+        else:
+            centerOfGravity = np.mean(controlPoints_ijk[:4], axis=0)
 
-        topLeft = np.zeros(3)
-        topRight = np.zeros(3)
-        bottomLeft = np.zeros(3)
-        bottomRight = np.zeros(3)
+            topLeft = np.zeros(3)
+            topRight = np.zeros(3)
+            bottomLeft = np.zeros(3)
+            bottomRight = np.zeros(3)
 
-        for i in range(4):
-            if controlPoints_ijk[i, 0] < centerOfGravity[0] and controlPoints_ijk[i, 1] > centerOfGravity[1]:
-                bottomLeft = controlPoints_ijk[i, :3]
-            elif controlPoints_ijk[i, 0] > centerOfGravity[0] and controlPoints_ijk[i, 1] > centerOfGravity[1]:
-                bottomRight = controlPoints_ijk[i, :3]
-            elif controlPoints_ijk[i, 0] < centerOfGravity[0] and controlPoints_ijk[i, 1] < centerOfGravity[1]:
-                topLeft = controlPoints_ijk[i, :3]
-            elif controlPoints_ijk[i, 0] > centerOfGravity[0] and controlPoints_ijk[i, 1] < centerOfGravity[1]:
-                topRight = controlPoints_ijk[i, :3]
+            for i in range(4):
+                if controlPoints_ijk[i][0] < centerOfGravity[0] and controlPoints_ijk[i][1] < centerOfGravity[1]:
+                    topLeft = controlPoints_ijk[i][:3]
+                elif controlPoints_ijk[i][0] >= centerOfGravity[0] and controlPoints_ijk[i][1] < centerOfGravity[1]:
+                    topRight = controlPoints_ijk[i][:3]
+                elif controlPoints_ijk[i][0] < centerOfGravity[0] and controlPoints_ijk[i][1] >= centerOfGravity[1]:
+                    bottomLeft = controlPoints_ijk[i][:3]
+                elif controlPoints_ijk[i][0] >= centerOfGravity[0] and controlPoints_ijk[i][1] >= centerOfGravity[1]:
+                    bottomRight = controlPoints_ijk[i][:3]
 
-        if np.array_equal(topLeft, np.zeros(3)) or np.array_equal(topRight, np.zeros(3)) or \
-                np.array_equal(bottomLeft, np.zeros(3)) or np.array_equal(bottomRight, np.zeros(3)):
-            logging.debug("Could not determine mask corners")
-            return("Mask points should be in a fan or rectangular shape with two points in the top and two points in the bottom."
-                   "\nMove points to try again.")
+            if np.array_equal(topLeft, np.zeros(3)) or np.array_equal(topRight, np.zeros(3)) or \
+                    np.array_equal(bottomLeft, np.zeros(3)) or np.array_equal(bottomRight, np.zeros(3)):
+                logging.debug("Could not determine mask corners")
+                return("Mask points should be in a fan or rectangular shape with two points in the top and two points in the bottom."
+                    "\nMove points to try again.")
 
         imageArray = slicer.util.arrayFromVolume(currentVolumeNode)  # (z, y, x, channels)
 
-        # Detect if the mask is a fan or a rectangle
-
-        maskHeight = abs(topLeft[1] - bottomLeft[1])
-        tolerancePixels = round(0.1 * maskHeight)  #todo: Make this tolerance value a setting
-        if abs(topLeft[0] - bottomLeft[0]) < tolerancePixels and abs(topRight[0] - bottomRight[0]) < tolerancePixels:
-            # Mask is a rectangle
-            mask_array = self.createRectangleMask(imageArray, topLeft, topRight, bottomLeft, bottomRight)
+        # Create mask based on mode
+        if three_point:
+            # Always create fan mask for 3-point mode
+            assert topRight is None, "topRight should be None in 3-point mode"
+            mask_array = self.createFanMask(imageArray, topLeft, None, bottomLeft, bottomRight, value=1, three_point=True)
         else:
-            # Mask is a fan
-            mask_array = self.createFanMask(imageArray, topLeft, topRight, bottomLeft, bottomRight, value=1)
-
-        # Create a copy of the mask_array to use for computing the contour of the mask
+            # Detect if the mask is a fan or a rectangle for 4-point mode
+            maskHeight = abs(topLeft[1] - bottomLeft[1])
+            tolerancePixels = round(0.1 * maskHeight)  #todo: Make this tolerance value a setting
+            if abs(topLeft[0] - bottomLeft[0]) < tolerancePixels and abs(topRight[0] - bottomRight[0]) < tolerancePixels:
+                # Mask is a rectangle
+                mask_array = self.createRectangleMask(imageArray, topLeft, topRight, bottomLeft, bottomRight)
+            else:
+                # 4-point fan
+                mask_array = self.createFanMask(imageArray, topLeft, topRight, bottomLeft, bottomRight, value=1, three_point=False)
 
         mask_contour_array = np.copy(mask_array)
         masking_kernel = np.ones((3, 3), np.uint8)
@@ -1627,87 +1792,114 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return mask_array
 
-    def createFanMask(self, imageArray, topLeft, topRight, bottomLeft, bottomRight, value=255):
-        image_size_rows = imageArray.shape[1]
-        image_size_cols = imageArray.shape[2]
-        mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
-
-        # Compute the angle of the fan mask in degrees
-
-        if abs(topLeft[0] - bottomLeft[0]) < 0.001:
-            angle1 = 90.0
-        else:
-            angle1 = np.arctan((topLeft[1] - bottomLeft[1]) / (topLeft[0] - bottomLeft[0])) * 180 / np.pi + 180.0
-        if angle1 > 180.0:
-            angle1 -= 180.0
-        if angle1 < 0.0:
-            angle1 += 180.0
-        
-        if abs(topRight[0] - bottomRight[0]) < 0.001:
-            angle2 = 90.0
-        else:
-            angle2 = np.arctan((topRight[1] - bottomRight[1]) / (topRight[0] - bottomRight[0])) * 180 / np.pi
-        if angle2 > 180.0:
-            angle2 -= 180.0
-        if angle2 < 0.0:
-            angle2 += 180.0
-        
-        # Fit lines to the top and bottom points
-        leftLineA, leftLineB, leftLineC = self.line_coefficients(topLeft, bottomLeft)
-        rightLineA, rightLineB, rightLineC = self.line_coefficients(topRight, bottomRight)
-
-        # Handle the case when the lines are parallel
-        if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
-            logging.warning("Left and right lines are parallel")
+    def createFanMask(self, imageArray, topLeft, topRight, bottomLeft, bottomRight, value=255, three_point=False):
+        if three_point:
+            image_size_rows, image_size_cols = imageArray.shape[1], imageArray.shape[2]
+            mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
+            # apex is topLeft, bottom points are bottomLeft/bottomRight
+            cx, cy = int(round(topLeft[0])), int(round(topLeft[1]))
+            # compute radius as avg of the two bottom points radii
+            r1 = math.hypot(bottomLeft[0]-topLeft[0], bottomLeft[1]-topLeft[1])
+            r2 = math.hypot(bottomRight[0]-topLeft[0], bottomRight[1]-topLeft[1])
+            radius = int(round((r1 + r2) / 2))
+            # compute angles
+            angle1 = math.degrees(math.atan2(bottomLeft[1]-topLeft[1], bottomLeft[0]-topLeft[0]))
+            angle2 = math.degrees(math.atan2(bottomRight[1]-topLeft[1], bottomRight[0]-topLeft[0]))
+            if angle2 < angle1:
+                angle1, angle2 = angle2, angle1
+            mask_array = self.draw_circle_segment(mask_array, (cx, cy), radius, angle1, angle2, value)
+            self.maskParameters = {}
+            self.maskParameters["mask_type"] = "fan"
+            self.maskParameters["angle1"] = angle1
+            self.maskParameters["angle2"] = angle2
+            self.maskParameters["center_rows_px"] = cy
+            self.maskParameters["center_cols_px"] = cx
+            self.maskParameters["radius1"] = 0 # no radius for apex
+            self.maskParameters["radius2"] = radius
+            self.maskParameters["image_size_rows"] = image_size_rows
+            self.maskParameters["image_size_cols"] = image_size_cols
             return mask_array
-        
-        # Compute intersection point of the two lines
-        det = leftLineA * rightLineB - leftLineB * rightLineA
-        if det == 0:
-            logging.warning("No intersection point found")
+        else:
+            image_size_rows = imageArray.shape[1]
+            image_size_cols = imageArray.shape[2]
+            mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
+
+            # Compute the angle of the fan mask in degrees
+
+            if abs(topLeft[0] - bottomLeft[0]) < 0.001:
+                angle1 = 90.0
+            else:
+                angle1 = np.arctan((topLeft[1] - bottomLeft[1]) / (topLeft[0] - bottomLeft[0])) * 180 / np.pi + 180.0
+            if angle1 > 180.0:
+                angle1 -= 180.0
+            if angle1 < 0.0:
+                angle1 += 180.0
+            
+            if abs(topRight[0] - bottomRight[0]) < 0.001:
+                angle2 = 90.0
+            else:
+                angle2 = np.arctan((topRight[1] - bottomRight[1]) / (topRight[0] - bottomRight[0])) * 180 / np.pi
+            if angle2 > 180.0:
+                angle2 -= 180.0
+            if angle2 < 0.0:
+                angle2 += 180.0
+            
+            # Fit lines to the top and bottom points
+            leftLineA, leftLineB, leftLineC = self.line_coefficients(topLeft, bottomLeft)
+            rightLineA, rightLineB, rightLineC = self.line_coefficients(topRight, bottomRight)
+
+            # Handle the case when the lines are parallel
+            if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
+                logging.warning("Left and right lines are parallel")
+                return mask_array
+            
+            # Compute intersection point of the two lines
+            det = leftLineA * rightLineB - leftLineB * rightLineA
+            if det == 0:
+                logging.warning("No intersection point found")
+                return mask_array
+
+            intersectionX = (leftLineB * rightLineC - rightLineB * leftLineC) / det
+            intersectionY = (rightLineA * leftLineC - leftLineA * rightLineC) / det
+
+            # Compute average distance of top points to the intersection point
+
+            topDistance = np.sqrt((topLeft[0] - intersectionX) ** 2 + (topLeft[1] - intersectionY) ** 2) + \
+                        np.sqrt((topRight[0] - intersectionX) ** 2 + (topRight[1] - intersectionY) ** 2)
+            topDistance /= 2
+
+            # Compute average distance of bottom points to the intersection point
+
+            bottomDistance = np.sqrt((bottomLeft[0] - intersectionX) ** 2 + (bottomLeft[1] - intersectionY) ** 2) + \
+                            np.sqrt((bottomRight[0] - intersectionX) ** 2 + (bottomRight[1] - intersectionY) ** 2)
+            bottomDistance /= 2
+
+            # Mask parameters
+
+            center_rows_px = round(intersectionY)
+            center_cols_px = round(intersectionX)
+            radius1 = round(topDistance)
+            radius2 = round(bottomDistance)
+
+            # Create a mask image
+
+            # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
+            mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
+            mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
+            
+            self.maskParameters = {}
+            self.maskParameters["mask_type"] = "fan"
+            self.maskParameters["angle1"] = angle1
+            self.maskParameters["angle2"] = angle2
+            self.maskParameters["center_rows_px"] = center_rows_px
+            self.maskParameters["center_cols_px"] = center_cols_px
+            self.maskParameters["radius1"] = radius1
+            self.maskParameters["radius2"] = radius2
+            self.maskParameters["image_size_rows"] = image_size_rows
+            self.maskParameters["image_size_cols"] = image_size_cols
+
+            # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})") 
             return mask_array
-
-        intersectionX = (leftLineB * rightLineC - rightLineB * leftLineC) / det
-        intersectionY = (rightLineA * leftLineC - leftLineA * rightLineC) / det
-
-        # Compute average distance of top points to the intersection point
-
-        topDistance = np.sqrt((topLeft[0] - intersectionX) ** 2 + (topLeft[1] - intersectionY) ** 2) + \
-                      np.sqrt((topRight[0] - intersectionX) ** 2 + (topRight[1] - intersectionY) ** 2)
-        topDistance /= 2
-
-        # Compute average distance of bottom points to the intersection point
-
-        bottomDistance = np.sqrt((bottomLeft[0] - intersectionX) ** 2 + (bottomLeft[1] - intersectionY) ** 2) + \
-                          np.sqrt((bottomRight[0] - intersectionX) ** 2 + (bottomRight[1] - intersectionY) ** 2)
-        bottomDistance /= 2
-
-        # Mask parameters
-
-        center_rows_px = round(intersectionY)
-        center_cols_px = round(intersectionX)
-        radius1 = round(topDistance)
-        radius2 = round(bottomDistance)
-
-        # Create a mask image
-
-        # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
-        mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
-        mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
-        
-        self.maskParameters = {}
-        self.maskParameters["mask_type"] = "fan"
-        self.maskParameters["angle1"] = angle1
-        self.maskParameters["angle2"] = angle2
-        self.maskParameters["center_rows_px"] = center_rows_px
-        self.maskParameters["center_cols_px"] = center_cols_px
-        self.maskParameters["radius1"] = radius1
-        self.maskParameters["radius2"] = radius2
-        self.maskParameters["image_size_rows"] = image_size_rows
-        self.maskParameters["image_size_cols"] = image_size_cols
-
-        # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})") 
-        return mask_array
 
     def line_coefficients(self, p1, p2):
         """
@@ -1760,9 +1952,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Combine the mask with the original image
         return cv2.bitwise_or(image, mask)
-    
-    def maskSequence(self):
-        self.updateMaskVolume()
+
+    def maskSequence(self, three_point=False):
+        self.updateMaskVolume(three_point=three_point)
 
         parameterNode = self.getParameterNode()
         currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
@@ -1818,7 +2010,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # If frame is 2-dimensional, expand to 3-dimensional
         if len(frame.shape) == 2:
             frame = np.expand_dims(frame, axis=-1)
-        
+
         if frame.shape[2] == 1:
             image = Image.fromarray(frame[:, :, 0]).convert("L")
         else:
@@ -1835,7 +2027,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         X_Y.dcm
         X is generated by hashing the original patient UID to a 10-digit number.
         Y is generated from the DICOM instance UID, but limited to 8 digits
-        
+
         :param headerDict: DICOM header data
         :returns: tuple (filename, patientId, instanceId)
         """
@@ -1849,7 +2041,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if instanceUID is None or instanceUID == "":
             logging.error("SOPInstanceUID not found in DICOM header dict")
             return ""
-        
+
         if hashPatientId:
             hash_object = hashlib.sha256()
             hash_object.update(str(patientUID).encode())
@@ -1866,7 +2058,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         instanceId = str(instanceId).zfill(8)
 
         return f"{patientId}_{instanceId}.dcm", patientId, instanceId
-    
+
     def findKeyInDict(self, d: dict, target_key: str):
         """
         Recursively search for a key in a nested dictionary.
@@ -1874,7 +2066,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """
         if target_key in d:
             return d[target_key]
-        
+
         for key, value in d.items():
             if isinstance(value, dict):
                 result = self.findKeyInDict(value, target_key)
@@ -1886,9 +2078,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         result = self.findKeyInDict(item, target_key)
                         if result != 'N/A':
                             return result
-        
+
         return 'N/A'
-    
+
     def saveDicomFile(self, dicomFilePath, new_patient_name = None, new_patient_id = None):
         parameterNode = self.getParameterNode()
 
@@ -1913,7 +2105,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         anonymized_ds = pydicom.Dataset()
         dicom_header_data = self.currentDicomHeader
         original_ds = self.currentDicomDataset
-        
+
         # Copy SequenceOfUltrasoundRegions if available
         if hasattr(original_ds, "SequenceOfUltrasoundRegions") and len(original_ds.SequenceOfUltrasoundRegions) > 0:
             anonymized_ds.SequenceOfUltrasoundRegions = original_ds.SequenceOfUltrasoundRegions
@@ -1956,7 +2148,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Ensure the data type of numpy array matches the expected pixel data type
         anonymized_ds.Modality = 'US'
-        
+
         # Compress each frame and set PixelData
         compressed_frames = []
         for frame in imageArray:
@@ -1967,11 +2159,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         anonymized_ds['PixelData'].is_undefined_length = True
         anonymized_ds.LossyImageCompression = '01'
         anonymized_ds.LossyImageCompressionMethod = 'ISO_10918_1'
-        
+
         # Copy Manufacturer if available
         if hasattr(original_ds, "Manufacturer") and original_ds.Manufacturer:
             anonymized_ds.Manufacturer = original_ds.Manufacturer
-        
+
         # Map additional DICOM tags from header data
         dicom_tag_mapping = {
             "BitsAllocated": "Bits Allocated",
@@ -2008,30 +2200,30 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             anonymized_ds.SOPInstanceUID = pydicom.uid.generate_uid()
         else:
             anonymized_ds.SOPInstanceUID = original_ds.SOPInstanceUID
-        
+
         # Generate a unique SeriesInstanceUID. This is because ultrasound machines often reuse the same SeriesInstanceUID, which can cause issues in the viewer.
         anonymized_ds.SeriesInstanceUID = pydicom.uid.generate_uid()
-        
+
         if original_ds.StudyInstanceUID is None or len(original_ds.StudyInstanceUID) < 1:
             logging.error(f"StudyInstanceUID not found. Generating new one for {dicomFilePath}. Exported data may be untraceable.")
             anonymized_ds.StudyInstanceUID = pydicom.uid.generate_uid()
         else:
             anonymized_ds.StudyInstanceUID = original_ds.StudyInstanceUID
-        
+
         if new_patient_name is not None:
             anonymized_ds.PatientName = new_patient_name
         else:
             anonymized_ds.PatientName = original_ds.PatientName
-            
+
         if new_patient_id is not None:
             anonymized_ds.PatientID = new_patient_id
         else:
             anonymized_ds.PatientID = original_ds.PatientID
-            
+
         # Make the series desciption the filename, so we can easily identify the file later in the viewer
         new_series_description = os.path.basename(dicomFilePath)
         anonymized_ds.SeriesDescription = new_series_description
-        
+
         # Add missing required attributes to satisfy DICOM conformance.
         # Type 2 elements must be present (they can be empty).
         if not hasattr(anonymized_ds, 'PatientBirthDate'):
@@ -2040,32 +2232,32 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             anonymized_ds.ReferringPhysicianName = ''
         if not hasattr(anonymized_ds, 'AccessionNumber'):
             anonymized_ds.AccessionNumber = ''
-        
+
         patientId = original_ds.PatientID
         random.seed(patientId)
         random_number = random.randint(0, 30)
-        
+
         # Get the Series Date and Content Data from the header, and add the random_number as an offset to the day, shifting the month if necessary
         study_date = original_ds.StudyDate if hasattr(original_ds, 'StudyDate') else '19000101'
         series_date = original_ds.SeriesDate if hasattr(original_ds, 'SeriesDate') else '19000101'
         content_date = original_ds.ContentDate if hasattr(original_ds, 'ContentDate') else '19000101'
-        
+
         study_date = datetime.datetime.strptime(study_date, "%Y%m%d") + datetime.timedelta(days=random_number)
         series_date = datetime.datetime.strptime(series_date, "%Y%m%d") + datetime.timedelta(days=random_number)
         content_date = datetime.datetime.strptime(content_date, "%Y%m%d") + datetime.timedelta(days=random_number)
         anonymized_ds.StudyDate = study_date.strftime("%Y%m%d")
         anonymized_ds.SeriesDate = series_date.strftime("%Y%m%d")
         anonymized_ds.ContentDate = content_date.strftime("%Y%m%d")
-        
+
         anonymized_ds.StudyTime = original_ds.StudyTime if hasattr(original_ds, 'StudyTime') else ''
         anonymized_ds.SeriesTime = original_ds.SeriesTime if hasattr(original_ds, 'SeriesTime') else ''
         anonymized_ds.ContentTime = original_ds.ContentTime if hasattr(original_ds, 'ContentTime') else ''
-        
+
         # Get the SeriesNumber from the self.dicomDf table corresponding to the current DICOM file
-        
+
         series_number = self.dicomDf.loc[self.dicomDf['InstanceUID'] == original_ds.SOPInstanceUID, 'SeriesNumber'].values
         anonymized_ds.SeriesNumber = series_number[0] if len(series_number) > 0 else '1'
-        
+
         # Conditional elements: provide empty defaults if unknown.
         if not hasattr(anonymized_ds, 'Laterality'):
             anonymized_ds.Laterality = ''
@@ -2073,7 +2265,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             anonymized_ds.InstanceNumber = 1
         if not hasattr(anonymized_ds, 'PatientOrientation'):
             anonymized_ds.PatientOrientation = ''
-        
+
         # For multi-frame images, add FrameIncrementPointer and FrameTime (Type 1C)
         if hasattr(anonymized_ds, 'NumberOfFrames') and int(anonymized_ds.NumberOfFrames) > 1:
             if hasattr(original_ds, 'FrameTime'):
@@ -2084,14 +2276,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 anonymized_ds.FrameIncrementPointer = original_ds.FrameIncrementPointer
             else:
                 anonymized_ds.FrameIncrementPointer = pydicom.tag.Tag(0x0018, 0x1063)
-        
+
         # For color images, set PlanarConfiguration (Type 1C)
         if anonymized_ds.SamplesPerPixel > 1 and not hasattr(anonymized_ds, 'PlanarConfiguration'):
             anonymized_ds.PlanarConfiguration = 0
 
         if not hasattr(anonymized_ds, "ImageType"):
             anonymized_ds.ImageType = r"ORIGINAL\PRIMARY\IMAGE"
-        
+
         # Set meta information for the DICOM file
         meta = pydicom.Dataset()
         meta.FileMetaInformationGroupLength = 0
@@ -2100,7 +2292,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         meta.MediaStorageSOPInstanceUID = anonymized_ds.SOPInstanceUID  # This should match the SOPInstanceUID of the dataset
         meta.ImplementationClassUID = pydicom.uid.generate_uid(None)  # Generate a new UID for our implementation
         meta.TransferSyntaxUID = pydicom.uid.JPEGBaseline
-        
+
         # Copy over the dataset values from ds to file_ds
         file_ds = pydicom.dataset.FileDataset(None, {}, file_meta=meta, preamble=b"\0" * 128)
         for elem in anonymized_ds:
@@ -2109,11 +2301,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # Set the is_implicit_VR and is_little_endian attributes for the encoding
         file_ds.is_implicit_VR = False
         file_ds.is_little_endian = True
-        
+
         # Save the DICOM file
         file_ds.save_as(dicomFilePath)
         logging.info(f"DICOM generated successfully: {dicomFilePath}")
-        
+
     def exportDicom(self,
                     outputDirectory,
                     outputFilename = None,
@@ -2130,11 +2322,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         :param convertToGrayscale: If True, convert RGB images to grayscale.
         :param labels: List of annotation labels to be saved in accompanying CSV file.
         :param compression: If True, use JPEG compression (minimal) in output DICOM.
-        """                
+        """
         # Record sequence information to a dictionary. This will be saved in the annotations JSON file.
         SOPInstanceUID = self.currentDicomDataset.SOPInstanceUID
         if SOPInstanceUID is None:
             SOPInstanceUID = "None"
+
         sequenceInfo = {
             'SOPInstanceUID': SOPInstanceUID,
             'GrayscaleConversion': False
@@ -2151,11 +2344,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             return None, None, None
         dicomFilePath = os.path.join(outputDirectory, outputFilename)
         self.saveDicomFile(dicomFilePath, new_patient_name, new_patient_id)
-        
+
         # Save original DICOM header to a json file. This may not be completely anonymized.
         if headersDirectory is not None:
             if not os.path.exists(headersDirectory):
-                os.makedirs(headersDirectory)   
+                os.makedirs(headersDirectory)
             dicomHeaderFileName = outputFilename.replace(".dcm", "_DICOMHeader.json")
             dicomHeaderFilePath = os.path.join(headersDirectory, dicomHeaderFileName)
             with open(dicomHeaderFilePath, 'w') as outfile:
@@ -2167,11 +2360,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 if "Patient's Birth Date" in anonymizedDicomHeader:
                     anonymizedDicomHeader["Patient's Birth Date"] = anonymizedDicomHeader["Patient's Birth Date"][:4] + "0101"
                 json.dump(anonymizedDicomHeader, outfile, default=self.convertToJsonCompatible)
-        
+
         # Add mask parameters to sequenceInfo
         for key, value in self.maskParameters.items():
             sequenceInfo[key] = value
-        
+
         # Add annotation labels to sequenceInfo
         if labels is not None:
             sequenceInfo["AnnotationLabels"] = labels
@@ -2207,6 +2400,116 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             rgb[0] = np.maximum(rgb[0], self._autoMaskRGB[0])
         if pnode.overlayVolume is not None:
             slicer.util.updateVolumeFromArray(pnode.overlayVolume, rgb)
+
+    def cacheMaskForTransducer(self, transducer_model, control_points, mask_parameters):
+        """
+        Cache the current mask configuration for a transducer.
+
+        :param transducer_model: unique identifier for the transducer
+        :param control_points: list of control point coordinates
+        :param mask_parameters: mask parameters dictionary
+        """
+        cached_info = CachedMaskInfo(transducer_model, control_points, mask_parameters)
+        self.transducerMaskCache[transducer_model] = cached_info
+
+        logging.info(f"Cached mask for transducer {transducer_model}: {cached_info.to_dict()}")
+
+    def getCachedMaskForTransducer(self, transducer_model):
+        """
+        Retrieve cached mask information for a transducer.
+
+        :param transducer_model: unique identifier for the transducer
+        :return: CachedMaskInfo object or None if not found
+        """
+        if transducer_model in self.transducerMaskCache:
+            cached_info = self.transducerMaskCache[transducer_model]
+            return cached_info
+        return None
+
+    def applyCachedMask(self, cached_info):
+        """
+        Apply a cached mask to the current image.
+
+        :param cached_info: CachedMaskInfo object
+        :return: True if successfully applied, False otherwise
+        """
+        try:
+            parameterNode = self.getParameterNode()
+            maskMarkupsNode = parameterNode.maskMarkups
+
+            if not maskMarkupsNode:
+                logging.error("Mask markups node not found")
+                return False
+
+            maskMarkupsNode.RemoveAllControlPoints()
+
+            # Add cached control points
+            for point in cached_info.control_points:
+                maskMarkupsNode.AddControlPoint(point[0], point[1], point[2])
+
+            # Update mask volume and display
+            self.updateMaskVolume()
+            self.showMaskContour()
+
+            # Update parameter node status
+            if len(cached_info.control_points) >= 4:
+                parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
+
+            logging.info(f"Applied cached mask with {len(cached_info.control_points)} control points")
+            return True
+
+        except Exception as e:
+            logging.error(f"Failed to apply cached mask: {str(e)}")
+            return False
+
+    def saveCurrentMaskToCache(self):
+        """Save the current mask configuration to the mask cache."""
+        try:
+            parameterNode = self.getParameterNode()
+            maskMarkupsNode = parameterNode.maskMarkups
+            
+            if not maskMarkupsNode or maskMarkupsNode.GetNumberOfControlPoints() < 3:
+                logging.info("Insufficient control points to cache mask")
+                return
+            
+            # Extract control points
+            control_points = []
+            for i in range(maskMarkupsNode.GetNumberOfControlPoints()):
+                point = [0, 0, 0]
+                maskMarkupsNode.GetNthControlPointPosition(i, point)
+                control_points.append(point)
+            
+            # Cache the mask
+            self.cacheMaskForTransducer(
+                self.currentTransducerModel,
+                control_points,
+                self.maskParameters
+            )
+            logging.info(f"Saved current mask to cache for transducer {self.currentTransducerModel}")
+            
+        except Exception as e:
+            logging.error(f"Failed to save current mask to cache: {str(e)}")
+
+    def clearMaskCache(self):
+        """Clear all cached masks."""
+        self.transducerMaskCache.clear()
+        logging.info("Cleared all cached masks")
+
+class CachedMaskInfo:
+    """Data structure to store cached mask information for a transducer."""
+
+    def __init__(self, transducer_model, control_points, mask_parameters):
+        self.transducer_model= transducer_model
+        self.control_points = control_points
+        self.mask_parameters = mask_parameters
+
+    def to_dict(self):
+        """Convert the cached mask information to a dictionary."""
+        return {
+            'transducer_model': self.transducer_model,
+            'control_points': self.control_points,
+            'mask_parameters': self.mask_parameters,
+        }
 
 #
 # AnonymizeUltrasoundTest

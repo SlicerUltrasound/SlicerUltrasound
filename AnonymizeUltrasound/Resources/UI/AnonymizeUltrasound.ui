@@ -166,7 +166,7 @@
            </size>
           </property>
           <property name="text">
-           <string>Load next</string>
+           <string>Load next [N]</string>
           </property>
          </widget>
         </item>
@@ -179,7 +179,7 @@
            </size>
           </property>
           <property name="text">
-           <string>Define mask</string>
+           <string>Define mask [M]</string>
           </property>
           <property name="checkable">
            <bool>true</bool>
@@ -198,7 +198,23 @@
            <string>Applies mask and exports anonymized DICOM file</string>
           </property>
           <property name="text">
-           <string>Export</string>
+           <string>Export [E]</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="exportAndNextButton">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="toolTip">
+           <string>Export and load next scan</string>
+          </property>
+          <property name="text">
+           <string>Export and Load Next [A]</string>
           </property>
          </widget>
         </item>
@@ -279,6 +295,19 @@
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_2">
       <item>
+       <widget class="QCheckBox" name="enableMaskCacheCheckBox">
+        <property name="toolTip">
+         <string>If checked, cached mask will be used for DICOM transducer.</string>
+        </property>
+        <property name="text">
+         <string>Use cached mask</string>
+        </property>
+        <property name="invertThreshold" stdset="0">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QCheckBox" name="autoMaskCheckBox">
         <property name="toolTip">
          <string>If checked, values above threshold are set to 0. If unchecked, values below are set to 0.</string>
@@ -324,6 +353,16 @@
          <string>Hash Patient ID (deidentify patient)</string>
         </property>
        </widget>
+      </item>
+      <item>
+        <widget class="QCheckBox" name="threePointFanCheckBox">
+        <property name="toolTip">
+          <string>Allow defining a fan mask with 1 top point and 2 bottom points</string>
+        </property>
+        <property name="text">
+          <string>Enable 3-Point Fan Mask [C]</string>
+        </property>
+        </widget>
       </item>
       <item>
        <layout class="QVBoxLayout" name="verticalLayout_3">

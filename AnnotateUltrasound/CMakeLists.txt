@@ -21,6 +21,7 @@ set(MODULE_ICON_PNGS
 set(MODULE_PYTHON_RESOURCES
   ${MODULE_ICON_PNGS}
   Resources/UI/${MODULE_NAME}.ui
+  Resources/annotation_labels.csv
   )
 
 #-----------------------------------------------------------------------------

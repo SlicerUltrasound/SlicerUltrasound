@@ -158,9 +158,7 @@
                                 <item>
                                     <widget class="QPushButton" name="saveAndLoadNextButton">
                                         <property name="toolTip">
-                                            <string>Saves annotations and loads next scan (Shortcut
-                                                A
-                                                key)</string>
+                                            <string>Saves annotations and loads next scan (Shortcut A key)</string>
                                         </property>
                                         <property name="text">
                                             <string>Save &amp;&amp; next [A]</string>
@@ -356,15 +354,30 @@
             <item>
                 <widget class="ctkCollapsibleButton" name="labelAnnotationsCollapsibleButton">
                     <property name="text">
-                        <string>Label annotations</string>
+                        <string>Clip Level labels</string>
                     </property>
                     <layout class="QVBoxLayout" name="verticalLayout_2">
+                        <property name="spacing">
+                            <number>0</number>
+                        </property>
+                        <property name="leftMargin">
+                            <number>0</number>
+                        </property>
+                        <property name="topMargin">
+                            <number>0</number>
+                        </property>
+                        <property name="rightMargin">
+                            <number>0</number>
+                        </property>
+                        <property name="bottomMargin">
+                            <number>0</number>
+                        </property>
                         <item>
                             <widget class="QScrollArea" name="labelsScrollArea">
                                 <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                                         <horstretch>0</horstretch>
-                                        <verstretch>1</verstretch>
+                                        <verstretch>0</verstretch>
                                     </sizepolicy>
                                 </property>
                                 <property name="widgetResizable">
@@ -379,7 +392,23 @@
                                             <height>68</height>
                                         </rect>
                                     </property>
-                                    <layout class="QVBoxLayout" name="verticalLayout_4" />
+                                    <layout class="QVBoxLayout" name="verticalLayout_4">
+                                        <property name="spacing">
+                                            <number>0</number>
+                                        </property>
+                                        <property name="leftMargin">
+                                            <number>0</number>
+                                        </property>
+                                        <property name="topMargin">
+                                            <number>0</number>
+                                        </property>
+                                        <property name="rightMargin">
+                                            <number>0</number>
+                                        </property>
+                                        <property name="bottomMargin">
+                                            <number>0</number>
+                                        </property>
+                                    </layout>
                                 </widget>
                             </widget>
                         </item>
@@ -443,16 +472,6 @@
                                     <string>Show pleura percentage</string>
                                 </property>
                             </widget>
-                        </item>
-                        <item>
-                            <widget class="QLabel" name="label_3">
-                                <property name="text">
-                                    <string>Labels CSV file: </string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <widget class="ctkPathLineEdit" name="labelsFileSelector" />
                         </item>
                     </layout>
                 </widget>
