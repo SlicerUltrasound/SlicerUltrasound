@@ -25,6 +25,7 @@ import colorsys
 import copy
 import re
 import zlib
+import time
 
 try:
     import pandas as pd
@@ -51,6 +52,7 @@ from slicer.parameterNodeWrapper import (
 from slicer import vtkMRMLScalarVolumeNode, vtkMRMLVectorVolumeNode
 from slicer import vtkMRMLNode
 
+from UserStatistics import IdleDetectionEventFilter
 #
 # AnnotateUltrasound
 #
@@ -318,6 +320,15 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.raterColorTable.cellClicked.connect(self.onRaterColorTableClicked)
             self.ui.raterColorTable.itemChanged.connect(self.onRaterColorSelectionChangedFromUser)
 
+        # --- IdleDetectionEventFilter (imported from UserStatistics) ---
+        self.idleDetectionEventFilter = IdleDetectionEventFilter()
+        self.idleDetectionEventFilter.setInterval(10000)  # 10 seconds
+        self.idleDetectionEventFilter.idleStarted.connect(self.onIdleStarted)
+        self.idleDetectionEventFilter.idleEnded.connect(self.onIdleEnded)
+        slicer.app.installEventFilter(self.idleDetectionEventFilter)
+        self.idleDetectionEventFilter.start()  # Start the idle detection
+        self.logic.setTimerCallback(self.updateAnnotationTimerLabel)
+
     def saveUserSettings(self):
         settings = qt.QSettings()
         settings.setValue('AnnotateUltrasound/ShowPleuraPercentage', self.ui.showPleuraPercentageCheckBox.checked)
@@ -542,6 +553,11 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         if not self.confirmUnsavedChanges():
             return
 
+        # --- Save timer for current scan before navigating ---
+        self.logic.saveAnnotationTime()
+        # --- Pause timer during scan loading ---
+        self.logic.pauseAnnotationTimer()   
+
         if self.logic.nextDicomDfIndex >= len(self.logic.dicomDf):
             # If we are at the last DICOM file, show a message that clears in 5 seconds and return
             slicer.util.mainWindow().statusBar().showMessage('⚠️ No more DICOM files', 5000)
@@ -697,6 +713,11 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.statusLabel.setText("Please read input directory first")
             return
 
+        # --- Save timer for current scan before navigating ---
+        self.logic.saveAnnotationTime()
+        # --- Pause timer during scan loading ---
+        self.logic.pauseAnnotationTimer()
+
         # Create a dialog to ask the user to wait while the next sequence is loaded.
         waitDialog = self.createWaitDialog("Loading previous sequence", "Loading previous sequence...")
 
@@ -821,6 +842,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         Saves current annotations to json file only
         """
         logging.info('onSaveButton (save')
+         # --- Save timer on manual save ---
+        self.logic.saveAnnotationTime()
         self.saveAnnotations()
 
     def onSaveAndLoadNextButton(self):
@@ -1129,6 +1152,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self._updateGUIFromParameterNode()
 
+        # Remove this line - timer should only start when a scan is loaded, not when entering the module
+        # self.logic.onScanLoaded()
+
     def exit(self) -> None:
         """
         Called each time the user opens a different module.
@@ -1140,10 +1166,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
             self._parameterNodeGuiTag = None
 
+        self.logic.onScanUnloaded()
+
     def onSceneStartClose(self, caller, event) -> None:
         """
         Called just before the scene is closed.
         """
+        # --- Save timer on scene close (Slicer exit) ---
+        self.logic.saveAnnotationTime()
         # Parameter node will be reset, do not use it anymore
         self.setParameterNode(None)
 
@@ -1151,6 +1181,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         Called just after the scene is closed.
         """
+        # --- Save timer on scene close (Slicer exit) ---
+        self.logic.saveAnnotationTime()
         # If this module is shown while the scene is closed then recreate a new parameter node immediately
         if self.parent.isEntered:
             self.initializeParameterNode()
@@ -1283,17 +1315,18 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.raterColorTable.clearContents()
         colors = list(self.logic.getAllRaterColors())
         self.ui.raterColorTable.setRowCount(len(colors))
-        self.ui.raterColorTable.setColumnCount(3)
-        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line"])
+        self.ui.raterColorTable.setColumnCount(4)  # Changed from 3 to 4 columns
+        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line", "Time"])  # Added "Time" column
         header = self.ui.raterColorTable.horizontalHeader()
         header.setSectionResizeMode(0, qt.QHeaderView.Stretch)
         # Columns 1 & 2: Color indicators — just enough to show the color
         header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)  # Timer column
 
         self.ui.raterColorTable.setColumnWidth(1, 30)
         self.ui.raterColorTable.setColumnWidth(2, 30)
+        self.ui.raterColorTable.setColumnWidth(3, 80)  # Timer column width
         for row, (r, (pleura_color, bline_color)) in enumerate(colors):
             rater_item = qt.QTableWidgetItem(r)
             rater_item.setFlags(qt.Qt.ItemIsUserCheckable | qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
@@ -1310,9 +1343,23 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             bline_item.setFlags(qt.Qt.ItemIsEnabled)
             bline_item.setBackground(qt.QColor(*(int(c * 255) for c in bline_color)))
 
+            # Timer item - only show for current rater
+            timer_item = qt.QTableWidgetItem()
+            timer_item.setFlags(qt.Qt.ItemIsEnabled)
+            if r == self._parameterNode.rater:
+                # Get current timer value and format it
+                seconds = self.logic.getAnnotationTimerSeconds()
+                mins = int(seconds // 60)
+                secs = int(seconds % 60)
+                timer_text = f"{mins:02d}:{secs:02d}"
+                timer_item.setText(timer_text)
+            else:
+                timer_item.setText("--:--")
+
             self.ui.raterColorTable.setItem(row, 0, rater_item)
             self.ui.raterColorTable.setItem(row, 1, pleura_item)
             self.ui.raterColorTable.setItem(row, 2, bline_item)
+            self.ui.raterColorTable.setItem(row, 3, timer_item)  # Added timer item
         self.ui.raterColorTable.blockSignals(False)
 
     def getSelectedRatersFromTable(self):
@@ -1368,6 +1415,28 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             item.setCheckState(qt.Qt.Unchecked if current_state == qt.Qt.Checked else qt.Qt.Checked)
         self.onRaterColorSelectionChangedFromUser()
 
+    def updateAnnotationTimerLabel(self, seconds):
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        text = f"{mins:02d}:{secs:02d}"
+        
+        # Update timer in rater table instead of separate label
+        if hasattr(self.ui, 'raterColorTable'):
+            table = self.ui.raterColorTable
+            for row in range(table.rowCount):
+                rater_item = table.item(row, 0)
+                if rater_item and rater_item.text() == self._parameterNode.rater:
+                    timer_item = table.item(row, 3)
+                    if timer_item:
+                        timer_item.setText(text)
+                    break
+
+    def onIdleStarted(self):
+        self.logic.onIdleStarted()
+
+    def onIdleEnded(self):
+        self.logic.onIdleEnded()
+
 
 #
 # AnnotateUltrasoundLogic
@@ -1404,6 +1473,19 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Flag to track when we're doing programmatic updates (to avoid setting unsavedChanges)
         self._isProgrammaticUpdate = False
+
+        # --- IdleDetectionEventFilter (imported from UserStatistics) ---
+        self._annotationTimer = 0.0  # seconds
+        self._timerRunning = False
+        self._timerStartTime = None
+        self._annotationQTimer = qt.QTimer()
+        self._annotationQTimer.setInterval(1000)
+        self._annotationQTimer.timeout.connect(self._onAnnotationQTimerTimeout)
+        self._timerCallback = None  # function to call on timer update
+        self._currentDicomKey = None  # unique key for current scan
+        self._periodicSaveTimer = qt.QTimer()
+        self._periodicSaveTimer.setInterval(10000)  # 10 seconds
+        self._periodicSaveTimer.timeout.connect(self._periodicSaveTimerCallback)
 
     # Static variable to track seen raters and their order
     seenRaters = []
@@ -1882,6 +1964,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Observe the ultrasound image for changes
         self.addObserver(self.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.onSequenceBrowserModified)
+
+        # --- Load timer for new scan and start it ---
+        self.loadAnnotationTime()
+        self.startAnnotationTimer()
 
         # Return the index of the loaded sequence in the dataframe
         return self.nextDicomDfIndex
@@ -2726,7 +2812,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if not inputVolume or not outputVolume:
             raise ValueError("Input or output volume is invalid")
 
-        import time
         startTime = time.time()
         logging.info('Processing started')
 
@@ -2743,6 +2828,86 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+
+    def setTimerCallback(self, callback):
+        self._timerCallback = callback
+    def _periodicSaveTimerCallback(self):
+        self.saveAnnotationTime()
+    def getCurrentDicomKey(self):
+        # Use file path as unique key for scan
+        if self.dicomDf is not None and self.nextDicomDfIndex > 0:
+            return self.dicomDf.iloc[self.nextDicomDfIndex-1]['Filepath']
+        return None
+    def startAnnotationTimer(self):
+        if not self._timerRunning:
+            self._timerRunning = True
+            self._timerStartTime = time.time()
+            self._annotationQTimer.start()
+    def _onAnnotationQTimerTimeout(self):
+        if self._timerRunning:
+            if self._timerStartTime is not None:
+                elapsed = time.time() - self._timerStartTime
+                self._annotationTimer += elapsed
+                self._timerStartTime = time.time()
+            if self._timerCallback:
+                self._timerCallback(self.getAnnotationTimerSeconds())
+            # Save periodically (every 10s)
+            if int(self.getAnnotationTimerSeconds()) % 10 == 0:
+                self.saveAnnotationTime()
+    def pauseAnnotationTimer(self):
+        if self._timerRunning and self._timerStartTime is not None:
+            elapsed = time.time() - self._timerStartTime
+            self._annotationTimer += elapsed
+        self._timerRunning = False
+        self._timerStartTime = None
+        self.saveAnnotationTime()
+        self._annotationQTimer.stop()
+    def resumeAnnotationTimer(self):
+        if not self._timerRunning:
+            self._timerStartTime = time.time()
+            self._timerRunning = True
+            self._annotationQTimer.start()
+    def stopAnnotationTimer(self):
+        self.pauseAnnotationTimer()
+        self._annotationQTimer.stop()
+    def resetAnnotationTimer(self, seconds=0.0):
+        self._annotationTimer = seconds
+        self._timerStartTime = None
+        self._timerRunning = False
+        self._annotationQTimer.stop()
+    def getAnnotationTimerSeconds(self):
+        if self._timerRunning and self._timerStartTime is not None:
+            return self._annotationTimer + (time.time() - self._timerStartTime)
+        return self._annotationTimer
+    def loadAnnotationTime(self):
+        key = self.getCurrentDicomKey()
+        rater = self.getParameterNode().rater.strip().lower()
+        if self.annotations is not None and 'annotation_time_seconds' in self.annotations:
+            self._annotationTimer = self.annotations['annotation_time_seconds']
+            return
+        self._annotationTimer = 0.0
+    def saveAnnotationTime(self):
+        key = self.getCurrentDicomKey()
+        rater = self.getParameterNode().rater.strip().lower()
+        if self.annotations is None:
+            return
+        # Update the annotation time in the annotations dictionary
+        self.annotations['annotation_time_seconds'] = self.getAnnotationTimerSeconds()
+        # Save to JSON immediately
+        if self.dicomDf is not None and self.nextDicomDfIndex > 0:
+            annotationsFilepath = self.dicomDf.iloc[self.nextDicomDfIndex-1]['AnnotationsFilepath']
+            with open(annotationsFilepath, 'w') as f:
+                json.dump(self.annotations, f)
+    # --- Call these in navigation/module events ---
+    def onScanLoaded(self):
+        self.loadAnnotationTime()
+        self.startAnnotationTimer()
+    def onScanUnloaded(self):
+        self.pauseAnnotationTimer()
+    def onIdleStarted(self):
+        self.pauseAnnotationTimer()
+    def onIdleEnded(self):
+        self.resumeAnnotationTimer()
 
 
 #
