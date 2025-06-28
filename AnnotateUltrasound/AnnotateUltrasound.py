@@ -25,6 +25,7 @@ import colorsys
 import copy
 import re
 import zlib
+import datetime
 
 try:
     import pandas as pd
@@ -122,6 +123,8 @@ class AnnotateUltrasoundParameterNode:
     unsavedChanges: bool = False
     depthGuideVisible: bool = True
     rater = ''
+    showInvalidAndDuplicate: bool = True
+    adjudicatorMode: bool = False
 
 #
 # AnnotateUltrasoundWidget
@@ -145,13 +148,23 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.updatingGUI = False
 
+        # Flag to track if this is the first load of DICOM data
+        self._isFirstDicomLoad = True
+
+        # Flag to track if the user manually expanded the rater table
+        self._userManuallySetRaterTableState = False
+        self._lastUserManualCollapsedState = None  # Track the last state the user manually set
+
+        # Flag to prevent rater table state changes during navigation
+        self._isNavigating = False
+
         # Shortcuts
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutW.setKey(qt.QKeySequence('W'))
         self.shortcutS = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutS.setKey(qt.QKeySequence('S'))
-        self.shortcutSpace = qt.QShortcut(slicer.util.mainWindow())
-        self.shortcutSpace.setKey(qt.QKeySequence('Space'))
+        self.shortcutO = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutO.setKey(qt.QKeySequence('O'))
 
         # Add shortcuts for removing lines
         self.shortcutE = qt.QShortcut(slicer.util.mainWindow())  # "E" for removing last pleura line
@@ -163,16 +176,67 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutA = qt.QShortcut(slicer.util.mainWindow())  # "A" for save and load next scan
         self.shortcutA.setKey(qt.QKeySequence('A'))
 
+        # shortcuts for adjudication actions
+        self.shortcutV = qt.QShortcut(slicer.util.mainWindow())  # "V" for validate line
+        self.shortcutV.setKey(qt.QKeySequence('V'))
+        self.shortcutI = qt.QShortcut(slicer.util.mainWindow())  # "I" for invalidate line
+        self.shortcutI.setKey(qt.QKeySequence('I'))
+        self.shortcutU = qt.QShortcut(slicer.util.mainWindow())  # "U" for duplicate line
+        self.shortcutU.setKey(qt.QKeySequence('U'))
+        self.shortcutN = qt.QShortcut(slicer.util.mainWindow())  # "N" for next unadjudicated line
+        self.shortcutN.setKey(qt.QKeySequence('N'))
+        self.shortcutP = qt.QShortcut(slicer.util.mainWindow())  # "P" for previous unadjudicated line
+        self.shortcutP.setKey(qt.QKeySequence('P'))
+        # Add Shift+N and Shift+P for next/prev visible annotation
+        self.shortcutShiftN = qt.QShortcut(slicer.util.mainWindow())  # "Shift+N" for next visible annotation
+        self.shortcutShiftN.setKey(qt.QKeySequence('Shift+N'))
+        self.shortcutShiftP = qt.QShortcut(slicer.util.mainWindow())  # "Shift+P" for previous visible annotation
+        self.shortcutShiftP.setKey(qt.QKeySequence('Shift+P'))
+
+        # Arrow keys for next/previous frame (Slicer commands)
+        self.shortcutRightArrow = qt.QShortcut(slicer.util.mainWindow())  # "Right Arrow" for next frame
+        self.shortcutRightArrow.setKey(qt.QKeySequence('Right'))
+        self.shortcutLeftArrow = qt.QShortcut(slicer.util.mainWindow())  # "Left Arrow" for previous frame
+        self.shortcutLeftArrow.setKey(qt.QKeySequence('Left'))
+
+        # Home/End keys for first/last frame
+        self.shortcutHome = qt.QShortcut(slicer.util.mainWindow())  # "Home" for first frame
+        self.shortcutHome.setKey(qt.QKeySequence('Home'))
+        self.shortcutEnd = qt.QShortcut(slicer.util.mainWindow())  # "End" for last frame
+        self.shortcutEnd.setKey(qt.QKeySequence('End'))
+
         self.raterNameDebounceTimer = qt.QTimer()
         self.raterNameDebounceTimer.setSingleShot(True)
         self.raterNameDebounceTimer.setInterval(300)  # ms of idle time before triggering
         self.raterNameDebounceTimer.timeout.connect(self.onRaterNameChanged)
 
+        # Spacebar for play/pause
+        self.shortcutSpace = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutSpace.setKey(qt.QKeySequence('Space'))
+
+        # Page Up/Page Down for previous/next clip
+        self.shortcutPageUp = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutPageUp.setKey(qt.QKeySequence('PageUp'))
+        self.shortcutPageDown = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutPageDown.setKey(qt.QKeySequence('PageDown'))
+
+        # Shift+Up/Shift+Down for previous/next clip (in case Page Up/Page Down are intercepted by Slicer)
+        self.shortcutShiftUp = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutShiftUp.setKey(qt.QKeySequence('Shift+Up'))
+        self.shortcutShiftDown = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutShiftDown.setKey(qt.QKeySequence('Shift+Down'))
+
+        self.shortcutL = qt.QShortcut(slicer.util.mainWindow())  # "L" for show/hide lines
+        self.shortcutL.setKey(qt.QKeySequence('L'))
+
+        self.shortcutR = qt.QShortcut(slicer.util.mainWindow())  # "R" for reset all adjudication
+        self.shortcutR.setKey(qt.QKeySequence('R'))
+
     def connectKeyboardShortcuts(self):
         # Connect shortcuts to respective actions
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
         self.shortcutS.connect('activated()', lambda: self.onAddLine("Bline", not self.ui.addBlineButton.isChecked()))
-        self.shortcutSpace.connect('activated()', lambda: self.ui.overlayVisibilityButton.toggle())
+        self.shortcutO.connect('activated()', lambda: self.ui.overlayVisibilityButton.toggle())
 
         # New shortcuts for removing lines
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura"))  # "E" removes the last pleura line
@@ -180,14 +244,62 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.shortcutA.connect('activated()', self.onSaveAndLoadNextButton)  # "A" to save and load next scan
 
+        # shortcuts for adjudication actions
+        self.shortcutV.connect('activated()', self.onValidateLine)  # "V" to validate selected line
+        self.shortcutI.connect('activated()', self.onInvalidateLine)  # "I" to invalidate selected line
+        self.shortcutU.connect('activated()', self.onDuplicateLine)  # "U" to mark selected line as duplicated
+        self.shortcutN.connect('activated()', self.selectNextUnadjudicatedLine)
+        self.shortcutP.connect('activated()', self.selectPreviousUnadjudicatedLine)
+        # Connect Shift+N/P to next/prev visible annotation
+        self.shortcutShiftN.connect('activated()', self.selectNextVisibleLine)
+        self.shortcutShiftP.connect('activated()', self.selectPreviousVisibleLine)
+
+        # Arrow keys for next/previous frame (Slicer commands)
+        self.shortcutRightArrow.connect('activated()', self._nextFrameInSequence)
+        self.shortcutLeftArrow.connect('activated()', self._previousFrameInSequence)
+        # Home/End keys for first/last frame
+        self.shortcutHome.connect('activated()', self._firstFrameInSequence)
+        self.shortcutEnd.connect('activated()', self._lastFrameInSequence)
+        # Spacebar for play/pause
+        self.shortcutSpace.connect('activated()', self._togglePlayPauseSequence)
+
+        # Page Up/Page Down for previous/next clip
+        self.shortcutPageUp.connect('activated()', self._onPageUpPressed)
+        self.shortcutPageDown.connect('activated()', self._onPageDownPressed)
+
+        # Shift+Up/Shift+Down for previous/next clip
+        self.shortcutShiftUp.connect('activated()', self._onPreviousClipPressed)
+        self.shortcutShiftDown.connect('activated()', self._onNextClipPressed)
+
+        self.shortcutL.connect('activated()', lambda: self.onShowHideLines(None))  # "L" to show/hide lines
+        self.shortcutR.connect('activated()', self.onResetAllAdjudication)
+
     def disconnectKeyboardShortcuts(self):
         # Disconnect shortcuts to avoid issues when the user leaves the module
         self.shortcutW.activated.disconnect()
         self.shortcutS.activated.disconnect()
-        self.shortcutSpace.activated.disconnect()
+        self.shortcutO.activated.disconnect()
         self.shortcutE.activated.disconnect()
         self.shortcutD.activated.disconnect()
         self.shortcutA.activated.disconnect()
+        self.shortcutV.activated.disconnect()
+        self.shortcutI.activated.disconnect()
+        self.shortcutU.activated.disconnect()
+        self.shortcutN.activated.disconnect()
+        self.shortcutP.activated.disconnect()
+        self.shortcutShiftN.activated.disconnect()
+        self.shortcutShiftP.activated.disconnect()
+        self.shortcutRightArrow.activated.disconnect()
+        self.shortcutLeftArrow.activated.disconnect()
+        self.shortcutHome.activated.disconnect()
+        self.shortcutEnd.activated.disconnect()
+        self.shortcutSpace.activated.disconnect()
+        self.shortcutPageUp.activated.disconnect()
+        self.shortcutPageDown.activated.disconnect()
+        self.shortcutShiftUp.activated.disconnect()
+        self.shortcutShiftDown.activated.disconnect()
+        self.shortcutL.activated.disconnect()
+        self.shortcutR.activated.disconnect()
 
     def setup(self) -> None:
         """
@@ -265,6 +377,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.clearAllLinesButton.clicked.connect(self.onClearAllLines)
         self.ui.addCurrentFrameButton.clicked.connect(self.onAddCurrentFrame)
         self.ui.removeCurrentFrameButton.clicked.connect(self.onRemoveCurrentFrame)
+        self.ui.showHideLinesButton.toggled.connect(self.onShowHideLines)
 
         # Assign icons to buttons
         self.ui.nextButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFillNext.png')))
@@ -278,6 +391,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.overlayVisibilityButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueEye.png')))
         self.ui.clearAllLinesButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFillTrash.png')))
         self.ui.skipToUnlabeledButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueFastForward.png')))
+        self.ui.showHideLinesButton.setIcon(qt.QIcon(self.resourcePath('Icons/blueEye.png')))
 
         # Frame table
         self.ui.framesTableWidget.itemSelectionChanged.connect(self.onFramesTableSelectionChanged)
@@ -310,6 +424,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
+        if self.logic and self._parameterNode:
+            self.logic.parameterNode = self._parameterNode
 
         # --- Limit raterColorTable visible rows to about 4 programmatically ---
         if hasattr(self.ui, "raterColorTable"):
@@ -317,6 +433,128 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.raterColorTable.setMaximumHeight(vh.defaultSectionSize * 4 + 2)
             self.ui.raterColorTable.cellClicked.connect(self.onRaterColorTableClicked)
             self.ui.raterColorTable.itemChanged.connect(self.onRaterColorSelectionChangedFromUser)
+
+        # --- Adjudication controls ---
+        if hasattr(self.ui, 'validateLineButton'):
+            self.ui.validateLineButton.clicked.connect(self.onValidateLine)
+            self.ui.validateLineButton.setToolTip("Validate the selected line (V)")
+        if hasattr(self.ui, 'invalidateLineButton'):
+            self.ui.invalidateLineButton.clicked.connect(self.onInvalidateLine)
+            self.ui.invalidateLineButton.setToolTip("Invalidate the selected line (I)")
+        if hasattr(self.ui, 'duplicateLineButton'):
+            self.ui.duplicateLineButton.clicked.connect(self.onDuplicateLine)
+            self.ui.duplicateLineButton.setToolTip("Duplicate the selected line (D)")
+        if hasattr(self.ui, 'validateAllButton'):
+            self.ui.validateAllButton.clicked.connect(self.onValidateAllUnadjudicated)
+        if hasattr(self.ui, 'invalidateAllUnadjudicatedButton'):
+            self.ui.invalidateAllUnadjudicatedButton.clicked.connect(self.onInvalidateAllUnadjudicated)
+        if hasattr(self.ui, 'duplicateAllUnadjudicatedButton'):
+            self.ui.duplicateAllUnadjudicatedButton.clicked.connect(self.onDuplicateAllUnadjudicated)
+        if hasattr(self.ui, 'resetAllAdjudicationButton'):
+            self.ui.resetAllAdjudicationButton.clicked.connect(self.onResetAllAdjudication)
+        if hasattr(self.ui, 'showInvalidOrDuplicateCheckBox'):
+            self.ui.showInvalidOrDuplicateCheckBox.toggled.connect(self.onShowInvalidOrDuplicateToggled)
+            self.ui.showInvalidOrDuplicateCheckBox.setChecked(True)  # Set default to checked
+        if hasattr(self.ui, 'adjudicatorModeCheckBox'):
+            self.ui.adjudicatorModeCheckBox.toggled.connect(self.onAdjudicatorModeCheckBoxToggled)
+        # Set initial state of adjudication controls
+        self.onAdjudicatorModeToggled(self.ui.adjudicatorModeCheckBox.isChecked())
+
+        # Add observer to selection node to enforce only visible nodes can be selected
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        if not hasattr(self, 'selectionObserverTag') or self.selectionObserverTag is None:
+            self.selectionObserverTag = selectionNode.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onSelectionChanged)
+
+        self.setupClickObserverOnRedView()
+
+        if hasattr(self.ui, 'nextUnadjudicatedButton'):
+            self.ui.nextUnadjudicatedButton.clicked.connect(self.selectNextUnadjudicatedLine)
+        if hasattr(self.ui, 'prevUnadjudicatedButton'):
+            self.ui.prevUnadjudicatedButton.clicked.connect(self.selectPreviousUnadjudicatedLine)
+        if hasattr(self.ui, 'nextVisibleLineButton'):
+            self.ui.nextVisibleLineButton.clicked.connect(self.selectNextVisibleLine)
+        if hasattr(self.ui, 'prevVisibleLineButton'):
+            self.ui.prevVisibleLineButton.clicked.connect(self.selectPreviousVisibleLine)
+
+        # Connect rater table collapsed signal to detect user manual changes
+        if hasattr(self.ui, 'raterColorsCollapsibleButton'):
+            self.ui.raterColorsCollapsibleButton.connect('collapsedChanged(bool)', self.onRaterColorTableCollapsedChanged)
+
+    # These functions are used to handle clicks on the red view when selecting lines by clicking on the red view
+    # near the line to be selected.
+    # --- Click observer on red view ---
+    def setupClickObserverOnRedView(self):
+        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+        renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
+        self._clickObserverTag = renderWindowInteractor.AddObserver(vtk.vtkCommand.LeftButtonPressEvent, self.onRedViewClick)
+
+    # --- Distance point to segment ---
+    def distancePointToSegment(self, p, a, b):
+        p = np.array(p)
+        a = np.array(a)
+        b = np.array(b)
+        ab = b - a
+        if np.allclose(ab, 0):
+            return np.linalg.norm(p - a)
+        t = np.dot(p - a, ab) / np.dot(ab, ab)
+        t = np.clip(t, 0, 1)
+        closest = a + t * ab
+        return np.linalg.norm(p - closest)
+
+    # --- On red view click ---
+    # This function is called when the user clicks on the red view.
+    # It finds the closest visible markup line node (to any segment) and selects it.
+    # If the closest node is within 3 mm of the click, it selects the node.
+    # If the closest node is more than 3 mm away, it does nothing.
+    def onRedViewClick(self, caller, event):
+        x, y = caller.GetEventPosition()
+        # Get the slice widget and node
+        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+        sliceNode = sliceWidget.mrmlSliceNode()
+        xyToRas = sliceNode.GetXYToRAS()
+        xy = [x, y, 0, 1]
+        ras = [0, 0, 0, 1]
+        xyToRas.MultiplyPoint(xy, ras)
+        ras = ras[:3]
+        # Find the closest visible markup line node (to any segment)
+        minDist = float('inf')
+        closestNode = None
+        threshold = 3.0  # mm
+        for node in slicer.util.getNodesByClass('vtkMRMLMarkupsLineNode'):
+            displayNode = node.GetDisplayNode()
+            nodeRater = node.GetAttribute('rater')
+            if not displayNode or not displayNode.GetVisibility():
+                continue
+            nPoints = node.GetNumberOfControlPoints()
+            for i in range(nPoints - 1):
+                pt1 = [0, 0, 0]
+                pt2 = [0, 0, 0]
+                node.GetNthControlPointPosition(i, pt1)
+                node.GetNthControlPointPosition(i + 1, pt2)
+                dist = self.distancePointToSegment(ras, pt1, pt2)
+                if dist < minDist:
+                    minDist = dist
+                    closestNode = node
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        if closestNode and minDist < threshold:
+            selectionNode.SetActivePlaceNodeID(closestNode.GetID())
+        else:
+            # Clear selection if clicking away from any line
+            selectionNode.SetActivePlaceNodeID("")
+        # Update line markups to refresh visual appearance (highlighting, etc.)
+        self.logic.updateLineMarkups()
+
+    def onSelectionChanged(self, caller, event):
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectedNodeID = selectionNode.GetActivePlaceNodeID()
+        if selectedNodeID:
+            node = slicer.mrmlScene.GetNodeByID(selectedNodeID)
+            if node and node.GetClassName() == "vtkMRMLMarkupsLineNode":
+                displayNode = node.GetDisplayNode()
+                if not displayNode or not displayNode.GetVisibility():
+                    selectionNode.SetActivePlaceNodeID("")  # Clear selection
+        # Update line markups to refresh visual appearance (highlighting, etc.)
+        self.logic.updateLineMarkups()
 
     def saveUserSettings(self):
         settings = qt.QSettings()
@@ -386,6 +624,15 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 self._parameterNode.pleuraPercentage = 0.0
         finally:
             self.logic._isProgrammaticUpdate = False
+        # Clear selection if selected node is not visible
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectedNodeID = selectionNode.GetActivePlaceNodeID()
+        if selectedNodeID:
+            node = slicer.mrmlScene.GetNodeByID(selectedNodeID)
+            if node and node.GetClassName() == "vtkMRMLMarkupsLineNode":
+                displayNode = node.GetDisplayNode()
+                if not displayNode or not displayNode.GetVisibility():
+                    selectionNode.SetActivePlaceNodeID("")  # Clear selection
         if setUnsavedChanges:
             self._parameterNode.unsavedChanges = True
 
@@ -421,18 +668,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         ensuring the current rater is included even if not present in any frame annotations.
         Sets self.seenRaters to a sorted list of rater names.
         """
-        raters_seen = {
-            line.get("rater")
-            for frame in self.logic.annotations.get("frame_annotations", [])
-            for key in ["pleura_lines", "b_lines"]
-            for line in frame.get(key, [])
-            if line.get("rater")
-        }
-        if self._parameterNode.rater and self._parameterNode.rater in raters_seen:
-            raters_seen.discard(self._parameterNode.rater)
-        # always put current rater at the top
-        raters_seen = [self._parameterNode.rater] + sorted(raters_seen)
-        self.seenRaters = raters_seen
+        # Use the Logic's centralized method to extract and set up raters
+        self.logic.extractAndSetupRaters()
+        # Copy the seenRaters from logic to widget for UI purposes
+        self.seenRaters = self.logic.seenRaters.copy()
 
     def onReadInputButton(self):
         """
@@ -475,7 +714,16 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.progressBar.maximum = numFilesFound
             self.ui.progressBar.value = 0
             waitDialog = self.createWaitDialog("Loading first sequence", "Loading first sequence...")
+
+            # Set navigation flag to prevent rater table state changes
+            self._isNavigating = True
+
             self.currentDicomDfIndex = self.logic.loadNextSequence()
+
+            # Add observer for the new sequence browser node
+            if self.logic.sequenceBrowserNode:
+                self.addObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.onSequenceBrowserModified)
+
             # Update self.ui.currentFileLabel using the DICOM file name
             currentDicomFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['Filepath']
             currentDicomFilename = os.path.basename(currentDicomFilepath)
@@ -501,12 +749,22 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.progressBar.value = self.currentDicomDfIndex
 
             self.ui.overlayVisibilityButton.setChecked(True)
+
+            # Mark that this is no longer the first DICOM load
+            self._isFirstDicomLoad = False
         else:
             statusText = 'Could not find any files to load in input directory!'
             slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
             self.ui.statusLabel.setText(statusText)
 
         self._updateGUIFromParameterNode()
+
+        # Clear navigation flag after all operations are complete
+        self._isNavigating = False
+
+        # Set focus to red view after initial load to ensure keyboard shortcuts work
+        if numFilesFound > 0:
+            self._setRedViewFocus()
 
     def confirmUnsavedChanges(self):
         """
@@ -551,10 +809,18 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         waitDialog = self.createWaitDialog("Loading next sequence", "Loading next sequence...")
 
+        # Set navigation flag to prevent rater table state changes
+        self._isNavigating = True
+
         # Saving settings
         showDepthGuide = self._parameterNode.depthGuideVisible
 
         currentDicomDfIndex = self.logic.loadNextSequence()
+
+        # Add observer for the new sequence browser node
+        if self.logic.sequenceBrowserNode:
+            self.addObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.onSequenceBrowserModified)
+
         # After loading the next sequence, extract seen raters and update checkboxes
         self.extractSeenRaters()
         self.selectedRaters = set(self.seenRaters)
@@ -596,6 +862,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.progressBar.value = currentDicomDfIndex
 
         self.ui.overlayVisibilityButton.setChecked(True)
+
+        self.logic.loadAnnotations(self.logic.nextDicomDfIndex - 1, self.ui.adjudicatorModeCheckBox.isChecked())
+
+        # Clear navigation flag after all operations are complete
+        self._isNavigating = False
+
+        # Set focus to red view after navigation to ensure keyboard shortcuts work
+        self._setRedViewFocus()
 
     def updateGuiFromAnnotations(self):
         # Check checkboxes in the labels scroll area if the labels are present in the logic.annotations
@@ -666,7 +940,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 bline_item.setData(qt.Qt.DisplayRole, bline_count)
                 self.ui.framesTableWidget.setItem(row, 2, bline_item)
 
-        # reenable sorting afer populating the table
+        # reenable sorting after populating the table
         self.ui.framesTableWidget.setSortingEnabled(True)
 
         # Restore previous sort state
@@ -699,6 +973,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Create a dialog to ask the user to wait while the next sequence is loaded.
         waitDialog = self.createWaitDialog("Loading previous sequence", "Loading previous sequence...")
+
+        # Set navigation flag to prevent rater table state changes
+        self._isNavigating = True
 
         # Saving settings
         showDepthGuide = self._parameterNode.depthGuideVisible
@@ -738,90 +1015,88 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.ui.progressBar.value = currentDicomDfIndex
 
+        self.logic.loadPreviousSequence()
+        self.logic.loadAnnotations(self.logic.nextDicomDfIndex - 1, self.ui.adjudicatorModeCheckBox.isChecked())
+
+        # Clear navigation flag after all operations are complete
+        self._isNavigating = False
+
+        # Set focus to red view after navigation to ensure keyboard shortcuts work
+        self._setRedViewFocus()
+
     def saveAnnotations(self):
         """
-        Saves current annotations to rater-specific json file.
+        Save annotations depending on adjudicator mode.
+        Returns True if save was successful, False otherwise.
         """
-        # Add annotation line control points to the annotations dictionary and save it to file
-        if self.logic.annotations is None:
-            logging.error("saveAnnotations: No annotations loaded")
-            return
+        try:
+            adjudicator_mode = hasattr(self.ui, 'adjudicatorModeCheckBox') and self.ui.adjudicatorModeCheckBox.isChecked()
+            rater = self._parameterNode.rater.strip().lower()
+            base_file_path = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['Filepath']
+            base_prefix = os.path.splitext(base_file_path)[0]
+            adjudication_file = f"{base_prefix}.adjudication.json"
 
-        # Check if rater name is set and not empty; if not, prompt user to enter one
-        rater = self._parameterNode.rater
-        if not rater:
-            qt.QMessageBox.warning(
-                slicer.util.mainWindow(),
-                "Missing Rater Name",
-                "Rater name is not set. Please enter your rater name before saving."
-            )
-            self.ui.statusLabel.setText("⚠️ Please enter a rater name before saving.")
-            return
+            if adjudicator_mode:
+                # Save all lines (combined, no filtering) to adjudication file
+                save_data = self.logic.convert_ras_to_lps(self.logic.annotations.get("frame_annotations", []))
+                with open(adjudication_file, 'w') as f:
+                    json.dump(save_data, f)
+                logging.info(f"Annotations saved to {adjudication_file}")
+                status_message = f"✅ Adjudication annotations saved successfully to {os.path.basename(adjudication_file)}"
+                slicer.util.showStatusMessage(status_message, 3000)
+                self.ui.statusLabel.setText(status_message)
+            else:
+                # Save only current rater's lines as before
+                filtered_frames = []
+                for frame in self.logic.annotations.get("frame_annotations", []):
+                    pleura = [line for line in frame.get("pleura_lines", []) if line.get("rater", "").strip().lower() == rater]
+                    b_lines = [line for line in frame.get("b_lines", []) if line.get("rater", "").strip().lower() == rater]
+                    if pleura or b_lines:
+                        filtered_frames.append({
+                            "frame_number": frame["frame_number"],
+                            "coordinate_space": "RAS",
+                            "pleura_lines": pleura,
+                            "b_lines": b_lines
+                        })
+                if filtered_frames or self._parameterNode.unsavedChanges:
+                    save_data = self.logic.convert_ras_to_lps(filtered_frames)
+                    annotationsFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['AnnotationsFilepath']
+                    base_path, ext = os.path.splitext(annotationsFilepath)
+                    if not base_path.endswith(f".{rater}"):
+                        annotationsFilepath = f"{base_path}.{rater}.json"
+                        self.logic.dicomDf.at[self.logic.nextDicomDfIndex - 1, 'AnnotationsFilepath'] = annotationsFilepath
+                    with open(annotationsFilepath, 'w') as f:
+                        json.dump(save_data, f)
+                    logging.info(f"Annotations saved to {annotationsFilepath}")
+                    status_message = f"✅ Annotations saved successfully to {os.path.basename(annotationsFilepath)}"
+                    slicer.util.showStatusMessage(status_message, 3000)
+                    self.ui.statusLabel.setText(status_message)
+                else:
+                    # No annotations to save
+                    status_message = "ℹ️ No annotations to save"
+                    slicer.util.showStatusMessage(status_message, 2000)
+                    self.ui.statusLabel.setText(status_message)
 
-        waitDialog = self.createWaitDialog("Saving annotations", "Saving annotations...")
+            # Clear unsaved changes flag on successful save
+            self._parameterNode.unsavedChanges = False
+            return True
 
-        # Check if any labels are checked
-        annotationLabels = []
-        for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())):
-            widget = self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget()
-            if not isinstance(widget, qt.QGroupBox):
-                continue
-            # Find all checkboxes in groupBox
-            for j in reversed(range(widget.layout().count())):
-                checkBox = widget.layout().itemAt(j).widget()
-                if isinstance(checkBox, qt.QCheckBox) and checkBox.isChecked():
-                    # Use original category/label for saving
-                    origCategory = checkBox.property('originalCategory')
-                    origLabel = checkBox.property('originalLabel')
-                    annotationLabels.append(f"{origCategory}/{origLabel}")
-        self.logic.annotations['labels'] = annotationLabels
-
-        # Filter annotations to include only current rater's lines
-        rater = self._parameterNode.rater.strip().lower()
-        filtered_frames = []
-        for frame in self.logic.annotations.get("frame_annotations", []):
-            pleura = [line for line in frame.get("pleura_lines", []) if line.get("rater", "").strip().lower() == rater]
-            b_lines = [line for line in frame.get("b_lines", []) if line.get("rater", "").strip().lower() == rater]
-            if pleura or b_lines:
-                filtered_frames.append({
-                    "frame_number": frame["frame_number"],
-                    "coordinate_space": "RAS",
-                    "pleura_lines": pleura,
-                    "b_lines": b_lines
-                })
-
-        # if we have frames from the current rater or we deleted all lines so unsavedChanges is true
-        if filtered_frames or self._parameterNode.unsavedChanges:
-            # Convert RAS to LPS before saving
-            save_data = self.logic.convert_ras_to_lps(filtered_frames)
-
-            # Save annotations to file (use rater-specific filename from dicomDf)
-            annotationsFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['AnnotationsFilepath']
-            base_path, ext = os.path.splitext(annotationsFilepath)
-            if not base_path.endswith(f".{rater}"):
-                annotationsFilepath = f"{base_path}.{rater}.json"
-                self.logic.dicomDf.at[self.logic.nextDicomDfIndex - 1, 'AnnotationsFilepath'] = annotationsFilepath
-
-            with open(annotationsFilepath, 'w') as f:
-                json.dump(save_data, f)
-
-        waitDialog.close()
-
-        self._parameterNode.unsavedChanges = False
-
-        if filtered_frames:
-            logging.info(f"Annotations saved to {annotationsFilepath}")
-        else:
-            logging.info(f"No annotations to save for current rater")
-
-        return True
+        except Exception as e:
+            error_message = f"❌ Failed to save annotations: {str(e)}"
+            logging.error(error_message)
+            slicer.util.showStatusMessage(error_message, 5000)
+            self.ui.statusLabel.setText(error_message)
+            return False
 
     def onSaveButton(self):
         """
         Saves current annotations to json file only
         """
-        logging.info('onSaveButton (save')
-        self.saveAnnotations()
+        logging.info('onSaveButton (save)')
+        success = self.saveAnnotations()
+        if not success:
+            # Error message already shown by saveAnnotations
+            return
 
     def onSaveAndLoadNextButton(self):
         """
@@ -829,8 +1104,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         logging.info('onSaveAndLoadNextButton (save and load next scan)')
 
-        if self.saveAnnotations():
+        success = self.saveAnnotations()
+        if success:
             self.onNextButton()
+        else:
+            # Error message already shown by saveAnnotations, don't proceed to next
+            return
 
     def onAddLine(self, lineType, checked):
         logging.info(f"onAddLine -- lineType: {lineType}, checked: {checked}")
@@ -1037,18 +1316,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         if self.logic.dicomDf is None:
             return None
-
         for idx in range(self.logic.nextDicomDfIndex, len(self.logic.dicomDf)):
-            annotationsFilepath = self.logic.dicomDf.iloc[idx]['AnnotationsFilepath']
-            try:
-                with open(annotationsFilepath, 'r') as f:
-                    annotations = json.load(f)
-                    # Check if frame annotations exist and are empty
-                    if 'frame_annotations' not in annotations or not annotations['frame_annotations']:
-                        return idx
-            except Exception as e:
-                logging.error(f"Error reading annotations file {annotationsFilepath}: {e}")
-
+            self.logic.nextDicomDfIndex = idx
+            self.logic.loadAnnotations(idx, self.ui.adjudicatorModeCheckBox.isChecked())
+            annotations = self.logic.annotations
+            if 'frame_annotations' not in annotations or not annotations['frame_annotations']:
+                return idx
         return None
 
     def overlayVisibilityToggled(self, checked):
@@ -1127,6 +1400,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         sliceAnnotations.sliceViewAnnotationsEnabled=False
         sliceAnnotations.updateSliceViewFromGUI()
 
+        # Add sequence browser observer if sequence browser exists
+        if self.logic and self.logic.sequenceBrowserNode:
+            self.addObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.onSequenceBrowserModified)
+
         self._updateGUIFromParameterNode()
 
     def exit(self) -> None:
@@ -1163,6 +1440,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # so that when the scene is saved and reloaded, these settings are restored.
 
         self.setParameterNode(self.logic.getParameterNode())
+        if self.logic and self._parameterNode:
+            self.logic.parameterNode = self._parameterNode
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
         if not self._parameterNode.inputVolume:
@@ -1193,12 +1472,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
             self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._updateGUIFromParameterNode)
         self._parameterNode = inputParameterNode
+        if self.logic and self._parameterNode:
+            self.logic.parameterNode = self._parameterNode
+
         if self._parameterNode:
             # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
             # ui element that needs connection.
             self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
             self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._updateGUIFromParameterNode)
-            self._updateGUIFromParameterNode()
 
     def _updateGUIFromParameterNode(self, caller=None, event=None) -> None:
         if self.updatingGUI:
@@ -1233,8 +1514,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
             # Update corner annotation if _parameterNode.pleuraPercentage is a non-negative number
             # if we are using multiple raters and have selected more than one, don't show overlay volume
+            adjudicator_mode = getattr(self._parameterNode, 'adjudicatorMode', False)
             selectedRaters = self.logic.getSelectedRaters()
-            if selectedRaters is not None and len(selectedRaters) == 1:
+            if adjudicator_mode or (selectedRaters is not None and len(selectedRaters) == 1):
                 if self.ui.showPleuraPercentageCheckBox.checked and self._parameterNode.pleuraPercentage >= 0:
                     view=slicer.app.layoutManager().sliceWidget("Red").sliceView()
                     view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.UpperLeft,f"B-line/Pleura = {self._parameterNode.pleuraPercentage:.1f} %")
@@ -1260,21 +1542,63 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 self.ui.workflowCollapsibleButton.collapsed = True
                 self.ui.sectorAnnotationsCollapsibleButton.collapsed = True
                 self.ui.labelAnnotationsCollapsibleButton.collapsed = True
+                # Collapse rater color table when no DICOM is loaded (no raters to display)
+                if hasattr(self.ui, 'raterColorsCollapsibleButton'):
+                    self._setRaterColorTableCollapsedState(True)
             else:
                 self.ui.inputsCollapsibleButton.collapsed = True
                 self.ui.workflowCollapsibleButton.collapsed = False
-                self.ui.sectorAnnotationsCollapsibleButton.collapsed = False
+                # Only expand sector annotations if not in adjudicator mode
+                if not self._parameterNode.adjudicatorMode:
+                    self.ui.sectorAnnotationsCollapsibleButton.collapsed = False
+                else:
+                    self.ui.sectorAnnotationsCollapsibleButton.collapsed = True
                 self.ui.labelAnnotationsCollapsibleButton.collapsed = False
+
+                # Handle rater table collapse/expand logic
+                if hasattr(self.ui, 'raterColorsCollapsibleButton'):
+                    # During navigation, allow content updates but prevent collapse/expand state changes
+                    if self._isNavigating:
+                        # Skip collapse/expand logic during navigation, but still populate content
+                        pass
+                    else:
+                        # If user manually set state, always restore it
+                        if self._userManuallySetRaterTableState:
+                            if self._lastUserManualCollapsedState is not None:
+                                self._setRaterColorTableCollapsedState(self._lastUserManualCollapsedState)
+                        else:
+                            should_collapse = self._parameterNode.adjudicatorMode
+                            self._setRaterColorTableCollapsedState(should_collapse)
 
             # Save rater name to settings
             settings = qt.QSettings()
             settings.setValue('AnnotateUltrasound/Rater', self.ui.raterName.text.strip())
 
-            # Only update raterColorTable if present;
-            if hasattr(self.ui, 'raterColorTable'):
+            # Only update raterColorTable if present and DICOM is loaded
+            if hasattr(self.ui, 'raterColorTable') and self._parameterNode.dfLoaded:
                 self.populateRaterColorTable()
         finally:
             self.updatingGUI = False
+
+    def _setRaterColorTableCollapsedState(self, collapsed):
+        """
+        Set the collapsed state of the rater color table.
+
+        Args:
+            collapsed: True to collapse, False to expand
+        """
+        if not hasattr(self.ui, 'raterColorsCollapsibleButton'):
+            return
+
+        self.ui.raterColorsCollapsibleButton.collapsed = collapsed
+
+    def onRaterColorTableCollapsedChanged(self, collapsed):
+        """
+        Called when the user manually expands/collapses the rater table.
+        Sets the flag to respect user's manual state.
+        """
+        self._userManuallySetRaterTableState = True
+        self._lastUserManualCollapsedState = collapsed
 
     def populateRaterColorTable(self):
         if not hasattr(self.ui, 'raterColorTable'):
@@ -1282,7 +1606,11 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.raterColorTable.blockSignals(True)
         self.ui.raterColorTable.clearContents()
         colors = list(self.logic.getAllRaterColors())
-        self.ui.raterColorTable.setRowCount(len(colors))
+
+        # Filter out __selected_node__, __adjudicated_node__ before setting row count, we don't want to show it in the UI
+        visible_colors = [(r, (pleura_color, bline_color)) for r, (pleura_color, bline_color) in colors if r != "__selected_node__" and r != "__adjudicated_node__"]
+
+        self.ui.raterColorTable.setRowCount(len(visible_colors))
         self.ui.raterColorTable.setColumnCount(3)
         self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line"])
         header = self.ui.raterColorTable.horizontalHeader()
@@ -1294,7 +1622,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.ui.raterColorTable.setColumnWidth(1, 30)
         self.ui.raterColorTable.setColumnWidth(2, 30)
-        for row, (r, (pleura_color, bline_color)) in enumerate(colors):
+        for row, (r, (pleura_color, bline_color)) in enumerate(visible_colors):
             rater_item = qt.QTableWidgetItem(r)
             rater_item.setFlags(qt.Qt.ItemIsUserCheckable | qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
             if not hasattr(self, "selectedRaters") or r in self.selectedRaters:
@@ -1332,7 +1660,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         if not hasattr(self.ui, 'raterColorTable'):
             return
-
         table = self.ui.raterColorTable
         table.blockSignals(True)
         try:
@@ -1368,6 +1695,440 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             item.setCheckState(qt.Qt.Unchecked if current_state == qt.Qt.Checked else qt.Qt.Checked)
         self.onRaterColorSelectionChangedFromUser()
 
+    def onValidateLine(self):
+        self._setLineValidationStatus("validated", "validate", "validated")
+
+    def onInvalidateLine(self):
+        self._setLineValidationStatus("invalidated", "invalidate", "invalidated")
+
+    def onDuplicateLine(self):
+        self._setLineValidationStatus("duplicated", "mark as duplicated", "marked as duplicated")
+    def _setLineValidationStatus(self, status, action_verb, status_description):
+        """
+        Set the validation status of the selected line.
+
+        Args:
+            status: The validation status to set ("validated", "invalidated", or "duplicated")
+            action_verb: The verb for the error message (e.g., "validate", "invalidate")
+            status_description: The description for the success message (e.g., "validated", "invalidated")
+        """
+        # Get the selected markup node
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectedNodeID = selectionNode.GetActivePlaceNodeID()
+        if not selectedNodeID:
+            slicer.util.showStatusMessage(f"No line selected to {action_verb}.", 3000)
+            return
+        markupNode = slicer.mrmlScene.GetNodeByID(selectedNodeID)
+        if not markupNode or not markupNode.GetClassName() == "vtkMRMLMarkupsLineNode":
+            slicer.util.showStatusMessage("Selected node is not a line.", 3000)
+            return
+        # Only allow validation if node is visible
+        displayNode = markupNode.GetDisplayNode()
+        if not displayNode or not displayNode.GetVisibility():
+            slicer.util.showStatusMessage("Cannot adjudicate: selected line is not visible.", 3000)
+            return
+        # Get current rater (adjudicator)
+        adjudicator = self.getCurrentRater()
+        validation = {
+            "status": status,
+            "adjudicator": adjudicator,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        markupNode.SetAttribute("validation", json.dumps(validation))
+        # Set opacity based on status
+        if status == "validated":
+            displayNode.SetOpacity(1.0)
+        else:
+            displayNode.SetOpacity(0.3)
+        # Also update the corresponding annotation line
+        self._updateAnnotationLineValidation(markupNode, validation)
+        # Reset cache to force immediate color updates when validation status changes
+        self.logic._resetMarkupCache()
+        self.logic.updateCurrentFrame()
+        slicer.util.showStatusMessage(f"Line {status_description}.", 3000)
+
+    def onValidateAllUnadjudicated(self):
+        self._setAllUnadjudicatedLinesStatus("validated", "Validated", 1.0)
+
+    def onInvalidateAllUnadjudicated(self):
+        self._setAllUnadjudicatedLinesStatus("invalidated", "Invalidated", 0.3)
+
+    def onDuplicateAllUnadjudicated(self):
+        self._setAllUnadjudicatedLinesStatus("duplicated", "Duplicated", 0.3)
+
+    def _setAllUnadjudicatedLinesStatus(self, status, status_past_tense, opacity):
+        """
+        Set the validation status of all unadjudicated lines.
+
+        Args:
+            status: The validation status to set ("validated", "invalidated", or "duplicated")
+            status_past_tense: The past tense form for the success message (e.g., "Validated", "Invalidated")
+            opacity: The opacity to set for the lines (1.0 for validated, 0.3 for others)
+        """
+        # Get current rater (adjudicator)
+        adjudicator = self.getCurrentRater()
+        count = 0
+
+        # Set programmatic update flag to prevent unsavedChanges from being set
+        self.logic._isProgrammaticUpdate = True
+
+        try:
+            for nodeIndex in range(slicer.mrmlScene.GetNumberOfNodesByClass("vtkMRMLMarkupsLineNode")):
+                markupNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, "vtkMRMLMarkupsLineNode")
+                displayNode = markupNode.GetDisplayNode()
+                if not displayNode or not displayNode.GetVisibility():
+                    continue # Skip if not visible
+                validation_json = markupNode.GetAttribute("validation")
+                current_status = None
+                if validation_json:
+                    try:
+                        validation = json.loads(validation_json)
+                        current_status = validation.get("status", None)
+                    except Exception:
+                        current_status = None
+                if not current_status or current_status == "unadjudicated":
+                    validation = {
+                        "status": status,
+                        "adjudicator": adjudicator,
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }
+                    markupNode.SetAttribute("validation", json.dumps(validation))
+
+                    # Update the annotation data for this line
+                    self._updateAnnotationLineValidation(markupNode, validation)
+
+                    count += 1
+
+            # Reset cache to force immediate color updates when validation status changes
+            self.logic._resetMarkupCache()
+
+            # Update the visual appearance of all lines
+            self.logic.updateLineMarkups()
+
+            # Update the current frame to save the changes to annotations
+            self.logic.updateCurrentFrame()
+
+        finally:
+            # Reset programmatic update flag
+            self.logic._isProgrammaticUpdate = False
+
+        # Set unsavedChanges since this is a user action that modifies validation status
+        self._parameterNode.unsavedChanges = True
+
+        slicer.util.showStatusMessage(f"{status_past_tense} {count} unadjudicated lines.", 3000)
+
+    def onShowInvalidOrDuplicateToggled(self, checked):
+        if self._parameterNode:
+            self._parameterNode.showInvalidAndDuplicate = checked
+        for nodeIndex in range(slicer.mrmlScene.GetNumberOfNodesByClass("vtkMRMLMarkupsLineNode")):
+            markupNode = slicer.mrmlScene.GetNthNodeByClass(nodeIndex, "vtkMRMLMarkupsLineNode")
+            validation_json = markupNode.GetAttribute("validation")
+            status = None
+            if validation_json:
+                try:
+                    validation = json.loads(validation_json)
+                    status = validation.get("status", None)
+                except Exception:
+                    status = None
+            if status in ("invalidated", "duplicated"):
+                displayNode = markupNode.GetDisplayNode()
+                if displayNode:
+                    if checked:
+                        displayNode.SetVisibility(True)
+                        displayNode.SetOpacity(0.3)
+                    else:
+                        displayNode.SetVisibility(False)
+        slicer.util.showStatusMessage(f"{'Showing' if checked else 'Hiding'} invalidated/duplicated lines.", 3000)
+
+    def onAdjudicatorModeToggled(self, enabled):
+        if self._parameterNode:
+            self._parameterNode.adjudicatorMode = enabled
+        # Show/hide the adjudication tools section
+        if hasattr(self.ui, 'adjudicationToolsCollapsibleButton'):
+            self.ui.adjudicationToolsCollapsibleButton.setVisible(enabled)
+            if enabled:
+                # Expand adjudication tools when entering adjudicator mode
+                self.ui.adjudicationToolsCollapsibleButton.collapsed = False
+        # Show/hide the sector annotations section (line creation tools)
+        if hasattr(self.ui, 'sectorAnnotationsCollapsibleButton'):
+            if enabled:
+                # Collapse sector annotations when entering adjudicator mode
+                self.ui.sectorAnnotationsCollapsibleButton.collapsed = True
+            else:
+                # Expand sector annotations when exiting adjudicator mode
+                self.ui.sectorAnnotationsCollapsibleButton.collapsed = False
+        if self.logic:
+            self._updateMarkupsAndOverlayProgrammatically()
+
+    def onAdjudicatorModeCheckBoxToggled(self, enabled):
+        """
+        Called when the user manually toggles the adjudicator mode checkbox.
+        This resets the user manual state to allow programmatic control.
+        """
+        # Reset user manual state flag and last manual state when user manually changes adjudicator mode
+        self._userManuallySetRaterTableState = False
+        self._lastUserManualCollapsedState = None
+        # Call the regular toggle method
+        self.onAdjudicatorModeToggled(enabled)
+
+    def getCurrentRater(self):
+        # Return the current rater name from parameter node or UI
+        if hasattr(self, '_parameterNode') and hasattr(self._parameterNode, 'rater'):
+            return self._parameterNode.rater
+        if hasattr(self.ui, 'raterName'):
+            return self.ui.raterName.text().strip()
+        return ""
+
+    def _updateAnnotationLineValidation(self, markupNode, validation):
+        """
+        Update the validation field in self.logic.annotations for the line matching this markupNode in the current frame.
+        """
+        if self.logic.annotations is None or 'frame_annotations' not in self.logic.annotations:
+            return
+        if self.logic.sequenceBrowserNode is None:
+            return
+        currentFrameIndex = max(0, self.logic.sequenceBrowserNode.GetSelectedItemNumber())
+        frame = next((item for item in self.logic.annotations['frame_annotations'] if int(item.get("frame_number", -1)) == currentFrameIndex), None)
+        if not frame:
+            return
+        # Get rater and points from markupNode
+        rater = markupNode.GetAttribute("rater")
+        if not rater:
+            logging.warning("Attempted to adjudicate a markup node with no rater set. Node name: %s, points: %s", markupNode.GetName(), [markupNode.GetNthControlPointPosition(i, [0,0,0]) for i in range(markupNode.GetNumberOfControlPoints())])
+            return
+        points = []
+        for i in range(markupNode.GetNumberOfControlPoints()):
+            coord = [0, 0, 0]
+            markupNode.GetNthControlPointPosition(i, coord)
+            points.append(coord)
+        # Try to match in pleura_lines and b_lines
+        for key in ["pleura_lines", "b_lines"]:
+            for line in frame.get(key, []):
+                if line.get("rater") == rater:
+                    line_points = line.get("line", {}).get("points", [])
+                    if len(line_points) == len(points) and all([all(abs(a-b)<1e-6 for a,b in zip(pt1,pt2)) for pt1,pt2 in zip(line_points, points)]):
+                        line["validation"] = validation
+                        return
+
+    def _selectLineByFilter(self, filter_fn, direction, empty_message, status_message_prefix):
+        # Gather all lines matching the filter in the current frame
+        nodes = []
+        for node in self.logic.pleuraLines + self.logic.bLines:
+            if node.GetDisplayNode() and node.GetDisplayNode().GetVisibility() and filter_fn(node):
+                nodes.append(node)
+        if not nodes:
+            slicer.util.showStatusMessage(empty_message, 3000)
+            return
+        # Find currently selected node
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectedNodeID = selectionNode.GetActivePlaceNodeID()
+        try:
+            idx = [n.GetID() for n in nodes].index(selectedNodeID)
+            if direction == "next":
+                new_idx = (idx + 1) % len(nodes)
+            else:
+                new_idx = (idx - 1) % len(nodes)
+        except ValueError:
+            new_idx = 0 if direction == "next" else len(nodes) - 1
+        newNode = nodes[new_idx]
+        selectionNode.SetActivePlaceNodeID(newNode.GetID())
+        slicer.util.showStatusMessage(f"{status_message_prefix} {new_idx+1} of {len(nodes)}.", 2000)
+        self.logic.updateLineMarkups()
+        rater = newNode.GetAttribute("rater") or "unknown"
+        line_type = "pleura" if newNode in self.logic.pleuraLines else "b-line"
+        logging.info(f"{direction[0].upper()}: Selected {line_type} line from rater '{rater}' (line {new_idx+1} of {len(nodes)})")
+
+    def _isUnadjudicated(self, node):
+        """Check if a node is unadjudicated (no validation status or status is 'unadjudicated')."""
+        validation_json = node.GetAttribute("validation")
+        status = None
+        if validation_json:
+            try:
+                validation = json.loads(validation_json)
+                status = validation.get("status", None)
+            except Exception:
+                status = None
+        return not status or status == "unadjudicated"
+
+    def selectNextUnadjudicatedLine(self):
+        self._selectLineByFilter(self._isUnadjudicated, "next", "No unadjudicated lines in this frame.", "Selected unadjudicated line")
+
+    def selectPreviousUnadjudicatedLine(self):
+        self._selectLineByFilter(self._isUnadjudicated, "previous", "No unadjudicated lines in this frame.", "Selected unadjudicated line")
+
+    def selectNextVisibleLine(self):
+        self._selectLineByFilter(lambda node: True, "next", "No visible lines in this frame.", "Selected visible line")
+
+    def selectPreviousVisibleLine(self):
+        self._selectLineByFilter(lambda node: True, "previous", "No visible lines in this frame.", "Selected visible line")
+
+    def _getActiveSequenceBrowserNode(self):
+        """Return the active sequence browser node, even if the toolbar is focused on a sequence node."""
+        node = slicer.modules.sequences.toolBar().activeBrowserNode()
+        if node is None:
+            return None
+        # If it's already a browser node, return it
+        if isinstance(node, slicer.vtkMRMLSequenceBrowserNode):
+            return node
+        # Otherwise, find the browser node that references this sequence node
+        sequenceBrowsers = slicer.util.getNodesByClass("vtkMRMLSequenceBrowserNode")
+        for browser in sequenceBrowsers:
+            collection = vtk.vtkCollection()
+            browser.GetSynchronizedSequenceNodes(collection, True)
+            if collection.IsItemPresent(node):
+                return browser
+        return None
+
+    def _navigateToFrameInSequence(self, target_frame_calculator, already_at_message):
+        """
+        Generic frame navigation method that eliminates code duplication.
+
+        Args:
+            target_frame_calculator: Function that takes (current_index, max_index) and returns target_index
+            already_at_message: Status message to show when already at the target position
+        """
+        activeBrowserNode = self._getActiveSequenceBrowserNode()
+        if activeBrowserNode:
+            currentIndex = activeBrowserNode.GetSelectedItemNumber()
+            maxIndex = activeBrowserNode.GetNumberOfItems() - 1
+
+            targetIndex = target_frame_calculator(currentIndex, maxIndex)
+
+            if targetIndex != currentIndex:
+                activeBrowserNode.SetSelectedItemNumber(targetIndex)
+                # Reset selected node ID when changing frames
+                selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+                if selectionNode:
+                    selectionNode.SetActivePlaceNodeID("")
+            else:
+                slicer.util.mainWindow().statusBar().showMessage(already_at_message, 3000)
+
+    def _nextFrameInSequence(self):
+        """Go to next frame in the current sequence using Slicer's built-in sequence browser."""
+        def next_target(current, max_index):
+            return current + 1 if current < max_index else current
+
+        self._navigateToFrameInSequence(next_target, '⚠️ Already at last frame')
+
+    def _previousFrameInSequence(self):
+        """Go to previous frame in the current sequence using Slicer's built-in sequence browser."""
+        def previous_target(current, max_index):
+            return current - 1 if current > 0 else current
+
+        self._navigateToFrameInSequence(previous_target, '⚠️ Already at first frame')
+
+    def _firstFrameInSequence(self):
+        """Go to the first frame in the current sequence."""
+        def first_target(current, max_index):
+            return 0 if current > 0 else current
+
+        self._navigateToFrameInSequence(first_target, '⚠️ Already at first frame')
+
+    def _lastFrameInSequence(self):
+        """Go to the last frame in the current sequence."""
+        def last_target(current, max_index):
+            return max_index if current < max_index else current
+
+        self._navigateToFrameInSequence(last_target, '⚠️ Already at last frame')
+
+    def _togglePlayPauseSequence(self):
+        """Toggle play/pause for the current sequence browser."""
+        activeBrowserNode = self._getActiveSequenceBrowserNode()
+        if activeBrowserNode:
+            isPlaying = activeBrowserNode.GetPlaybackActive()
+            activeBrowserNode.SetPlaybackActive(not isPlaying)
+
+    def _setRedViewFocus(self):
+        """Set focus to the red view to ensure keyboard shortcuts work immediately."""
+        # Use a timer to delay focus setting to ensure all UI updates are complete
+        qt.QTimer.singleShot(200, self._delayedSetRedViewFocus)
+
+    def _delayedSetRedViewFocus(self):
+        """Delayed focus setting to ensure all UI updates are complete."""
+        try:
+            # Since shortcuts are connected to main window, focus on that
+            mainWindow = slicer.util.mainWindow()
+            if mainWindow:
+                mainWindow.activateWindow()
+                mainWindow.setFocus()
+                mainWindow.raise_()
+
+            # Also try setting focus to the module widget itself
+            if hasattr(self, 'parent') and self.parent:
+                self.parent.setFocus()
+
+        except Exception as e:
+            logging.warning(f"Could not set focus: {e}")
+
+    def _forceShortcutsActive(self):
+        """Force keyboard shortcuts to be active by temporarily disconnecting and reconnecting them."""
+        try:
+            # Temporarily disconnect and reconnect shortcuts to force them to be active
+            self.disconnectKeyboardShortcuts()
+            qt.QTimer.singleShot(50, self.connectKeyboardShortcuts)
+        except Exception as e:
+            logging.warning(f"Could not force shortcuts active: {e}")
+
+    def _navigateToClip(self, direction):
+        """Helper method to navigate to previous or next clip."""
+        direction_text = "previous" if direction == "previous" else "next"
+        slicer.util.mainWindow().statusBar().showMessage(f'Loading {direction_text} clip...', 2000)
+        if direction == "previous":
+            self.onPreviousButton()
+        else:
+            self.onNextButton()
+
+    def _onPageUpPressed(self):
+        """Handle Page Up press for previous clip."""
+        self._navigateToClip("previous")
+
+    def _onPageDownPressed(self):
+        """Handle Page Down press for next clip."""
+        self._navigateToClip("next")
+
+    def _onPreviousClipPressed(self):
+        """Handle Shift+Up or Ctrl+Up press for previous clip."""
+        self._navigateToClip("previous")
+
+    def _onNextClipPressed(self):
+        """Handle Shift+Down or Ctrl+Down press for next clip."""
+        self._navigateToClip("next")
+
+    def onSequenceBrowserModified(self, caller, event):
+        """Handle sequence browser modifications (e.g., frame navigation via Slicer UI)."""
+        # Reset selected node ID when sequence browser changes (UI state management)
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        if selectionNode:
+            selectionNode.SetActivePlaceNodeID("")
+
+        # Call Logic class to update markups (data processing)
+        if self.logic:
+            self.logic._updateMarkupsAndOverlayProgrammatically(None)
+
+    def onShowHideLines(self, checked=None):
+        """Toggle visibility of all lines and overlays."""
+        if checked is None:
+            # Toggle button state
+            self.ui.showHideLinesButton.setChecked(not self.ui.showHideLinesButton.isChecked())
+            checked = self.ui.showHideLinesButton.isChecked()
+        # Set visibility of all lines
+        for node in self.logic.pleuraLines + self.logic.bLines:
+            displayNode = node.GetDisplayNode()
+            if displayNode:
+                displayNode.SetVisibility(checked)
+        # Also toggle overlay visibility
+        self.ui.overlayVisibilityButton.setChecked(checked)
+
+    def onResetAllAdjudication(self):
+        """Reset all lines in the current frame to unadjudicated status."""
+        for node in self.logic.pleuraLines + self.logic.bLines:
+            displayNode = node.GetDisplayNode()
+            if displayNode and displayNode.GetVisibility():
+                node.SetAttribute("validation", json.dumps({"status": "unadjudicated"}))
+                displayNode.SetOpacity(1.0)
+        self.logic.updateCurrentFrame()
+        self._parameterNode.unsavedChanges = True
+        slicer.util.showStatusMessage("All lines reset to unadjudicated.", 3000)
 
 #
 # AnnotateUltrasoundLogic
@@ -1418,31 +2179,59 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
     def getColorsForRater(self, rater: str):
         """
-        Assigns colors to raters so that the first seen rater gets fixed green/blue hues,
-        and subsequent raters are spaced around the color wheel.
-        The order is lexicographically sorted.
+        Assign unique, visually distinct colors for pleura and b-lines per rater.
+        Each rater gets completely unique colors that are distinct both within the rater and between raters.
+        Uses golden ratio distribution starting from green (pleura) and blue (b-lines).
         """
+
         rater = rater.strip().lower()
-        # Maintain a static/class attribute for seen raters in lex order
+        current_rater = self.getParameterNode().rater.strip().lower()
+
         if rater not in self.seenRaters and rater != '':
             self.seenRaters.append(rater)
             self.seenRaters.sort()
-        rater_index = self.seenRaters.index(rater)
-        if rater_index == 0:
-            pleura_hue = 1/3  # green
-            bline_hue = 2/3   # blue
-        else:
-            hue_offset = (rater_index * 0.2) % 1.0
-            pleura_hue = (1/3 + hue_offset) % 1.0
-            bline_hue = (2/3 + hue_offset) % 1.0
-        # Use fixed saturation and value for all
-        sat = 0.85
-        val = 0.95
-        pleura_rgb = colorsys.hsv_to_rgb(pleura_hue, sat, val)
-        bline_rgb = colorsys.hsv_to_rgb(bline_hue, sat, val)
-        pleura_color = [float(x) for x in pleura_rgb]
-        bline_color = [float(x) for x in bline_rgb]
-        return pleura_color, bline_color
+
+        if current_rater not in self.seenRaters:
+            self.seenRaters.append(current_rater)
+            self.seenRaters.sort()
+
+        raters = self.seenRaters
+
+        if rater not in raters:
+            return [1.0, 0.0, 0.0], [1.0, 0.5, 0.0]  # fallback red/orange
+
+        # Current rater gets green + blue
+        if rater == current_rater:
+            pleura_rgb = colorsys.hsv_to_rgb(0.33, 0.95, 1.0)  # bright green
+            bline_rgb = colorsys.hsv_to_rgb(0.66, 0.95, 1.0)   # bright blue
+            return list(pleura_rgb), list(bline_rgb)
+
+        # Count all raters (excluding current rater)
+        regular_raters = [r for r in raters if r != current_rater]
+        N = len(regular_raters)
+
+        if N == 0:
+            return [1.0, 0.0, 0.0], [1.0, 0.5, 0.0]  # fallback red/orange
+
+        # Find the index of this rater among all non-current raters
+        rater_index = regular_raters.index(rater)
+
+        # Use golden ratio for non-repeating distribution
+        # φ = (1 + √5) / 2 ≈ 1.618033988749895
+        golden_ratio = (1 + 5**0.5) / 2
+
+        # Start from positions after green and blue to avoid conflicts with current rater
+        pleura_start = (0.33 + golden_ratio) % 1.0  # Start after green
+        bline_start = (0.66 + golden_ratio) % 1.0   # Start after blue
+
+        # Generate hues by adding golden ratio steps from the starting points
+        pleura_hue = (pleura_start + rater_index * golden_ratio) % 1.0
+        bline_hue = (bline_start + rater_index * golden_ratio) % 1.0
+
+        # Ensure pleura and b-line colors are distinct by adjusting saturation and value
+        pleura_rgb = colorsys.hsv_to_rgb(pleura_hue, 0.95, 1.0)  # bright colors
+        bline_rgb = colorsys.hsv_to_rgb(bline_hue, 0.95, 1.0)   # bright colors
+        return list(pleura_rgb), list(bline_rgb)
 
     def getAllRaterColors(self):
         """
@@ -1553,60 +2342,88 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return len(self.dicomDf), annotations_created_count
 
     def updateCurrentFrame(self):
-        logging.info('addCurrentFrame')
-
         if self.sequenceBrowserNode is None:
-            logging.warning("No sequence browser node found")
+            logging.warning("No sequence browser node found, cannot update current frame.")
             return
 
-        # Get the current frame index from the sequence browser
-        currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())  # TODO: investigate whey this could be negative!
-        # Check if annotations already has a list of frame annotations. Create it if it doesn't exist.
-        if 'frame_annotations' not in self.annotations:
-            self.annotations['frame_annotations'] = []
+        currentFrameIndex = self.sequenceBrowserNode.GetSelectedItemNumber()
+        if self.annotations is None:
+            self.annotations = {"frame_annotations": []}
 
-        # Find existing frame annotation for currentFrameIndex
-        existing = next((f for f in self.annotations['frame_annotations']
-                         if int(f.get("frame_number", -1)) == currentFrameIndex), None)
-        if not existing:
-            # create an empty frame and append it to annotations
-            existing = {
-                "frame_number": currentFrameIndex,
-                "coordinate_space": "RAS",
-                "pleura_lines": [],
-                "b_lines": []
-            }
-            self.annotations['frame_annotations'].append(existing)
+        # Find or create the frame entry in annotations
+        frame_data = next((item for item in self.annotations['frame_annotations'] if int(item.get("frame_number", -1)) == currentFrameIndex), None)
+        if frame_data is None:
+            frame_data = {"frame_number": currentFrameIndex, "pleura_lines": [], "b_lines": []}
+            self.annotations['frame_annotations'].append(frame_data)
 
-        existing['pleura_lines'] = []  # Reset the list of pleura lines
+        # This set will keep track of which raters we have updated from the scene
+        processed_raters = set()
 
-        # Add pleura lines to annotations with new format
-        for markupNode in self.pleuraLines:
-            coordinates = []
+        # Update lists directly from visible markups
+        new_pleura_lines = []
+        for node in self.pleuraLines:
+            if node.GetDisplayNode() and node.GetDisplayNode().GetVisibility() and node.GetNumberOfControlPoints() > 0:
+                rater = node.GetAttribute("rater")
+                processed_raters.add(rater)
+                points = []
+                for i in range(node.GetNumberOfControlPoints()):
+                    coord = [0, 0, 0]
+                    node.GetNthControlPointPosition(i, coord)
+                    points.append(coord)
 
-            for i in range(markupNode.GetNumberOfControlPoints()):
-                coord = [0, 0, 0]
-                markupNode.GetNthControlPointPosition(i, coord)
-                coordinates.append(coord)
+                validation_json = node.GetAttribute("validation")
+                try:
+                    validation = json.loads(validation_json) if validation_json else {"status": "unadjudicated"}
+                except json.JSONDecodeError:
+                    validation = {"status": "unadjudicated"}
 
-            if coordinates:
-                existing['pleura_lines'].append(
-                    {"rater": markupNode.GetAttribute("rater"), "line": {"points": coordinates}})
+                new_pleura_lines.append({
+                    "rater": rater,
+                    "line": {"points": points},
+                    "validation": validation,
+                })
 
-        existing['b_lines'] = []  # Reset the list of B-lines
+        new_b_lines = []
+        for node in self.bLines:
+            if node.GetDisplayNode() and node.GetDisplayNode().GetVisibility() and node.GetNumberOfControlPoints() > 0:
+                rater = node.GetAttribute("rater")
+                processed_raters.add(rater)
+                points = []
+                for i in range(node.GetNumberOfControlPoints()):
+                    coord = [0, 0, 0]
+                    node.GetNthControlPointPosition(i, coord)
+                    points.append(coord)
 
-        # Add B-lines to annotations with new format
-        for markupNode in self.bLines:
-            coordinates = []
+                validation_json = node.GetAttribute("validation")
+                try:
+                    validation = json.loads(validation_json) if validation_json else {"status": "unadjudicated"}
+                except json.JSONDecodeError:
+                    validation = {"status": "unadjudicated"}
 
-            for i in range(markupNode.GetNumberOfControlPoints()):
-                coord = [0, 0, 0]
-                markupNode.GetNthControlPointPosition(i, coord)
-                coordinates.append(coord)
+                new_b_lines.append({
+                    "rater": rater,
+                    "line": {"points": points},
+                    "validation": validation,
+                })
 
-            if coordinates:
-                existing['b_lines'].append(
-                    {"rater": markupNode.GetAttribute("rater"),  "line": {"points": coordinates}})
+        # Now, add back the lines from raters that were not visible
+        for line in frame_data.get('pleura_lines', []):
+            if line.get('rater') not in processed_raters:
+                new_pleura_lines.append(line)
+
+        for line in frame_data.get('b_lines', []):
+            if line.get('rater') not in processed_raters:
+                new_b_lines.append(line)
+
+        # Replace the old lists with the new, combined lists
+        frame_data['pleura_lines'] = new_pleura_lines
+        frame_data['b_lines'] = new_b_lines
+
+        # Update the markups in the scene to match the annotation data
+        self.updateLineMarkups()
+
+        # At the end of updateCurrentFrame, always update overlays
+        self.updateOverlayVolume()
 
     def removeFrame(self, frameIndex):
         logging.info(f"removeFrame -- frameIndex: {frameIndex}")
@@ -1686,13 +2503,17 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         Load the next sequence in the dataframe.
         Returns the index of the loaded sequence in the dataframe or None if no more sequences are available.
         """
-        # Save current depth guide mode
+        # Save current depth guide and adjudicator modes
         currentDepthGuideMode = self.depthGuideMode
-        logging.debug(f"Saving depthGuideMode {currentDepthGuideMode} before loading next sequence")
+        parameterNode = self.getParameterNode()
+        currentAdjudicatorMode = parameterNode.adjudicatorMode
+        logging.debug(f"Saving depthGuideMode {currentDepthGuideMode} and adjudicatorMode {currentAdjudicatorMode} before loading next sequence")
 
         # Clear the scene
         self.clearScene()
-        parameterNode = self.getParameterNode()
+        if not parameterNode:
+            logging.error("No parameter node found, cannot load next sequence.")
+            return None
 
         if self.dicomDf is None:
             parameterNode.dfLoaded = False
@@ -1703,23 +2524,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if self.nextDicomDfIndex >= len(self.dicomDf):
             return None
 
-        nextDicomFilepath = self.dicomDf.iloc[self.nextDicomDfIndex]['Filepath']
-
-        # --- Begin: Custom annotation file selection logic ---
-        base_file_path = self.dicomDf.iloc[self.nextDicomDfIndex]['Filepath']
-        base_prefix = os.path.splitext(base_file_path)[0]
-        current_rater = self.getParameterNode().rater.strip().lower()
-        candidates = [
-            f"{base_prefix}.{current_rater}.json",
-            f"{base_prefix}.json"
-        ]
-        nextAnnotationsFilepath = None
-        for candidate in candidates:
-            if os.path.exists(candidate):
-                nextAnnotationsFilepath = candidate
-                break
-        if nextAnnotationsFilepath is None:
-            nextAnnotationsFilepath = f"{base_prefix}.{current_rater}.json"
+        # We advance the index here, so for loading annotations we use `self.nextDicomDfIndex` which was just incremented
         self.nextDicomDfIndex += 1
 
         # Make sure a temporary folder for the DICOM files exists
@@ -1731,6 +2536,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         for file in os.listdir(tempDicomDir):
             os.remove(os.path.join(tempDicomDir, file))
 
+        # Get the filepath for the current index
+        nextDicomFilepath = self.dicomDf.iloc[self.nextDicomDfIndex - 1]['Filepath']
         # Copy DICOM file to temporary folder
         shutil.copy(nextDicomFilepath, tempDicomDir)
 
@@ -1770,9 +2577,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         parameterNode.inputVolume = inputUltrasoundNode
         parameterNode.unsavedChanges = False  # Reset unsaved changes when loading new sequence
 
-        # Restore depth guide mode
+        # Restore depth guide and adjudicator modes
         self.depthGuideMode = currentDepthGuideMode
-        logging.debug(f"Restored depthGuideMode to {self.depthGuideMode} after loading sequence")
+        parameterNode.adjudicatorMode = currentAdjudicatorMode
+        logging.debug(f"Restored depthGuideMode to {self.depthGuideMode} and adjudicatorMode to {currentAdjudicatorMode} after loading sequence")
 
         ultrasoundArray = slicer.util.arrayFromVolume(inputUltrasoundNode)
         # Mask array should be the same size as the ultrasound array, but with 3 channels
@@ -1789,85 +2597,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         overlayImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
         overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
         overlayVolume.SetAndObserveImageData(overlayImageData)
-        # overlayVolume.CreateDefaultDisplayNodes()
         slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
         parameterNode.overlayVolume = overlayVolume
 
-        # Load all annotations with the same base prefix and deeply merge frame_annotations by frame_number
-        self.seenRaters = []
-        merged_data = {}
-        merged_data["frame_annotations"] = []
-        filepaths = glob.glob(f"{base_prefix}.json") + glob.glob(f"{base_prefix}.*.json")
-        for filepath in filepaths:
-            try:
-                with open(filepath, 'r') as f:
-                    ann = json.load(f)
-                    self.convert_lps_to_ras(ann.get("frame_annotations", []))
-                    # Merge non-frame_annotations keys with conflict check
-                    for k, v in ann.items():
-                        if k == "frame_annotations":
-                            continue
-                        if k not in merged_data:
-                            merged_data[k] = v
-                        elif merged_data[k] in [None, "", [], {}]:
-                            merged_data[k] = v
-                        elif isinstance(merged_data[k], list) and isinstance(v, list):
-                            merged_data[k].extend(v)
-                            merged_data[k] = list(dict.fromkeys(merged_data[k]))
-                        elif merged_data[k] != v:
-                            logging.warning(f"Conflicting values for key '{k}': {merged_data[k]} vs {v}, keeping first value")
-                    # Only merge pleura_lines and b_lines for frames with matching frame_number
-                    for frame in ann.get("frame_annotations", []):
-                        frame_number = frame["frame_number"]
-                        matched = next((f for f in merged_data["frame_annotations"] if f["frame_number"] == frame_number), None)
-                        if matched:
-                            matched["pleura_lines"].extend(frame.get("pleura_lines", []))
-                            matched["b_lines"].extend(frame.get("b_lines", []))
-                            # Add new raters from pleura_lines
-                            for entry in frame.get("pleura_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-                            # Add new raters from b_lines
-                            for entry in frame.get("b_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-                        else:
-                            merged_data["frame_annotations"].append({
-                                "frame_number": frame["frame_number"],
-                                "coordinate_space": frame.get("coordinate_space", "RAS"),
-                                "pleura_lines": frame.get("pleura_lines", []),
-                                "b_lines": frame.get("b_lines", [])
-                            })
-                            # Add new raters from pleura_lines
-                            for entry in frame.get("pleura_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-                            # Add new raters from b_lines
-                            for entry in frame.get("b_lines", []):
-                                rater = entry.get("rater")
-                                if rater and rater not in self.seenRaters:
-                                    self.seenRaters.append(rater)
-            except Exception as e:
-                logging.warning(f"Failed to load annotation file {filepath}: {e}")
+        # Load annotations using the dedicated method. The adjudicator mode flag comes from the widget's parameter node.
+        self.loadAnnotations(self.nextDicomDfIndex - 1, self.parameterNode.adjudicatorMode)
 
-        self.annotations = merged_data
-
-        # Preallocate markup nodes based on loaded annotations
-        self.preallocateMarkupNodesFromAnnotations()
-
-        if current_rater in self.seenRaters:
-            self.seenRaters.remove(current_rater)
-        # put current rater at the top
-        self.seenRaters = [current_rater] + sorted(self.seenRaters)
-        self.setSelectedRaters(self.seenRaters)
-
-        #self.highlightedRaters = set(self.seenRaters)
-
-        # Set programmatic update flag to prevent unsavedChanges from being set
-        self._updateMarkupsAndOverlayProgrammatically(parameterNode)
         parameterNode.EndModify(previousNodeState)
 
         # Set overlay volume as foreground in slice viewers
@@ -1880,28 +2615,122 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         displayNode.SetWindow(255)
         displayNode.SetLevel(127)
 
-        # Observe the ultrasound image for changes
-        self.addObserver(self.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.onSequenceBrowserModified)
-
         # Return the index of the loaded sequence in the dataframe
         return self.nextDicomDfIndex
 
-    def onSequenceBrowserModified(self, caller, event):
+    def loadAnnotations(self, dicom_index, adjudicator_mode):
+        """
+        Load annotations for the given dicom_index.
+        In adjudicator_mode, it loads the '.adjudication.json' file if it exists.
+        Otherwise, it merges all rater files.
+        Sets self.annotations.
+        """
+        base_file_path = self.dicomDf.iloc[dicom_index]['Filepath']
+        dir_path = os.path.dirname(base_file_path)
+        base_prefix = os.path.splitext(base_file_path)[0]
+
+        adjudication_file = None
+        adjudication_file_correct = f"{base_prefix}.adjudication.json"
+        adjudication_file_typo = f"{base_prefix}.adjucator.json" # Common typo
+
+        # A more robust check for the file's existence, bypassing os.path.exists which can fail in some environments.
+        try:
+            dir_contents = os.listdir(dir_path)
+            base_correct = os.path.basename(adjudication_file_correct)
+            base_typo = os.path.basename(adjudication_file_typo)
+
+            if base_correct in dir_contents:
+                adjudication_file = adjudication_file_correct
+            elif base_typo in dir_contents:
+                adjudication_file = adjudication_file_typo
+                logging.warning(f"Found misspelled adjudication file: {adjudication_file_typo}. Using it, but please consider renaming.")
+        except OSError as e:
+            logging.error(f"Could not read directory {dir_path}: {e}")
+            # Fallback to the original check, just in case
+            if os.path.exists(adjudication_file_correct):
+                 adjudication_file = adjudication_file_correct
+            elif os.path.exists(adjudication_file_typo):
+                 adjudication_file = adjudication_file_typo
+
+        # Always clear existing annotations before loading new ones
+        self.annotations = {"frame_annotations": []}
+
+        if adjudicator_mode and adjudication_file:
+            logging.info(f"Adjudicator mode: Loading single adjudication file: {adjudication_file}")
+            try:
+                with open(adjudication_file, 'r') as f:
+                    # Directly load the adjudicated data, which includes fan mask info
+                    self.annotations = json.load(f)
+
+                    if "frame_annotations" in self.annotations:
+                        self.convert_lps_to_ras(self.annotations.get("frame_annotations", []))
+                    else:
+                        # ensure frame_annotations key exists even if file is empty or malformed
+                        self.annotations["frame_annotations"] = []
+            except Exception as e:
+                logging.error(f"Failed to load adjudication file {adjudication_file}: {e}")
+        else:
+            logging.info("Rater mode or no adjudication file: Merging all rater annotation files.")
+            merged_data = {"frame_annotations": []}
+            is_first_file = True
+            # Find all json files for this scan, excluding any adjudication files
+            # Reverted to a simpler filter that was known to work, but handles both spellings.
+            glob_files = glob.glob(f"{base_prefix}*.json")
+            filepaths = [f for f in glob_files if not f.endswith('.adjudication.json') and not f.endswith('.adjucator.json')]
+
+            for filepath in filepaths:
+                try:
+                    with open(filepath, 'r') as f:
+                        ann = json.load(f)
+
+                        # Copy top-level keys (like fan mask info) from the first file that has them
+                        if is_first_file:
+                            for key, value in ann.items():
+                                if key != "frame_annotations":
+                                    merged_data[key] = value
+                            if any(k in ann for k in ["mask_type", "radius1"]): # Heuristic to check if fan info was found
+                                is_first_file = False
+
+                        # Individual rater files are dicts with a "frame_annotations" key
+                        frame_annotations = ann.get("frame_annotations", [])
+                        self.convert_lps_to_ras(frame_annotations)
+                        for frame in frame_annotations:
+                            frame_number = frame.get("frame_number")
+                            if frame_number is None:
+                                continue
+
+                            matched_frame = next((f for f in merged_data["frame_annotations"] if f.get("frame_number") == frame_number), None)
+                            if matched_frame:
+                                matched_frame["pleura_lines"].extend(frame.get("pleura_lines", []))
+                                matched_frame["b_lines"].extend(frame.get("b_lines", []))
+                            else:
+                                merged_data["frame_annotations"].append(frame)
+                except Exception as e:
+                    logging.warning(f"Failed to load or merge annotation file {filepath}: {e}")
+            self.annotations = merged_data
+
+        # Extract and set up raters using the centralized method
+        self.extractAndSetupRaters()
+
+        # Preallocate markup nodes based on loaded annotations
+        self.preallocateMarkupNodesFromAnnotations()
+        # Set programmatic update flag to prevent unsavedChanges from being set
         self._updateMarkupsAndOverlayProgrammatically(None)
 
-    def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0]):
+    def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0], validation=None):
         markupNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")
         markupNode.CreateDefaultDisplayNodes()
         markupNode.SetName(name)
+        # Always set rater attribute
         markupNode.SetAttribute("rater", rater)
+        if validation is not None:
+            markupNode.SetAttribute("validation", json.dumps(validation))
         markupNode.GetDisplayNode().SetPropertiesLabelVisibility(False)
         markupNode.GetDisplayNode().SetSelectedColor(color)
         for coord in coordinates:
             markupNode.AddControlPointWorld(coord[0], coord[1], coord[2])
-
         self.addObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
         self.addObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
-
         return markupNode
 
     def clearSceneLines(self):
@@ -2178,12 +3007,126 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         return maskArray
 
+    def _updateMarkupNode(self, node, entry, selectedNodeID):
+        # Check if node is still valid
+        if not node or not slicer.mrmlScene.IsNodePresent(node):
+            return
+
+        coordinates = entry.get("line", {}).get("points", [])
+        rater = entry.get("rater", "")
+        validation = entry.get("validation", None)
+        if not validation or not validation.get("status"):
+            validation = {"status": "unadjudicated"}
+        node.SetAttribute("rater", rater)
+        node.SetAttribute("validation", json.dumps(validation))
+        status = validation.get("status", "unadjudicated")
+        adjudicator_mode = getattr(self.parameterNode, 'adjudicatorMode', False)
+
+        # Ensure display node exists
+        displayNode = node.GetDisplayNode()
+        if displayNode is None:
+            # Check if scene is valid before creating display nodes
+            if not slicer.mrmlScene:
+                return
+            try:
+                node.CreateDefaultDisplayNodes()
+                displayNode = node.GetDisplayNode()
+                if displayNode is None:
+                    logging.error(f"Failed to create display node for markup node {node.GetName()}")
+                    return
+            except Exception as e:
+                logging.error(f"Exception creating display node for {node.GetName()}: {e}")
+                return
+
+        # Check if this node is selected - apply selected highlighting regardless of validation status
+        isSelected = (node.GetID() == selectedNodeID)
+
+        if adjudicator_mode and isSelected:
+            # Apply selected highlighting using the __selected_node__ color
+            selected_node_color, _ = self.getColorsForRater("__selected_node__")
+            displayNode.SetSelectedColor(selected_node_color)
+        else:
+            # Apply colors based on mode and validation status
+            if adjudicator_mode:
+                if status == "unadjudicated":
+                    # In adjudicator mode, unadjudicated lines use current rater's colors
+                    current_rater = self.getCurrentRater()
+                    if node in self.pleuraLines:
+                        color_pleura, _ = self.getColorsForRater(current_rater)
+                        displayNode.SetSelectedColor(color_pleura)
+                    else:
+                        _, color_bline = self.getColorsForRater(current_rater)
+                        displayNode.SetSelectedColor(color_bline)
+                else:
+                    # In adjudicator mode, validated/invalidated/duplicated lines use __adjudicated_node__ color
+                    if node in self.pleuraLines:
+                        color_pleura, _ = self.getColorsForRater("__adjudicated_node__")
+                        displayNode.SetSelectedColor(color_pleura)
+                    else:
+                        _, color_bline = self.getColorsForRater("__adjudicated_node__")
+                        displayNode.SetSelectedColor(color_bline)
+            else:
+                # Use original rater's colors for validated/invalidated/duplicated lines or non-adjudicator mode
+                if node in self.pleuraLines:
+                    color_pleura, _ = self.getColorsForRater(rater)
+                    displayNode.SetSelectedColor(color_pleura)
+                else:
+                    _, color_bline = self.getColorsForRater(rater)
+                    displayNode.SetSelectedColor(color_bline)
+
+        # Set visibility, opacity, and line style based on validation status and adjudicator mode
+        status = validation.get("status", "unadjudicated")
+        adjudicator_mode = getattr(self.parameterNode, 'adjudicatorMode', False)
+        displayNode.SetGlyphTypeFromString("Circle2D")
+        displayNode.SetGlyphScale(2.0)
+        displayNode.SetLineThickness(0.25)
+        if not adjudicator_mode:
+            displayNode.SetVisibility(True)
+            displayNode.SetOpacity(1.0)
+        else:
+            if status == "invalidated":
+                showInvalidAndDuplicate = self.parameterNode.showInvalidAndDuplicate if self.parameterNode else True
+                displayNode.SetVisibility(showInvalidAndDuplicate)
+                displayNode.SetGlyphTypeFromString("Cross2D")
+                displayNode.SetOpacity(0.40)
+            elif status == "duplicated":
+                showInvalidAndDuplicate = self.parameterNode.showInvalidAndDuplicate if self.parameterNode else True
+                displayNode.SetVisibility(showInvalidAndDuplicate)
+                displayNode.SetGlyphTypeFromString("Diamond2D")
+                displayNode.SetOpacity(0.50)
+            elif status == "unadjudicated":
+                displayNode.SetVisibility(True)
+                if not isSelected:
+                    displayNode.SetOpacity(0.65)
+            else:  # validated
+                displayNode.SetVisibility(True)
+                if not isSelected:
+                    displayNode.SetOpacity(0.85)
+
+            # Selected node highlighting is independent of validation status
+            if isSelected:
+                displayNode.SetGlyphScale(3.0)
+                displayNode.SetOpacity(1.0)
+
+        node.RemoveAllControlPoints()
+        for pt in coordinates:
+            node.AddControlPointWorld(*pt)
+
     def _updateMarkupNodesForFrame(self, frame):
         """
         Update markup nodes for pleura and b-lines for the given frame.
         """
-        pleura_entries = [entry for entry in frame.get("pleura_lines", []) if entry.get("rater") in self.selectedRaters]
-        bline_entries = [entry for entry in frame.get("b_lines", []) if entry.get("rater") in self.selectedRaters]
+        # Check if scene is valid before proceeding
+        if not slicer.mrmlScene:
+            return
+
+        # Always filter by selectedRaters, even in adjudicator mode
+        pleura_entries = [entry for entry in frame.get("pleura_lines", []) if entry.get("rater", "").strip().lower() in {r.strip().lower() for r in self.selectedRaters}]
+        bline_entries = [entry for entry in frame.get("b_lines", []) if entry.get("rater", "").strip().lower() in {r.strip().lower() for r in self.selectedRaters}]
+
+        # Get currently selected node ID for highlighting
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectedNodeID = selectionNode.GetActivePlaceNodeID() if selectionNode else None
 
         # Ensure enough markup nodes exist
         while len(self.pleuraLines) < len(pleura_entries):
@@ -2194,53 +3137,47 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Update pleura markups
         for i, entry in enumerate(pleura_entries):
             node = self.pleuraLines[i]
-            coordinates = entry.get("line", {}).get("points", [])
-            rater = entry.get("rater", "")
-            color_pleura, _ = self.getColorsForRater(rater)
-            node.SetAttribute("rater", rater)
-            node.GetDisplayNode().SetSelectedColor(color_pleura)
-            node.GetDisplayNode().SetVisibility(True)
-            # Update control points
-            node.RemoveAllControlPoints()
-            for pt in coordinates:
-                node.AddControlPointWorld(*pt)
+            self._updateMarkupNode(node, entry, selectedNodeID)
         # Hide unused pleura markups
         for i in range(len(pleura_entries), len(self.pleuraLines)):
-            self.pleuraLines[i].GetDisplayNode().SetVisibility(False)
+            displayNode = self.pleuraLines[i].GetDisplayNode()
+            if displayNode:
+                displayNode.SetVisibility(False)
 
         # Hide pleura markups for non-selected raters
         for node in self.pleuraLines:
             nodeRater = node.GetAttribute("rater")
             if nodeRater not in self.selectedRaters:
-                node.GetDisplayNode().SetVisibility(False)
+                displayNode = node.GetDisplayNode()
+                if displayNode:
+                    displayNode.SetVisibility(False)
 
         # Update b-line markups
         for i, entry in enumerate(bline_entries):
             node = self.bLines[i]
-            coordinates = entry.get("line", {}).get("points", [])
-            rater = entry.get("rater", "")
-            _, color_bline = self.getColorsForRater(rater)
-            node.SetAttribute("rater", rater)
-            node.GetDisplayNode().SetSelectedColor(color_bline)
-            node.GetDisplayNode().SetVisibility(True)
-            node.RemoveAllControlPoints()
-            for pt in coordinates:
-                node.AddControlPointWorld(*pt)
+            self._updateMarkupNode(node, entry, selectedNodeID)
         # Hide unused b-line markups
         for i in range(len(bline_entries), len(self.bLines)):
-            self.bLines[i].GetDisplayNode().SetVisibility(False)
+            displayNode = self.bLines[i].GetDisplayNode()
+            if displayNode:
+                displayNode.SetVisibility(False)
 
         # Hide b-line markups for non-selected raters
         for node in self.bLines:
             nodeRater = node.GetAttribute("rater")
             if nodeRater not in self.selectedRaters:
-                node.GetDisplayNode().SetVisibility(False)
+                displayNode = node.GetDisplayNode()
+                if displayNode:
+                    displayNode.SetVisibility(False)
 
     def updateLineMarkups(self):
         """
         Update the line markups to match the annotations at the current frame index. Reuse markups instead of deleting/creating them every frame. Only update if frame or annotation data has changed.
         """
-        import json
+        # Check if scene is valid before proceeding
+        if not slicer.mrmlScene:
+            return
+
         # Initialize cache attributes if not present
         if not hasattr(self, '_lastMarkupFrameIndex'):
             self._lastMarkupFrameIndex = None
@@ -2266,10 +3203,14 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         frame_hash = None
         if frame is not None:
             try:
-                # Include selected raters in the hash so rater selection changes trigger updates
+                selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+                selectedNodeID = selectionNode.GetActivePlaceNodeID() if selectionNode else None
+                # Include selected raters and selected node in the hash so selection changes trigger updates
                 cache_data = {
                     'frame': frame,
-                    'selectedRaters': sorted(list(self.selectedRaters)) if hasattr(self, 'selectedRaters') else []
+                    'selectedRaters': sorted(list(self.selectedRaters)) if hasattr(self, 'selectedRaters') else [],
+                    'selectedNodeID': selectedNodeID,
+                    'adjudicatorMode': getattr(self.parameterNode, 'adjudicatorMode', False)
                 }
                 frame_hash = hash(json.dumps(cache_data, sort_keys=True))
             except Exception:
@@ -2292,9 +3233,13 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if frame is None:
                 # Hide all markups if no frame data
                 for node in self.pleuraLines:
-                    node.GetDisplayNode().SetVisibility(False)
+                    displayNode = node.GetDisplayNode()
+                    if displayNode:
+                        displayNode.SetVisibility(False)
                 for node in self.bLines:
-                    node.GetDisplayNode().SetVisibility(False)
+                    displayNode = node.GetDisplayNode()
+                    if displayNode:
+                        displayNode.SetVisibility(False)
                 return
 
             self._updateMarkupNodesForFrame(frame)
@@ -2474,15 +3419,21 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         :return: The ratio of green pixels to blue pixels in the overlay volume. None if inputs not defined yet.
         """
-        # # TODO remove (debugging)
-        # import inspect
-        # caller = inspect.stack()[1].function
-        # print(f"updateOverlayVolume called by {caller}")
-        # print(f"Overlay volume updated with depth guide: {self.depthGuideEnabled}")
         parameterNode = self.getParameterNode()
-
         if parameterNode.overlayVolume is None:
             logging.debug("updateOverlayVolume: No overlay volume found! Cannot update overlay volume.")
+            return None
+
+        adjudicator_mode = getattr(parameterNode, 'adjudicatorMode', False)
+
+        # If not in adjudicator mode and more than one rater is selected, hide overlay and pleura percentage
+        if not adjudicator_mode and hasattr(self, "selectedRaters") and len(self.selectedRaters) > 1:
+            overlayArray = slicer.util.arrayFromVolume(parameterNode.overlayVolume)
+            overlayArray[:] = 0
+            overlayArray = self._applyDepthGuideToMask(overlayArray, parameterNode)
+            slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, overlayArray)
+            slicer.util.showStatusMessage("Overlay hidden: multiple raters selected", 3000)
+            parameterNode.pleuraPercentage = -1.0  # Hide pleura percentage
             return None
 
         if self.annotations is None:
@@ -2493,24 +3444,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         if parameterNode.inputVolume is None:
             logging.debug("No input volume found, not updating overlay volume.")
-            return None
-
-        # if we are using multiple raters and have selected more than one, don't show overlay volume
-        if hasattr(self, "selectedRaters") and len(self.selectedRaters) > 1:
-            overlayArray = slicer.util.arrayFromVolume(parameterNode.overlayVolume)
-            overlayArray[:] = 0
-            overlayArray = self._applyDepthGuideToMask(overlayArray, parameterNode)
-            slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, overlayArray)
-            slicer.util.showStatusMessage("Overlay hidden: multiple raters selected", 3000)
-            return None
-
-        # If no raters are selected, do not draw any mask
-        if hasattr(self, "selectedRaters") and not self.selectedRaters:
-            overlayArray = slicer.util.arrayFromVolume(parameterNode.overlayVolume)
-            overlayArray[:] = 0
-            overlayArray = self._applyDepthGuideToMask(overlayArray, parameterNode)
-            slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, overlayArray)
-            slicer.util.showStatusMessage("Overlay hidden: no raters selected", 3000)
             return None
 
         ultrasoundArray = slicer.util.arrayFromVolume(parameterNode.inputVolume)
@@ -2526,11 +3459,25 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Add pleura lines to mask array using full RGB overlay
         for markupNode in self.pleuraLines:
             nodeRater = markupNode.GetAttribute("rater") if markupNode else None
-            if hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
+
+            # Only check validation status in adjudicator mode
+            if adjudicator_mode:
+                validation_json = markupNode.GetAttribute("validation")
+                status = None
+                if validation_json:
+                    try:
+                        validation = json.loads(validation_json)
+                        status = validation.get("status", None)
+                    except Exception:
+                        status = None
+                if status != "validated":
+                    continue
+
+            # Always filter by selectedRaters, even in adjudicator mode
+            if not adjudicator_mode and hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
                 continue
             if not markupNode.GetDisplayNode().GetVisibility():
                 continue
-
             for i in range(markupNode.GetNumberOfControlPoints() - 1):
                 coord1 = [0, 0, 0]
                 coord2 = [0, 0, 0]
@@ -2548,11 +3495,25 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Add B-lines to mask array using full RGB overlay
         for markupNode in self.bLines:
             nodeRater = markupNode.GetAttribute("rater") if markupNode else None
+
+            # Only check validation status in adjudicator mode
+            if adjudicator_mode:
+                validation_json = markupNode.GetAttribute("validation")
+                status = None
+                if validation_json:
+                    try:
+                        validation = json.loads(validation_json)
+                        status = validation.get("status", None)
+                    except Exception:
+                        status = None
+                if status != "validated":
+                    continue
+
+            # Always filter by selectedRaters, even in adjudicator mode
             if hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
                 continue
             if not markupNode.GetDisplayNode().GetVisibility():
                 continue
-
             for i in range(markupNode.GetNumberOfControlPoints() - 1):
                 coord1 = [0, 0, 0]
                 coord2 = [0, 0, 0]
@@ -2581,15 +3542,22 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         mask_hash = zlib.crc32(maskArray.tobytes())
         if hasattr(self, '_lastOverlayMaskHash') and self._lastOverlayMaskHash == mask_hash:
             # No change, skip update
-            return greenPixels / bluePixels if bluePixels != 0 else 0.0
+            if bluePixels == 0:
+                parameterNode.pleuraPercentage = 0.0
+                return 0.0
+            else:
+                parameterNode.pleuraPercentage = greenPixels / bluePixels * 100
+                return greenPixels / bluePixels
         # Update the overlay volume
         slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, maskArray)
         self._lastOverlayMaskHash = mask_hash
 
         # Return the ratio of green pixels to blue pixels
         if bluePixels == 0:
+            parameterNode.pleuraPercentage = 0.0
             return 0.0
         else:
+            parameterNode.pleuraPercentage = greenPixels / bluePixels * 100
             return greenPixels / bluePixels
 
     def dicomHeaderDictForBrowserNode(self, browserNode):
@@ -2744,71 +3712,51 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
 
-
-#
-# AnnotateUltrasoundTest
-#
-
-class AnnotateUltrasoundTest(ScriptedLoadableModuleTest):
-    """
-    This is the test case for your scripted module.
-    Uses ScriptedLoadableModuleTest base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
-
-    def setUp(self):
-        """ Do whatever is needed to reset the state - typically a scene clear will be enough.
+    def extractAndSetupRaters(self):
         """
-        slicer.mrmlScene.Clear()
-
-    def runTest(self):
-        """Run as few or as many tests as needed here.
+        Extract all unique raters from the loaded annotations and set up selectedRaters.
+        This centralizes the rater extraction logic to avoid duplication.
         """
-        self.setUp()
-        self.test_AnnotateUltrasound1()
+        # Extract all unique raters from the loaded annotations
+        seenRaters = []
+        if self.annotations and 'frame_annotations' in self.annotations:
+            for frame in self.annotations['frame_annotations']:
+                for line_type in ['pleura_lines', 'b_lines']:
+                    for line in frame.get(line_type, []):
+                        rater = line.get('rater')
+                        if rater and rater not in seenRaters:
+                            seenRaters.append(rater)
 
-    def test_AnnotateUltrasound1(self):
-        """ Ideally you should have several levels of tests.  At the lowest level
-        tests should exercise the functionality of the logic with different inputs
-        (both valid and invalid).  At higher levels your tests should emulate the
-        way the user would interact with your code and confirm that it still works
-        the way you intended.
-        One of the most important features of the tests is that it should alert other
-        developers when their changes will have an impact on the behavior of your
-        module.  For example, if a developer removes a feature that you depend on,
-        your test should break so they know that the feature is needed.
+        parameterNode = self.getParameterNode()
+        current_rater = parameterNode.rater.strip().lower()
+        if current_rater in seenRaters:
+            seenRaters.remove(current_rater)
+        # Remove __selected_node__ if it exists (to avoid duplicates)
+        if "__selected_node__" in seenRaters:
+            seenRaters.remove("__selected_node__")
+        # Remove __adjudicated_node__ if it exists (to avoid duplicates)
+        if "__adjudicated_node__" in seenRaters:
+            seenRaters.remove("__adjudicated_node__")
+        # Remove current_rater if it exists (to avoid duplicates)
+        if current_rater in seenRaters:
+            seenRaters.remove(current_rater)
+        # Now build the list: current_rater, __selected_node__, __adjudicated_node__then sorted rest
+        # we need to add __selected_node__, __adjudicated_node__ to the list to ensure that the selected line is always visible and
+        # uses a different color than the other lines
+        self.seenRaters = [current_rater, "__selected_node__", "__adjudicated_node__"] + sorted(seenRaters)
+        self.setSelectedRaters(set(self.seenRaters))
+
+    def getCurrentRater(self):
+        parameterNode = self.getParameterNode()
+        if parameterNode and hasattr(parameterNode, 'rater'):
+            return parameterNode.rater.strip().lower()
+        return None
+
+    def _resetMarkupCache(self):
         """
-
-        self.delayDisplay("Starting the test")
-
-        # Get/create input data
-
-        import SampleData
-        postModuleDiscoveryTasks()
-        inputVolume = SampleData.downloadSample('AnnotateUltrasound1')
-        self.delayDisplay('Loaded test data set')
-
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(inputScalarRange[0], 0)
-        self.assertEqual(inputScalarRange[1], 695)
-
-        outputVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
-        threshold = 100
-
-        # Test the module logic
-
-        logic = AnnotateUltrasoundLogic()
-
-        # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], threshold)
-
-        # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], inputScalarRange[1])
-
-        self.delayDisplay('Test passed')
+        Reset the markup cache to force immediate updates when validation status changes.
+        """
+        if hasattr(self, '_lastMarkupFrameIndex'):
+            self._lastMarkupFrameIndex = None
+        if hasattr(self, '_lastMarkupFrameHash'):
+            self._lastMarkupFrameHash = None

@@ -61,7 +61,10 @@
           },
           "coordinate_space": {
             "type": "string",
-            "enum": ["LPS", "RAS"],
+            "enum": [
+              "LPS",
+              "RAS"
+            ],
             "default": "RAS"
           },
           "pleura_lines": {
@@ -89,7 +92,26 @@
                   },
                   "required": [
                     "points"
-                  ]
+                  ],
+                  "validation": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "unadjudicated",
+                          "validated",
+                          "invalidated"
+                        ]
+                      },
+                      "adjudicator": {
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "type": "string"
+                      }
+                    }
+                  }
                 }
               },
               "required": [
@@ -123,7 +145,26 @@
                   },
                   "required": [
                     "points"
-                  ]
+                  ],
+                  "validation": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "unadjudicated",
+                          "validated",
+                          "invalidated"
+                        ]
+                      },
+                      "adjudicator": {
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "type": "string"
+                      }
+                    }
+                  }
                 }
               },
               "required": [

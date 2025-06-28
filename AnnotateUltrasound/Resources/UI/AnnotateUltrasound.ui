@@ -16,7 +16,7 @@
                     <item>
                         <widget class="QGroupBox" name="raterInfoGroupBox">
                             <property name="title">
-                                <string/>
+                                <string />
                             </property>
                             <layout class="QVBoxLayout" name="raterInfoVBox">
                                 <item>
@@ -24,7 +24,8 @@
                                         <item>
                                             <widget class="QLabel" name="raterNameLabel">
                                                 <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                                                    <sizepolicy hsizetype="Preferred"
+                                                        vsizetype="Fixed">
                                                         <horstretch>0</horstretch>
                                                         <verstretch>0</verstretch>
                                                     </sizepolicy>
@@ -37,7 +38,8 @@
                                         <item>
                                             <widget class="QLineEdit" name="raterName">
                                                 <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                                                    <sizepolicy hsizetype="Expanding"
+                                                        vsizetype="Fixed">
                                                         <horstretch>0</horstretch>
                                                         <verstretch>0</verstretch>
                                                     </sizepolicy>
@@ -56,12 +58,13 @@
                                     </layout>
                                 </item>
                                 <item>
-                                    <widget class="ctkCollapsibleButton" name="raterColorsCollapsibleButton">
+                                    <widget class="ctkCollapsibleButton"
+                                        name="raterColorsCollapsibleButton">
                                         <property name="text">
                                             <string>Rater Selection</string>
                                         </property>
                                         <property name="collapsed">
-                                            <bool>true</bool>
+                                            <bool>false</bool>
                                         </property>
                                         <layout class="QVBoxLayout" name="annotatorVBox">
                                             <item>
@@ -77,6 +80,171 @@
                                                     </property>
                                                     <property name="verticalScrollBarPolicy">
                                                         <enum>Qt::ScrollBarAsNeeded</enum>
+                                                    </property>
+                                                </widget>
+                                            </item>
+                                        </layout>
+                                    </widget>
+                                </item>
+                                <item>
+                                    <widget class="ctkCollapsibleButton"
+                                        name="adjudicationToolsCollapsibleButton">
+                                        <property name="text">
+                                            <string>Adjudication Tools</string>
+                                        </property>
+                                        <property name="collapsed">
+                                            <bool>true</bool>
+                                        </property>
+                                        <layout class="QVBoxLayout" name="adjudicationToolsVBox">
+                                            <item>
+                                                <layout class="QHBoxLayout"
+                                                    name="adjudicationButtonsLayout">
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="validateLineButton">
+                                                            <property name="text">
+                                                                <string>Validate Line [V]</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="invalidateLineButton">
+                                                            <property name="text">
+                                                                <string>Invalidate Line [I]</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="duplicateLineButton">
+                                                            <property name="text">
+                                                                <string>Mark Duplicate [U]</string>
+                                                            </property>
+                                                            <property name="toolTip">
+                                                                <string>Mark the selected line as
+                                                                    duplicate (Shortcut U key)</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                </layout>
+                                            </item>
+                                            <item>
+                                                <layout class="QHBoxLayout"
+                                                    name="unadjudicatedNavButtonsLayout">
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="nextUnadjudicatedButton">
+                                                            <property name="text">
+                                                                <string>Next Line [N]</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="prevUnadjudicatedButton">
+                                                            <property name="text">
+                                                                <string>Prev Line [P]</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                </layout>
+                                            </item>
+                                            <item>
+                                                <layout class="QHBoxLayout"
+                                                    name="visibleNavButtonsLayout">
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="nextVisibleLineButton">
+                                                            <property name="text">
+                                                                <string>Next Visible [Shift+N]</string>
+                                                            </property>
+                                                            <property name="toolTip">
+                                                                <string>Navigate to next visible
+                                                                    annotation line (Shortcut
+                                                                    Shift+N)</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="prevVisibleLineButton">
+                                                            <property name="text">
+                                                                <string>Prev Visible [Shift+P]</string>
+                                                            </property>
+                                                            <property name="toolTip">
+                                                                <string>Navigate to previous visible
+                                                                    annotation line (Shortcut
+                                                                    Shift+P)</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                </layout>
+                                            </item>
+                                            <item>
+                                                <layout class="QHBoxLayout"
+                                                    name="adjudicationBatchButtonsLayout">
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="validateAllButton">
+                                                            <property name="text">
+                                                                <string>Validate Rest</string>
+                                                            </property>
+                                                            <property name="toolTip">
+                                                                <string>Mark all visible
+                                                                    unadjudicated lines as validated</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="invalidateAllUnadjudicatedButton">
+                                                            <property name="text">
+                                                                <string>Invalidate Rest</string>
+                                                            </property>
+                                                            <property name="toolTip">
+                                                                <string>Mark all visible
+                                                                    unadjudicated lines as
+                                                                    invalidated</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                    <item>
+                                                        <widget class="QPushButton"
+                                                            name="duplicateAllUnadjudicatedButton">
+                                                            <property name="text">
+                                                                <string>Duplicate Rest</string>
+                                                            </property>
+                                                            <property name="toolTip">
+                                                                <string>Mark all visible
+                                                                    unadjudicated lines as
+                                                                    duplicated</string>
+                                                            </property>
+                                                        </widget>
+                                                    </item>
+                                                </layout>
+                                            </item>
+                                            <item>
+                                                <widget class="QPushButton"
+                                                    name="resetAllAdjudicationButton">
+                                                    <property name="text">
+                                                        <string>Reset All [R]</string>
+                                                    </property>
+                                                    <property name="toolTip">
+                                                        <string>Reset all lines to unadjudicated
+                                                            (Shortcut R key)</string>
+                                                    </property>
+                                                </widget>
+                                            </item>
+                                            <item>
+                                                <widget class="QCheckBox"
+                                                    name="showInvalidOrDuplicateCheckBox">
+                                                    <property name="text">
+                                                        <string>Show Invalidated or Duplicated lines</string>
+                                                    </property>
+                                                    <property name="toolTip">
+                                                        <string>Show lines marked as Invalidated or
+                                                            Duplicated</string>
                                                     </property>
                                                 </widget>
                                             </item>
@@ -158,7 +326,8 @@
                                 <item>
                                     <widget class="QPushButton" name="saveAndLoadNextButton">
                                         <property name="toolTip">
-                                            <string>Saves annotations and loads next scan (Shortcut A key)</string>
+                                            <string>Saves annotations and loads next scan (Shortcut
+                                                A key)</string>
                                         </property>
                                         <property name="text">
                                             <string>Save &amp;&amp; next [A]</string>
@@ -247,6 +416,58 @@
                                 </property>
                             </widget>
                         </item>
+                        <item row="4" column="0" colspan="2">
+                            <widget class="QPushButton" name="showHideLinesButton">
+                                <property name="toolTip">
+                                    <string>Show or hide all annotation lines (Shortcut L key)</string>
+                                </property>
+                                <property name="text">
+                                    <string>Show/Hide Lines [L]</string>
+                                </property>
+                                <property name="checkable">
+                                    <bool>true</bool>
+                                </property>
+                                <property name="checked">
+                                    <bool>true</bool>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="5" column="0">
+                            <widget class="QLabel" name="label_2">
+                                <property name="sizePolicy">
+                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+                                        <horstretch>0</horstretch>
+                                        <verstretch>0</verstretch>
+                                    </sizepolicy>
+                                </property>
+                                <property name="minimumSize">
+                                    <size>
+                                        <width>0</width>
+                                        <height>20</height>
+                                    </size>
+                                </property>
+                                <property name="text">
+                                    <string>Annotated frames</string>
+                                </property>
+                                <property name="alignment">
+                                    <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="6" column="0">
+                            <widget class="QPushButton" name="addCurrentFrameButton">
+                                <property name="text">
+                                    <string>Add current frame</string>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="6" column="1">
+                            <widget class="QPushButton" name="removeCurrentFrameButton">
+                                <property name="text">
+                                    <string>Remove selected frame</string>
+                                </property>
+                            </widget>
+                        </item>
                         <item row="7" column="0" colspan="2">
                             <widget class="QTableWidget" name="framesTableWidget" />
                         </item>
@@ -273,10 +494,10 @@
                         <item row="3" column="0">
                             <widget class="QPushButton" name="overlayVisibilityButton">
                                 <property name="toolTip">
-                                    <string>Toggles overlay display (Shortcut Space bar)</string>
+                                    <string>Toggles overlay display (Shortcut O key)</string>
                                 </property>
                                 <property name="text">
-                                    <string>Overlay [Space]</string>
+                                    <string>Overlay [O]</string>
                                 </property>
                                 <property name="checkable">
                                     <bool>true</bool>
@@ -299,13 +520,6 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="5" column="0">
-                            <widget class="QPushButton" name="addCurrentFrameButton">
-                                <property name="text">
-                                    <string>Add current frame</string>
-                                </property>
-                            </widget>
-                        </item>
                         <item row="1" column="1">
                             <widget class="QPushButton" name="removePleuraButton">
                                 <property name="toolTip">
@@ -323,28 +537,6 @@
                                 </property>
                                 <property name="text">
                                     <string>Last B-line [D]</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="4" column="0">
-                            <widget class="QLabel" name="label_2">
-                                <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-                                        <horstretch>0</horstretch>
-                                        <verstretch>0</verstretch>
-                                    </sizepolicy>
-                                </property>
-                                <property name="minimumSize">
-                                    <size>
-                                        <width>0</width>
-                                        <height>20</height>
-                                    </size>
-                                </property>
-                                <property name="text">
-                                    <string>Annotated frames</string>
-                                </property>
-                                <property name="alignment">
-                                    <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
                                 </property>
                             </widget>
                         </item>
@@ -470,6 +662,13 @@
                             <widget class="QCheckBox" name="showPleuraPercentageCheckBox">
                                 <property name="text">
                                     <string>Show pleura percentage</string>
+                                </property>
+                            </widget>
+                        </item>
+                        <item>
+                            <widget class="QCheckBox" name="adjudicatorModeCheckBox">
+                                <property name="text">
+                                    <string>Adjudicator Mode</string>
                                 </property>
                             </widget>
                         </item>
