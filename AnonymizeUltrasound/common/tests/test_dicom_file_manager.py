@@ -1,3 +1,4 @@
+from pydicom import Sequence
 import pytest
 import os
 import tempfile
@@ -37,8 +38,8 @@ class TestDicomFileManager:
     CONTENT_TIME = "120000"
     TRANSDUCER_TYPE = "SC6-1s,02597"
     TRANSDUCER_MODEL = "sc6-1s"
-    ROWS = 480
-    COLUMNS = 640
+    ROWS = 4
+    COLUMNS = 6
     BITS_ALLOCATED = 8
     BITS_STORED = 8
     HIGH_BIT = 7
@@ -48,9 +49,24 @@ class TestDicomFileManager:
     SEQUENCE_OF_ULTRASOUND_REGIONS = []
     TRANSFER_SYNTAX_UID = '1.2.840.10008.1.2'  # Implicit VR Little Endian
     IMPLEMENTATION_CLASS_UID = '1.2.826.0.1.3680043.8.498.1'  # Example UID
+    PHYSICAL_DELTA_X = 0.1
+    PHYSICAL_DELTA_Y = 0.15
 
     def create_test_dicom_file(self, **kwargs) -> FileDataset:
-        """Create a temporary DICOM file for testing"""
+        """Create a temporary DICOM file for testing
+        
+        This method creates a FileDataset object that simulates a DICOM ultrasound file
+        with configurable attributes. It sets up the necessary file metadata and dataset
+        attributes required for testing DICOM file operations.
+        
+        Example:
+            dicom_file = create_test_dicom_file(
+                PatientID="CUSTOM123",
+                NumberOfFrames=5,
+                PhysicalDeltaX=0.2,
+                PhysicalDeltaY=0.3
+            )
+        """
         # Default DICOM attributes
         defaults = {
             'PatientID': self.PATIENT_ID,
@@ -91,13 +107,11 @@ class TestDicomFileManager:
         # Set all attributes
         for key, value in attributes.items():
             setattr(ds, key, value)
-        
-        # Add ultrasound regions if needed
-        if 'PhysicalDeltaX' in kwargs or 'PhysicalDeltaY' in kwargs:
-            region = Dataset()
-            region.PhysicalDeltaX = kwargs.get('PhysicalDeltaX', 0.1)
-            region.PhysicalDeltaY = kwargs.get('PhysicalDeltaY', 0.15)
-            ds.SequenceOfUltrasoundRegions = [region]
+
+        region = Dataset()
+        region.PhysicalDeltaX = kwargs.get('PhysicalDeltaX', self.PHYSICAL_DELTA_X)
+        region.PhysicalDeltaY = kwargs.get('PhysicalDeltaY', self.PHYSICAL_DELTA_Y)
+        ds.SequenceOfUltrasoundRegions = [region]
         
         # Create minimal pixel data (just zeros)
         if hasattr(ds, 'NumberOfFrames') and ds.NumberOfFrames > 1:
@@ -154,9 +168,7 @@ class TestDicomFileManager:
     def test_init(self, manager):
         """Test DicomFileManager initialization"""
         assert manager.dicom_df is None
-        assert manager.next_dicom_df_index == 0
-        assert manager.current_dicom_dataset is None
-        assert manager.current_dicom_header is None
+        assert manager.next_dicom_index == 0
         assert manager._temp_directories == []
 
     def test_get_transducer_model_valid(self, manager):
@@ -185,13 +197,20 @@ class TestDicomFileManager:
         result = manager._extract_dicom_info(sample_dicom_filepath, False)
 
         assert result is not None
-        assert len(result) == 12  # All fields
-        assert result[0] == sample_dicom_filepath  # Filepath
-        assert result[2] == self.PATIENT_ID  # PatientID
-        assert result[3] == self.STUDY_UID  # StudyUID
-        assert result[4] == self.SERIES_UID  # SeriesUID
-        assert result[5] == self.SOP_INSTANCE_UID  # InstanceUID
-        assert result[11] == self.TRANSDUCER_MODEL # TransducerModel
+        assert len(result) == 13
+        assert result['Filepath'] == sample_dicom_filepath
+        assert result['AnonFilename'] == "4657494024_53302064.dcm"
+        assert result['PatientUID'] == self.PATIENT_ID
+        assert result['StudyUID'] == self.STUDY_UID
+        assert result['SeriesUID'] == self.SERIES_UID
+        assert result['InstanceUID'] == self.SOP_INSTANCE_UID
+        assert result['ContentDate'] == self.CONTENT_DATE
+        assert result['ContentTime'] == self.CONTENT_TIME
+        assert result['Patch'] == False
+        assert result['TransducerModel'] == self.TRANSDUCER_MODEL
+        assert result['PhysicalDeltaX'] == self.PHYSICAL_DELTA_X
+        assert result['PhysicalDeltaY'] == self.PHYSICAL_DELTA_Y
+        assert result['DICOMDataset'] is not None
 
     def test_extract_dicom_info_skip_single_frame(self, manager, single_frame_dicom_filepath):
         """Test skipping single frame files when requested"""
@@ -243,17 +262,34 @@ class TestDicomFileManager:
     def test_create_dataframe(self, manager):
         """Test dataframe creation"""
         dicom_data = [
-            ["file1.dcm", "anon1.dcm", "PAT1", "STU1", "SER1", "INS1", 0.1, 0.15, "20240101", "120000", False, "sc6-1s"],
-            ["file2.dcm", "anon2.dcm", "PAT2", "STU2", "SER2", "INS2", 0.2, 0.25, "20240102", "130000", True, "l12-3"]
+            {
+                'Filepath': 'file1.dcm',
+                'ContentDate': '20240101',
+                'ContentTime': '120000',
+                'PatientUID': 'patient123',
+                'StudyUID': 'study456',
+                'PhysicalDeltaX': 0.1,
+                'PhysicalDeltaY': 0.15,
+                'TransducerModel': 'sc6-1s'
+            },
+            {
+                'Filepath': 'file2.dcm',
+                'ContentDate': '20240101',
+                'ContentTime': '120100',
+                'PatientUID': 'patient123',
+                'StudyUID': 'study456',
+                'PhysicalDeltaX': None,
+                'PhysicalDeltaY': None,
+                'TransducerModel': 'l12-3'
+            }
         ]
-
         manager._create_dataframe(dicom_data)
 
         assert manager.dicom_df is not None
         assert len(manager.dicom_df) == 2
         assert 'TransducerModel' in manager.dicom_df.columns
         assert 'SeriesNumber' in manager.dicom_df.columns
-        assert manager.next_dicom_df_index == 0
+        assert manager.next_dicom_index == 0
 
     def test_update_progress_from_output_no_dataframe(self, manager):
         """Test progress update with no dataframe"""
@@ -286,7 +322,7 @@ class TestDicomFileManager:
 
         result = manager.update_progress_from_output(temp_dir)
         assert result == 1
-        assert manager.next_dicom_df_index == 1
+        assert manager.next_dicom_index == 1
 
     def test_get_file_for_instance_uid_found(self, manager):
         """Test getting file path for instance UID when found"""
@@ -315,72 +351,54 @@ class TestDicomFileManager:
 
     def test_dicom_header_to_dict_simple(self, manager):
         """Test DICOM header to dict conversion with simple elements"""
-        # Mock DICOM dataset
-        elem1 = Mock()
-        elem1.VR = "LO"
-        elem1.name = "PatientName"
-        elem1.value = "John Doe"
-
-        elem2 = Mock()
-        elem2.VR = "DA"
-        elem2.name = "StudyDate"
-        elem2.value = "20240101"
-
-        dataset = Mock()
-        dataset.__iter__ = Mock(return_value=iter([elem1, elem2]))
-
+        dataset = self.create_test_dicom_file()
         result = manager.dicom_header_to_dict(dataset)
 
         assert result == {
-            "PatientName": "John Doe",
-            "StudyDate": "20240101"
+            "Patient ID": self.PATIENT_ID,
+            "Patient's Name": self.PATIENT_NAME,
+            "Study Instance UID": self.STUDY_UID,
+            "Series Instance UID": self.SERIES_UID,
+            "SOP Class UID": self.SOP_CLASS_UID,
+            "SOP Instance UID": self.SOP_INSTANCE_UID,
+            "Modality": self.MODALITY,
+            "Number of Frames": str(self.NUMBER_OF_FRAMES),
+            "Content Date": self.CONTENT_DATE,
+            "Content Time": self.CONTENT_TIME,
+            "Transducer Type": self.TRANSDUCER_TYPE,
+            "Rows": self.ROWS,
+            "Columns": self.COLUMNS,
+            "Bits Allocated": self.BITS_ALLOCATED,
+            "Bits Stored": self.BITS_STORED,
+            "High Bit": self.HIGH_BIT,
+            "Pixel Representation": self.PIXEL_REPRESENTATION,
+            "Samples per Pixel": self.SAMPLES_PER_PIXEL,
+            "Photometric Interpretation": self.PHOTOMETRIC_INTERPRETATION,
+            "Sequence of Ultrasound Regions": [
+                {
+                    "Physical Delta X": self.PHYSICAL_DELTA_X,
+                    "Physical Delta Y": self.PHYSICAL_DELTA_Y
+                }
+            ]
         }
-
-    def test_dicom_header_to_dict_with_sequence(self, manager):
-        """Test DICOM header to dict conversion with sequence elements"""
-        # Mock sequence element
-        seq_elem = Mock()
-        seq_elem.VR = "SQ"
-        seq_elem.name = "SequenceOfUltrasoundRegions"
-
-        # Mock sequence item
-        item_elem = Mock()
-        item_elem.VR = "FL"
-        item_elem.name = "PhysicalDeltaX"
-        item_elem.value = 0.1
-
-        seq_item = Mock()
-        seq_item.__iter__ = Mock(return_value=iter([item_elem]))
-
-        seq_elem.__iter__ = Mock(return_value=iter([seq_item]))
-
-        dataset = Mock()
-        dataset.__iter__ = Mock(return_value=iter([seq_elem]))
-
-        result = manager.dicom_header_to_dict(dataset)
-
-        assert "SequenceOfUltrasoundRegions" in result
-        assert isinstance(result["SequenceOfUltrasoundRegions"], list)
-        assert len(result["SequenceOfUltrasoundRegions"]) == 1
-        assert result["SequenceOfUltrasoundRegions"][0]["PhysicalDeltaX"] == 0.1
 
     def test_increment_dicom_index_basic(self, manager):
         """Test basic DICOM index increment"""
         manager.dicom_df = pd.DataFrame({'test': [1, 2, 3]})
-        manager.next_dicom_df_index = 0
+        manager.next_dicom_index = 0
 
         result = manager._increment_dicom_index()
         assert result is True
-        assert manager.next_dicom_df_index == 1
+        assert manager.next_dicom_index == 1
 
     def test_increment_dicom_index_at_end(self, manager):
         """Test DICOM index increment at end of dataframe"""
         manager.dicom_df = pd.DataFrame({'test': [1, 2]})
-        manager.next_dicom_df_index = 1
+        manager.next_dicom_index = 1
 
         result = manager._increment_dicom_index()
         assert result is False
-        assert manager.next_dicom_df_index == 2
+        assert manager.next_dicom_index == 2
 
     def test_increment_dicom_index_with_continue_progress(self, manager, temp_dir):
         """Test DICOM index increment with continue progress"""
@@ -388,7 +406,7 @@ class TestDicomFileManager:
         manager.dicom_df = pd.DataFrame({
             'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
         })
-        manager.next_dicom_df_index = 0
+        manager.next_dicom_index = 0
         
         # Create some existing output files (file1.dcm and file2.dcm already exist)
         Path(os.path.join(temp_dir, 'file1.dcm')).touch()
@@ -400,17 +418,17 @@ class TestDicomFileManager:
         
         # Should skip to file3.dcm (index 2) since file1.dcm and file2.dcm already exist
         assert result is True
-        assert manager.next_dicom_df_index == 2
+        assert manager.next_dicom_index == 2
         
         # Test increment again - should go to file4.dcm (index 3)
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is True
-        assert manager.next_dicom_df_index == 3
+        assert manager.next_dicom_index == 3
         
         # Test increment again - should go beyond end (index 4)
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is False
-        assert manager.next_dicom_df_index == 4
+        assert manager.next_dicom_index == 4
 
     @patch('os.path.exists')
     @patch('shutil.rmtree')

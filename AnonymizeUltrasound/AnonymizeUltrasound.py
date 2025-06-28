@@ -488,7 +488,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Headers directory does not exist")
             return
 
-        numFiles = self.logic.dicomFileManager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked)
+        numFiles = self.logic.dicom_file_manager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked)
         logging.info(f"Found {numFiles} DICOM files in input folder")
 
         if numFiles > 0:
@@ -496,10 +496,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self._parameterNode.status = AnonymizerStatus.INITIAL
 
-        # Export self.logic.dicomFileManager.dicom_df as a CSV file in the headers directory
-        if self.logic.dicomFileManager.dicom_df is not None:
+        # Export self.logic.dicom_file_manager.dicom_df as a CSV file in the headers directory
+        if self.logic.dicom_file_manager.dicom_df is not None:
             outputFilePath = os.path.join(outputHeadersDirectory, "keys.csv")
-            self.logic.dicomFileManager.dicom_df.to_csv(outputFilePath, index=False)
+            self.logic.dicom_file_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(outputFilePath, index=False)
 
         statusText = str(numFiles)
         if self.ui.skipSingleframeCheckBox.checked:
@@ -508,7 +508,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             statusText += " dicom files found in input folder."
 
         if self.ui.continueProgressCheckBox.checked:
-            numDone = self.logic.dicomFileManager.update_progress_from_output(outputDirectory)
+            numDone = self.logic.dicom_file_manager.update_progress_from_output(outputDirectory)
             if numDone is None:
                 statusText += '\nAll files have been processed. Cannot load more files from input folder.'
             elif numDone < 1:
@@ -523,11 +523,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         continueProgress = self.ui.continueProgressCheckBox.checked
 
         # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
-        if self.logic.dicomFileManager.next_dicom_df_index is None and continueProgress:
+        if self.logic.dicom_file_manager.next_dicom_index is None and continueProgress:
             self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
             return
 
-        # Remove observers for the mask markups node, because loading a new series will reset the scene and createa a new markups node
+        # Remove observers for the mask markups node, because loading a new series will reset the scene and create a new markups node
 
         maskMarkupsNode = self._parameterNode.maskMarkups
         if maskMarkupsNode:
@@ -572,39 +572,44 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Update GUI
 
-        patientID = self.logic.dicomFileManager.current_dicom_dataset.PatientID if self.logic.dicomFileManager.current_dicom_dataset else "N/A"
-        if patientID:
-            self.ui.patientIdLabel.text = patientID
-        else:
-            logging.error("Patient ID is missing")
-            self.ui.patientIdLabel.text = 'None'
+        if currentDicomDfIndex is not None and self.logic.dicom_file_manager.dicom_df is not None:
+            current_dicom_record = self.logic.dicom_file_manager.dicom_df.iloc[currentDicomDfIndex]
 
-        instanceUID = self.logic.dicomFileManager.current_dicom_dataset.SOPInstanceUID if self.logic.dicomFileManager.current_dicom_dataset else "N/A"
-        if instanceUID is None:
-            logging.error("Instance UID is missing")
-            self.ui.sopInstanceUidLabel.text = 'None'
-        else:
-            self.ui.sopInstanceUidLabel.text = instanceUID
+            patientID = current_dicom_record.DICOMDataset.PatientID if current_dicom_record is not None else "N/A"
+            if patientID:
+                self.ui.patientIdLabel.text = patientID
+            else:
+                logging.error("Patient ID is missing")
+                self.ui.patientIdLabel.text = 'None'
 
-        statusText = f"Instance {instanceUID} loaded from file:\n"
+            instanceUID = current_dicom_record.DICOMDataset.SOPInstanceUID if current_dicom_record is not None else "N/A"
+            if instanceUID is None:
+                logging.error("Instance UID is missing")
+                self.ui.sopInstanceUidLabel.text = 'None'
+            else:
+                self.ui.sopInstanceUidLabel.text = instanceUID
 
-        # Get the file path from the dataframe
+            statusText = f"Instance {instanceUID} loaded from file:\n"
 
-        if currentDicomDfIndex is not None and self.logic.dicomFileManager.dicom_df is not None:
-            filepath = self.logic.dicomFileManager.dicom_df.iloc[currentDicomDfIndex].Filepath
+            # Get the file path from the dataframe
+
+            filepath = current_dicom_record['Filepath']
             statusText += filepath
             self.ui.statusLabel.text = statusText
-        self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
-        self.logic.showMaskContour()
 
-        # Set red slice compositing mode to 2
-        sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
-        sliceCompositeNode.SetCompositing(2)
+            self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
+            self.logic.showMaskContour()
 
-        # Reactivate the main window to ensure keyboard shortcuts work
-        slicer.util.mainWindow().activateWindow()
-        slicer.util.mainWindow().raise_()
-        slicer.util.mainWindow().setFocus()
+            # Set red slice compositing mode to 2
+            sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
+            sliceCompositeNode.SetCompositing(2)
+
+            # Reactivate the main window to ensure keyboard shortcuts work
+            slicer.util.mainWindow().activateWindow()
+            slicer.util.mainWindow().raise_()
+            slicer.util.mainWindow().setFocus()
+        else:
+            self.ui.statusLabel.text = "No DICOM file loaded"
 
     def onAutoOverlayCheckBoxToggled(self, checked):
         self.logic.showAutoOverlay = checked  # Pass to logic
@@ -807,7 +812,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         outputDirectory = self.ui.outputDirectoryButton.directory
         headersDirectory = self.ui.headersDirectoryButton.directory
 
-        filename, patient_uid, file_uid = self.logic.generateNameFromDicomData(self.logic.dicomFileManager.current_dicom_dataset, hashPatientId)
+        current_dicom_record = self.logic.dicom_file_manager.dicom_df.iloc[self.logic.dicom_file_manager.current_dicom_index]
+        filename, patient_uid, file_uid = self.logic.generateNameFromDicomData(current_dicom_record.DICOMDataset, hashPatientId)
 
         dialog = self.createWaitDialog("Exporting scan", "Please wait until the scan is exported...")
 
@@ -835,9 +841,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
 
         # Display file paths in the status label
-
-        statusText = "DICOM saved to: " + dicomFilePath + "\nAnnotations saved to: " + jsonFilePath\
-            + "\nDICOM header saved to: " + dicomHeaderFilePath
+        statusText = f"DICOM saved to: {dicomFilePath}\nAnnotations saved to: {jsonFilePath}"
+        if dicomHeaderFilePath:
+            statusText += f"\nDICOM header saved to: {dicomHeaderFilePath}"
 
         self.ui.statusLabel.text = statusText
 
@@ -848,22 +854,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     #
     # Dialog helpers
     #
-
-    def createWaitDialog(self, title, message):
-        dialog = qt.QDialog(slicer.util.mainWindow())
-        dialog.setWindowTitle(title)
-        dialogLayout = qt.QVBoxLayout(dialog)
-        dialogLayout.setContentsMargins(20, 14, 20, 14)
-        dialogLayout.setSpacing(4)
-        dialogLayout.addStretch(1)
-        dialogLabel = qt.QLabel(message)
-        dialogLabel.setAlignment(qt.Qt.AlignCenter)
-        dialogLayout.addWidget(dialogLabel)
-        dialogLayout.addStretch(1)
-        dialog.show()
-        slicer.app.processEvents()
-
-        return dialog
 
     def createWaitDialog(self, title, message):
         dialog = qt.QDialog(slicer.util.mainWindow())
@@ -928,7 +918,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         ScriptedLoadableModuleLogic.__init__(self)
         VTKObservationMixin.__init__(self)
 
-        self.dicomFileManager = DicomFileManager()
+        self.dicom_file_manager = DicomFileManager()
         self.showAutoOverlay = False
         self._autoMaskRGB = None     # 1×H×W×3  uint8, red
         self._manualMaskRGB = None   # 1×H×W×3  uint8, green
@@ -948,7 +938,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """
         Return the number of instances in the current DICOM dataframe.
         """
-        return self.dicomFileManager.get_number_of_instances()
+        return self.dicom_file_manager.get_number_of_instances()
 
     def loadNextSequence(self, outputDirectory, continueProgress=True):
         """
@@ -957,17 +947,18 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """
         self.resetScene()
         parameterNode = self.getParameterNode()
-        current_index, sequence_browser = self.dicomFileManager.load_sequence(parameterNode, outputDirectory, continueProgress)
+        current_dicom_index, sequence_browser = self.dicom_file_manager.load_sequence(parameterNode, outputDirectory, continueProgress)
 
         # If no more sequences are available, return None
-        if current_index is None or sequence_browser is None:
+        if sequence_browser is None:
             return None
 
         # After loading the DICOM, try to find a cached mask for the transducer model
         # If found, apply it. If not, the user will need to define it manually.
-        if hasattr(self.dicomFileManager, 'current_dicom_dataset') and self.dicomFileManager.current_dicom_dataset:
-            transducerType = self.dicomFileManager.current_dicom_dataset.get("TransducerType", "unknown")
-            self.currentTransducerModel = self.dicomFileManager.get_transducer_model(transducerType)
+        if self.dicom_file_manager.dicom_df is not None:
+            current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+            transducerType = current_dicom_record.get("TransducerModel", "unknown")
+            self.currentTransducerModel = self.dicom_file_manager.get_transducer_model(transducerType)
             cached_mask = self.getCachedMaskForTransducer(self.currentTransducerModel)
 
             if cached_mask:
@@ -985,6 +976,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if masterSequenceNode is None:
             logging.error("Master sequence node of sequence browser node with ID " + sequence_browser.GetID() + " not found")
             return None
+
         proxyNode = sequence_browser.GetProxyNode(masterSequenceNode)
         if proxyNode is None:
             logging.error("Proxy node of master sequence node with ID " + masterSequenceNode.GetID() + " not found")
@@ -997,25 +989,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             sliceLogic = layoutManager.sliceWidget('Red').sliceLogic()
             compositeNode = sliceLogic.GetSliceCompositeNode()
             compositeNode.SetBackgroundVolumeID(backgroundVolumeNode.GetID())
-        
-        return current_index
 
-    def dicomHeaderToDict(self, ds, parent=None):
-        """
-        Convert a DICOM dataset to a Python dictionary.
-        """
-        if parent is None:
-            parent = {}
-        for elem in ds:
-            if elem.VR == "SQ":
-                parent[elem.name] = []
-                for item in elem:
-                    child = {}
-                    self.dicomHeaderToDict(item, child)
-                    parent[elem.name].append(child)
-            else:
-                parent[elem.name] = elem.value
-        return parent
+        return current_dicom_index
 
     def resetScene(self):
         """
@@ -1046,9 +1021,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         :param keep_folders: If True, output files are expected by the same name in the same subfolders as input files.
         :return:  index for dicomDf that points to the next row that needs to be processed.
         """
-        self.dicomFileManager.next_dicom_df_index = None
+        self.dicom_file_manager.next_dicom_index = None
         self.incrementDicomDfIndex(input_folder, output_folder, skip_existing=True)
-        return self.dicomFileManager.next_dicom_df_index
+        return self.dicom_file_manager.next_dicom_index
 
     def incrementDicomDfIndex(self, input_folder=None, output_directory=None, skip_existing=False):
         """
@@ -1058,27 +1033,26 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         :param keep_folders: If True, keep the folder structure of the input DICOM files in the output directory.
         :return: None
         """
-        if self.dicomFileManager.dicom_df is None:
+        if self.dicom_file_manager.dicom_df is None:
             return None
 
-        listOfIndices = self.dicomFileManager.dicom_df.index.tolist()
+        listOfIndices = self.dicom_file_manager.dicom_df.index.tolist()
         listOfIndices.sort()
 
-        if self.dicomFileManager.next_dicom_df_index is None:
+        if self.dicom_file_manager.next_dicom_index is None:
             nextIndexIndex = 0
         else:
             try:
-                nextIndexIndex = listOfIndices.index(self.dicomFileManager.next_dicom_df_index)
+                nextIndexIndex = listOfIndices.index(self.dicom_file_manager.next_dicom_index)
                 nextIndexIndex += 1
             except ValueError:
-                nextIndexIndex = 0 # next_dicom_df_index is not in list, so start from beginning
+                nextIndexIndex = 0 # next_dicom_index is not in list, so start from beginning
 
         if skip_existing and output_directory:
             while nextIndexIndex < len(listOfIndices):
-                nextDicomDfRow = self.dicomFileManager.dicom_df.iloc[listOfIndices[nextIndexIndex]]
-
+                current_dicom_record = self.dicom_file_manager.dicom_df.iloc[nextIndexIndex]
                 output_path = output_directory
-                output_filename = nextDicomDfRow['AnonFilename']
+                output_filename = current_dicom_record['AnonFilename']
                 output_fullpath = os.path.join(output_path, output_filename)
 
                 # Make sure output_fullpath has a .dcm extension
@@ -1091,13 +1065,13 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 nextIndexIndex += 1
 
         if nextIndexIndex < len(listOfIndices):
-            self.dicomFileManager.next_dicom_df_index = listOfIndices[nextIndexIndex]
-            logging.info(f"Next DICOM dataframe index: {self.dicomFileManager.next_dicom_df_index}")
+            self.dicom_file_manager.next_dicom_index = listOfIndices[nextIndexIndex]
+            logging.info(f"Next DICOM dataframe index: {self.dicom_file_manager.next_dicom_index}")
         else:
-            self.dicomFileManager.next_dicom_df_index = None
+            self.dicom_file_manager.next_dicom_index = None
             slicer.util.mainWindow().statusBar().showMessage("No more DICOM files to process", 3000)
 
-        return self.dicomFileManager.next_dicom_df_index
+        return self.dicom_file_manager.next_dicom_index
 
     def getCurrentProxyNode(self):
         """
@@ -1124,7 +1098,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         return proxyNode
 
     def getAutoMask(self):
-        if not hasattr(self.dicomFileManager, 'current_dicom_dataset') or not self.dicomFileManager.current_dicom_dataset:
+        current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+        if current_dicom_record is None:
             logging.error("No current DICOM dataset loaded")
             return None
         model, input_shape, device = self.downloadAndPrepareModel()
@@ -1827,17 +1802,17 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Create a new DICOM dataset
         anonymized_ds = pydicom.Dataset()
-        dicom_header_data = self.dicomFileManager.current_dicom_header
-        original_ds = self.dicomFileManager.current_dicom_dataset
+        current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+        current_dicom_dataset = current_dicom_record.DICOMDataset
 
         # Copy SequenceOfUltrasoundRegions if available
-        if hasattr(original_ds, "SequenceOfUltrasoundRegions") and len(original_ds.SequenceOfUltrasoundRegions) > 0:
-            anonymized_ds.SequenceOfUltrasoundRegions = original_ds.SequenceOfUltrasoundRegions
+        if hasattr(current_dicom_dataset, "SequenceOfUltrasoundRegions") and len(current_dicom_dataset.SequenceOfUltrasoundRegions) > 0:
+            anonymized_ds.SequenceOfUltrasoundRegions = current_dicom_dataset.SequenceOfUltrasoundRegions
 
         # Copy spacing to conventional PixelSpacing tag for DICOM readers that don't support ultrasound regions
-        deltaX = self.findKeyInDict(dicom_header_data, 'Physical Delta X')
-        deltaY = self.findKeyInDict(dicom_header_data, 'Physical Delta Y')
-        if deltaX != 'N/A' and deltaY != 'N/A':
+        deltaX = current_dicom_record['PhysicalDeltaX']
+        deltaY = current_dicom_record['PhysicalDeltaY']
+        if deltaX is not None and deltaY is not None:
             deltaXmm = float(deltaX) * 10
             deltaYmm = float(deltaY) * 10
             # Conver to string with maximum 14 digits
@@ -1885,64 +1860,64 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         anonymized_ds.LossyImageCompressionMethod = 'ISO_10918_1'
 
         # Copy Manufacturer if available
-        if hasattr(original_ds, "Manufacturer") and original_ds.Manufacturer:
-            anonymized_ds.Manufacturer = original_ds.Manufacturer
+        if hasattr(current_dicom_dataset, "Manufacturer") and current_dicom_dataset.Manufacturer:
+            anonymized_ds.Manufacturer = current_dicom_dataset.Manufacturer
 
         # Map additional DICOM tags from header data
-        dicom_tag_mapping = {
-            "BitsAllocated": "Bits Allocated",
-            "BitsStored": "Bits Stored",
-            "HighBit": "High Bit",
-            "ManufacturerModelName": "Manufacturer's Model Name",
-            "PatientAge": "Patient's Age",
-            "PatientSex": "Patient's Sex",
-            "PixelRepresentation": "Pixel Representation",
-            "SeriesNumber": "Series Number",
-            "StationName": "Station Name",
-            "StudyDate": "Study Date",
-            "StudyDescription": "Study Description",
-            "StudyID": "Study ID",
-            "StudyTime": "Study Time",
-            "TransducerType": "Transducer Data"
-        }
-        for dicom_tag, header_key in dicom_tag_mapping.items():
-            if header_key in dicom_header_data:
-                setattr(anonymized_ds, dicom_tag, dicom_header_data[header_key])
+        dicom_tag_mapping = [
+            "BitsAllocated",
+            "BitsStored",
+            "HighBit",
+            "ManufacturerModelName",
+            "PatientAge",
+            "PatientSex",
+            "PixelRepresentation",
+            "SeriesNumber",
+            "StationName",
+            "StudyDate",
+            "StudyDescription",
+            "StudyID",
+            "StudyTime",
+            "TransducerType"
+        ]
+        for dicom_tag in dicom_tag_mapping:
+            if hasattr(current_dicom_dataset, dicom_tag):
+                setattr(anonymized_ds, dicom_tag, getattr(current_dicom_dataset, dicom_tag))
             else:
-                if dicom_tag in ["BitsAllocated", "BitsStored", "HighBit", "PixelRepresentation"]:  # Mandatory for OHIF
-                    logging.error(f"{dicom_tag} not found for DICOM header file: {dicomFilePath}")
+                logging.error(f"{dicom_tag} not found for DICOM header file: {dicomFilePath}")
 
         # Set or generate required UIDs
-        if not hasattr(original_ds, 'SOPClassUID') or not original_ds.SOPClassUID:
+
+        if hasattr(current_dicom_dataset, 'SOPClassUID') and current_dicom_dataset.SOPClassUID:
+            anonymized_ds.SOPClassUID = current_dicom_dataset.SOPClassUID
+        else:
             logging.error(f"SOPClassUID not found. Generating new one for {dicomFilePath}.")
             anonymized_ds.SOPClassUID = pydicom.uid.generate_uid()
-        else:
-            anonymized_ds.SOPClassUID = original_ds.SOPClassUID
 
-        if original_ds.SOPInstanceUID is None or len(original_ds.SOPInstanceUID) < 1:
+        if hasattr(current_dicom_dataset, 'SOPInstanceUID') and current_dicom_dataset.SOPInstanceUID:
+            anonymized_ds.SOPInstanceUID = current_dicom_dataset.SOPInstanceUID
+        else:
             logging.error(f"SOPInstanceUID not found. Generating new one for {dicomFilePath}. Exported data may be untraceable.")
             anonymized_ds.SOPInstanceUID = pydicom.uid.generate_uid()
-        else:
-            anonymized_ds.SOPInstanceUID = original_ds.SOPInstanceUID
 
         # Generate a unique SeriesInstanceUID. This is because ultrasound machines often reuse the same SeriesInstanceUID, which can cause issues in the viewer.
         anonymized_ds.SeriesInstanceUID = pydicom.uid.generate_uid()
 
-        if original_ds.StudyInstanceUID is None or len(original_ds.StudyInstanceUID) < 1:
+        if hasattr(current_dicom_dataset, 'StudyInstanceUID') and current_dicom_dataset.StudyInstanceUID:
+            anonymized_ds.StudyInstanceUID = current_dicom_dataset.StudyInstanceUID
+        else:
             logging.error(f"StudyInstanceUID not found. Generating new one for {dicomFilePath}. Exported data may be untraceable.")
             anonymized_ds.StudyInstanceUID = pydicom.uid.generate_uid()
-        else:
-            anonymized_ds.StudyInstanceUID = original_ds.StudyInstanceUID
 
-        if new_patient_name is not None:
+        if new_patient_name:
             anonymized_ds.PatientName = new_patient_name
         else:
-            anonymized_ds.PatientName = original_ds.PatientName
+            anonymized_ds.PatientName = current_dicom_dataset.PatientName
 
-        if new_patient_id is not None:
+        if new_patient_id:
             anonymized_ds.PatientID = new_patient_id
         else:
-            anonymized_ds.PatientID = original_ds.PatientID
+            anonymized_ds.PatientID = current_dicom_dataset.PatientID
 
         # Make the series desciption the filename, so we can easily identify the file later in the viewer
         new_series_description = os.path.basename(dicomFilePath)
@@ -1957,14 +1932,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if not hasattr(anonymized_ds, 'AccessionNumber'):
             anonymized_ds.AccessionNumber = ''
 
-        patientId = original_ds.PatientID
+        patientId = current_dicom_dataset.PatientID
         random.seed(patientId)
         random_number = random.randint(0, 30)
 
         # Get the Series Date and Content Data from the header, and add the random_number as an offset to the day, shifting the month if necessary
-        study_date = original_ds.StudyDate if hasattr(original_ds, 'StudyDate') else '19000101'
-        series_date = original_ds.SeriesDate if hasattr(original_ds, 'SeriesDate') else '19000101'
-        content_date = original_ds.ContentDate if hasattr(original_ds, 'ContentDate') else '19000101'
+        study_date = current_dicom_dataset.StudyDate if hasattr(current_dicom_dataset, 'StudyDate') else '19000101'
+        series_date = current_dicom_dataset.SeriesDate if hasattr(current_dicom_dataset, 'SeriesDate') else '19000101'
+        content_date = current_dicom_dataset.ContentDate if hasattr(current_dicom_dataset, 'ContentDate') else '19000101'
 
         study_date = datetime.datetime.strptime(study_date, "%Y%m%d") + datetime.timedelta(days=random_number)
         series_date = datetime.datetime.strptime(series_date, "%Y%m%d") + datetime.timedelta(days=random_number)
@@ -1973,13 +1948,13 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         anonymized_ds.SeriesDate = series_date.strftime("%Y%m%d")
         anonymized_ds.ContentDate = content_date.strftime("%Y%m%d")
 
-        anonymized_ds.StudyTime = original_ds.StudyTime if hasattr(original_ds, 'StudyTime') else ''
-        anonymized_ds.SeriesTime = original_ds.SeriesTime if hasattr(original_ds, 'SeriesTime') else ''
-        anonymized_ds.ContentTime = original_ds.ContentTime if hasattr(original_ds, 'ContentTime') else ''
+        anonymized_ds.StudyTime = current_dicom_dataset.StudyTime if hasattr(current_dicom_dataset, 'StudyTime') else ''
+        anonymized_ds.SeriesTime = current_dicom_dataset.SeriesTime if hasattr(current_dicom_dataset, 'SeriesTime') else ''
+        anonymized_ds.ContentTime = current_dicom_dataset.ContentTime if hasattr(current_dicom_dataset, 'ContentTime') else ''
 
-        # Get the SeriesNumber from the self.dicomFileManager.dicom_df table corresponding to the current DICOM file
+        # Get the SeriesNumber from the self.dicom_file_manager.dicom_df table corresponding to the current DICOM file
 
-        series_number = self.dicomFileManager.dicom_df.loc[self.dicomFileManager.dicom_df['InstanceUID'] == original_ds.SOPInstanceUID, 'SeriesNumber'].values if self.dicomFileManager.dicom_df is not None else ['1']
+        series_number = self.dicom_file_manager.dicom_df.loc[self.dicom_file_manager.dicom_df['InstanceUID'] == current_dicom_dataset.SOPInstanceUID, 'SeriesNumber'].values if self.dicom_file_manager.dicom_df is not None else ['1']
         anonymized_ds.SeriesNumber = series_number[0] if len(series_number) > 0 else '1'
 
         # Conditional elements: provide empty defaults if unknown.
@@ -1992,12 +1967,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # For multi-frame images, add FrameIncrementPointer and FrameTime (Type 1C)
         if hasattr(anonymized_ds, 'NumberOfFrames') and int(anonymized_ds.NumberOfFrames) > 1:
-            if hasattr(original_ds, 'FrameTime'):
-                anonymized_ds.FrameTime = original_ds.FrameTime
+            if hasattr(current_dicom_dataset, 'FrameTime'):
+                anonymized_ds.FrameTime = current_dicom_dataset.FrameTime
             else:
                 anonymized_ds.FrameTime = 0.1  # Default to 0.1 seconds
-            if hasattr(original_ds, 'FrameIncrementPointer'):
-                anonymized_ds.FrameIncrementPointer = original_ds.FrameIncrementPointer
+            if hasattr(current_dicom_dataset, 'FrameIncrementPointer'):
+                anonymized_ds.FrameIncrementPointer = current_dicom_dataset.FrameIncrementPointer
             else:
                 anonymized_ds.FrameIncrementPointer = pydicom.tag.Tag(0x0018, 0x1063)
 
@@ -2048,7 +2023,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         :param compression: If True, use JPEG compression (minimal) in output DICOM.
         """
         # Record sequence information to a dictionary. This will be saved in the annotations JSON file.
-        SOPInstanceUID = self.dicomFileManager.current_dicom_dataset.SOPInstanceUID if self.dicomFileManager.current_dicom_dataset else "None"
+        current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+        SOPInstanceUID = current_dicom_record.DICOMDataset.SOPInstanceUID if current_dicom_record is not None else "None"
         if SOPInstanceUID is None:
             SOPInstanceUID = "None"
 
@@ -2063,10 +2039,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Save DICOM image file
         if outputFilename is None:
-            if self.dicomFileManager.current_dicom_dataset:
-                outputFilename, _, _ = self.generateNameFromDicomData(self.dicomFileManager.current_dicom_dataset)
+            outputFilename, _, _ = self.generateNameFromDicomData(current_dicom_record.DICOMDataset)
+
         if outputFilename is None or outputFilename == "":
             return None, None, None
+
         dicomFilePath = os.path.join(outputDirectory, outputFilename)
         self.saveDicomFile(dicomFilePath, new_patient_name, new_patient_id)
 
@@ -2078,8 +2055,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             dicomHeaderFileName = outputFilename.replace(".dcm", "_DICOMHeader.json")
             dicomHeaderFilePath = os.path.join(headersDirectory, dicomHeaderFileName)
             with open(dicomHeaderFilePath, 'w') as outfile:
-                if self.dicomFileManager.current_dicom_header:
-                    anonymizedDicomHeader = self.dicomFileManager.current_dicom_header.copy()
+                if self.dicom_file_manager.dicom_df is not None:
+                    anonymizedDicomHeader = self.dicom_file_manager.dicom_header_to_dict(current_dicom_record.DICOMDataset)
                     # Make the PatientName equal to the outputFilename without extension
                     if "Patient's Name" in anonymizedDicomHeader:
                         anonymizedDicomHeader["Patient's Name"] = outputFilename.split(".")[0]
