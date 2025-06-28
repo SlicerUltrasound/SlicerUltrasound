@@ -61,3 +61,17 @@ debugpy.breakpoint()
 Open `Run and Debug` view in VS Code, select `Python: Remote Attach` and click `Run`
 
 4. Add breakpoints
+
+
+## Useful scripts for debugging
+
+```python
+annotateWidget = slicer.modules.annotateultrasound.widgetRepresentation().self()
+annotateLogic = annotateWidget.logic
+annotateNode = annotateLogic.getParameterNode()
+
+anonymizeWidget = slicer.modules.anonymizeultrasound.widgetRepresentation().self()
+anonymizeLogic = anonymizeWidget.logic
+anonymizeNode = anonymizeLogic.getParameterNode()
+```
+
