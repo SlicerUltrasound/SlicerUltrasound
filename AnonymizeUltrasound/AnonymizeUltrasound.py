@@ -1780,19 +1780,34 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return 'N/A'
 
-    def saveDicomFile(self, dicomFilePath, new_patient_name = None, new_patient_id = None):
+    def saveDicomFile(self, dicomFilePath, new_patient_name=None, new_patient_id=None):
+        """Save anonymized DICOM file using DicomFileManager."""
         parameterNode = self.getParameterNode()
 
-        # Collect all image frames in a numpy array
+        # Collect image data from sequence browser
+        image_array = self._collect_image_data_from_sequence(parameterNode)
 
+        self.dicom_file_manager.save_anonymized_dicom(
+            image_array=image_array,
+            output_path=dicomFilePath,
+            new_patient_name=new_patient_name,
+            new_patient_id=new_patient_id
+        )
+
+    def _collect_image_data_from_sequence(self, parameterNode) -> np.ndarray:
+        """Collect all image frames from the sequence browser into a numpy array."""
         currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
         masterSequenceNode = currentSequenceBrowser.GetMasterSequenceNode()
         proxyNode = self.getCurrentProxyNode()
 
         proxyNodeArray = slicer.util.arrayFromVolume(proxyNode)
 
-        imageArray = np.zeros((masterSequenceNode.GetNumberOfDataNodes(),
-                               proxyNodeArray.shape[1], proxyNodeArray.shape[2], proxyNodeArray.shape[3]), dtype=np.int8)
+        imageArray = np.zeros((
+            masterSequenceNode.GetNumberOfDataNodes(),
+            proxyNodeArray.shape[1],
+            proxyNodeArray.shape[2],
+            proxyNodeArray.shape[3]
+        ), dtype=np.int8)
 
         for index in range(masterSequenceNode.GetNumberOfDataNodes()):
             currentSequenceBrowser.SetSelectedItemNumber(index)
@@ -1800,210 +1815,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
             imageArray[index, :, :, :] = currentVolumeArray
 
-        # Create a new DICOM dataset
-        anonymized_ds = pydicom.Dataset()
-        current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
-        current_dicom_dataset = current_dicom_record.DICOMDataset
-
-        # Copy SequenceOfUltrasoundRegions if available
-        if hasattr(current_dicom_dataset, "SequenceOfUltrasoundRegions") and len(current_dicom_dataset.SequenceOfUltrasoundRegions) > 0:
-            anonymized_ds.SequenceOfUltrasoundRegions = current_dicom_dataset.SequenceOfUltrasoundRegions
-
-        # Copy spacing to conventional PixelSpacing tag for DICOM readers that don't support ultrasound regions
-        deltaX = current_dicom_record['PhysicalDeltaX']
-        deltaY = current_dicom_record['PhysicalDeltaY']
-        if deltaX is not None and deltaY is not None:
-            deltaXmm = float(deltaX) * 10
-            deltaYmm = float(deltaY) * 10
-            # Conver to string with maximum 14 digits
-            deltaXmmStr = "{:.14f}".format(deltaXmm)
-            deltaYmmStr = "{:.14f}".format(deltaYmm)
-            anonymized_ds.PixelSpacing = [deltaXmmStr, deltaYmmStr]
-
-        # Verify array shape and set DICOM tags accordingly
-        if len(imageArray.shape) == 4:  # Multi-frame format
-            frames, height, width, channels = imageArray.shape
-            anonymized_ds.Rows = height
-            anonymized_ds.Columns = width
-            anonymized_ds.NumberOfFrames = frames
-            anonymized_ds.SamplesPerPixel = channels
-        elif len(imageArray.shape) == 3:  # Muti-frame, grayscale
-            frames, height, width = imageArray.shape
-            anonymized_ds.Rows = height
-            anonymized_ds.Columns = width
-            anonymized_ds.NumberOfFrames = frames
-            anonymized_ds.SamplesPerPixel = 1
-        elif len(imageArray.shape) == 2:  # Single frame, Grayscale
-            height, width = imageArray.shape
-            anonymized_ds.Rows = height
-            anonymized_ds.Columns = width
-            anonymized_ds.SamplesPerPixel = 1
-
-        # Set PhotometricInterpretation based on number of channels
-        if anonymized_ds.SamplesPerPixel == 1:
-            anonymized_ds.PhotometricInterpretation = "MONOCHROME2"
-        elif anonymized_ds.SamplesPerPixel == 3:
-            anonymized_ds.PhotometricInterpretation = "YBR_FULL_422"  # For JPEG compressed images
-
-        # Ensure the data type of numpy array matches the expected pixel data type
-        anonymized_ds.Modality = 'US'
-
-        # Compress each frame and set PixelData
-        compressed_frames = []
-        for frame in imageArray:
-            compressed_frame = self.compressFrameToJpeg(frame)
-            compressed_frames.append(compressed_frame)
-        anonymized_ds.PixelData = pydicom.encaps.encapsulate(compressed_frames)
-        anonymized_ds['PixelData'].VR = 'OB'
-        anonymized_ds['PixelData'].is_undefined_length = True
-        anonymized_ds.LossyImageCompression = '01'
-        anonymized_ds.LossyImageCompressionMethod = 'ISO_10918_1'
-
-        # Copy Manufacturer if available
-        if hasattr(current_dicom_dataset, "Manufacturer") and current_dicom_dataset.Manufacturer:
-            anonymized_ds.Manufacturer = current_dicom_dataset.Manufacturer
-
-        # Map additional DICOM tags from header data
-        dicom_tag_mapping = [
-            "BitsAllocated",
-            "BitsStored",
-            "HighBit",
-            "ManufacturerModelName",
-            "PatientAge",
-            "PatientSex",
-            "PixelRepresentation",
-            "SeriesNumber",
-            "StationName",
-            "StudyDate",
-            "StudyDescription",
-            "StudyID",
-            "StudyTime",
-            "TransducerType"
-        ]
-        for dicom_tag in dicom_tag_mapping:
-            if hasattr(current_dicom_dataset, dicom_tag):
-                setattr(anonymized_ds, dicom_tag, getattr(current_dicom_dataset, dicom_tag))
-            else:
-                logging.error(f"{dicom_tag} not found for DICOM header file: {dicomFilePath}")
-
-        # Set or generate required UIDs
-
-        if hasattr(current_dicom_dataset, 'SOPClassUID') and current_dicom_dataset.SOPClassUID:
-            anonymized_ds.SOPClassUID = current_dicom_dataset.SOPClassUID
-        else:
-            logging.error(f"SOPClassUID not found. Generating new one for {dicomFilePath}.")
-            anonymized_ds.SOPClassUID = pydicom.uid.generate_uid()
-
-        if hasattr(current_dicom_dataset, 'SOPInstanceUID') and current_dicom_dataset.SOPInstanceUID:
-            anonymized_ds.SOPInstanceUID = current_dicom_dataset.SOPInstanceUID
-        else:
-            logging.error(f"SOPInstanceUID not found. Generating new one for {dicomFilePath}. Exported data may be untraceable.")
-            anonymized_ds.SOPInstanceUID = pydicom.uid.generate_uid()
-
-        # Generate a unique SeriesInstanceUID. This is because ultrasound machines often reuse the same SeriesInstanceUID, which can cause issues in the viewer.
-        anonymized_ds.SeriesInstanceUID = pydicom.uid.generate_uid()
-
-        if hasattr(current_dicom_dataset, 'StudyInstanceUID') and current_dicom_dataset.StudyInstanceUID:
-            anonymized_ds.StudyInstanceUID = current_dicom_dataset.StudyInstanceUID
-        else:
-            logging.error(f"StudyInstanceUID not found. Generating new one for {dicomFilePath}. Exported data may be untraceable.")
-            anonymized_ds.StudyInstanceUID = pydicom.uid.generate_uid()
-
-        if new_patient_name:
-            anonymized_ds.PatientName = new_patient_name
-        else:
-            anonymized_ds.PatientName = current_dicom_dataset.PatientName
-
-        if new_patient_id:
-            anonymized_ds.PatientID = new_patient_id
-        else:
-            anonymized_ds.PatientID = current_dicom_dataset.PatientID
-
-        # Make the series desciption the filename, so we can easily identify the file later in the viewer
-        new_series_description = os.path.basename(dicomFilePath)
-        anonymized_ds.SeriesDescription = new_series_description
-
-        # Add missing required attributes to satisfy DICOM conformance.
-        # Type 2 elements must be present (they can be empty).
-        if not hasattr(anonymized_ds, 'PatientBirthDate'):
-            anonymized_ds.PatientBirthDate = ''
-        if not hasattr(anonymized_ds, 'ReferringPhysicianName'):
-            anonymized_ds.ReferringPhysicianName = ''
-        if not hasattr(anonymized_ds, 'AccessionNumber'):
-            anonymized_ds.AccessionNumber = ''
-
-        patientId = current_dicom_dataset.PatientID
-        random.seed(patientId)
-        random_number = random.randint(0, 30)
-
-        # Get the Series Date and Content Data from the header, and add the random_number as an offset to the day, shifting the month if necessary
-        study_date = current_dicom_dataset.StudyDate if hasattr(current_dicom_dataset, 'StudyDate') else '19000101'
-        series_date = current_dicom_dataset.SeriesDate if hasattr(current_dicom_dataset, 'SeriesDate') else '19000101'
-        content_date = current_dicom_dataset.ContentDate if hasattr(current_dicom_dataset, 'ContentDate') else '19000101'
-
-        study_date = datetime.datetime.strptime(study_date, "%Y%m%d") + datetime.timedelta(days=random_number)
-        series_date = datetime.datetime.strptime(series_date, "%Y%m%d") + datetime.timedelta(days=random_number)
-        content_date = datetime.datetime.strptime(content_date, "%Y%m%d") + datetime.timedelta(days=random_number)
-        anonymized_ds.StudyDate = study_date.strftime("%Y%m%d")
-        anonymized_ds.SeriesDate = series_date.strftime("%Y%m%d")
-        anonymized_ds.ContentDate = content_date.strftime("%Y%m%d")
-
-        anonymized_ds.StudyTime = current_dicom_dataset.StudyTime if hasattr(current_dicom_dataset, 'StudyTime') else ''
-        anonymized_ds.SeriesTime = current_dicom_dataset.SeriesTime if hasattr(current_dicom_dataset, 'SeriesTime') else ''
-        anonymized_ds.ContentTime = current_dicom_dataset.ContentTime if hasattr(current_dicom_dataset, 'ContentTime') else ''
-
-        # Get the SeriesNumber from the self.dicom_file_manager.dicom_df table corresponding to the current DICOM file
-
-        series_number = self.dicom_file_manager.dicom_df.loc[self.dicom_file_manager.dicom_df['InstanceUID'] == current_dicom_dataset.SOPInstanceUID, 'SeriesNumber'].values if self.dicom_file_manager.dicom_df is not None else ['1']
-        anonymized_ds.SeriesNumber = series_number[0] if len(series_number) > 0 else '1'
-
-        # Conditional elements: provide empty defaults if unknown.
-        if not hasattr(anonymized_ds, 'Laterality'):
-            anonymized_ds.Laterality = ''
-        if not hasattr(anonymized_ds, 'InstanceNumber'):
-            anonymized_ds.InstanceNumber = 1
-        if not hasattr(anonymized_ds, 'PatientOrientation'):
-            anonymized_ds.PatientOrientation = ''
-
-        # For multi-frame images, add FrameIncrementPointer and FrameTime (Type 1C)
-        if hasattr(anonymized_ds, 'NumberOfFrames') and int(anonymized_ds.NumberOfFrames) > 1:
-            if hasattr(current_dicom_dataset, 'FrameTime'):
-                anonymized_ds.FrameTime = current_dicom_dataset.FrameTime
-            else:
-                anonymized_ds.FrameTime = 0.1  # Default to 0.1 seconds
-            if hasattr(current_dicom_dataset, 'FrameIncrementPointer'):
-                anonymized_ds.FrameIncrementPointer = current_dicom_dataset.FrameIncrementPointer
-            else:
-                anonymized_ds.FrameIncrementPointer = pydicom.tag.Tag(0x0018, 0x1063)
-
-        # For color images, set PlanarConfiguration (Type 1C)
-        if anonymized_ds.SamplesPerPixel > 1 and not hasattr(anonymized_ds, 'PlanarConfiguration'):
-            anonymized_ds.PlanarConfiguration = 0
-
-        if not hasattr(anonymized_ds, "ImageType"):
-            anonymized_ds.ImageType = r"ORIGINAL\PRIMARY\IMAGE"
-
-        # Set meta information for the DICOM file
-        meta = pydicom.Dataset()
-        meta.FileMetaInformationGroupLength = 0
-        meta.FileMetaInformationVersion = b'\x00\x01'
-        meta.MediaStorageSOPClassUID = anonymized_ds.SOPClassUID  # This should match the SOPClassUID of the dataset
-        meta.MediaStorageSOPInstanceUID = anonymized_ds.SOPInstanceUID  # This should match the SOPInstanceUID of the dataset
-        meta.ImplementationClassUID = pydicom.uid.generate_uid(None)  # Generate a new UID for our implementation
-        meta.TransferSyntaxUID = pydicom.uid.JPEGBaseline
-
-        # Copy over the dataset values from ds to file_ds
-        file_ds = pydicom.dataset.FileDataset(None, {}, file_meta=meta, preamble=b"\0" * 128)
-        for elem in anonymized_ds:
-            file_ds.add(elem)
-
-        # Set the is_implicit_VR and is_little_endian attributes for the encoding
-        file_ds.is_implicit_VR = False
-        file_ds.is_little_endian = True
-
-        # Save the DICOM file
-        file_ds.save_as(dicomFilePath)
-        logging.info(f"DICOM generated successfully: {dicomFilePath}")
+        return imageArray
 
     def exportDicom(self,
                     outputDirectory,

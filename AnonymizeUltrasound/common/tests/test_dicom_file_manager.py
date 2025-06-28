@@ -1,16 +1,17 @@
-from pydicom import Sequence
 import pytest
 import os
+import sys
 import tempfile
 import shutil
 import pandas as pd
+import pydicom
+import numpy as np
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
-import os
+from pydicom import Sequence
 from unittest.mock import Mock, patch
 from pathlib import Path
 
 # Mock slicer module for testing
-import sys
 sys.modules['slicer'] = Mock()
 sys.modules['slicer.app'] = Mock()
 sys.modules['slicer.util'] = Mock()
@@ -54,11 +55,11 @@ class TestDicomFileManager:
 
     def create_test_dicom_file(self, **kwargs) -> FileDataset:
         """Create a temporary DICOM file for testing
-        
+
         This method creates a FileDataset object that simulates a DICOM ultrasound file
         with configurable attributes. It sets up the necessary file metadata and dataset
         attributes required for testing DICOM file operations.
-        
+
         Example:
             dicom_file = create_test_dicom_file(
                 PatientID="CUSTOM123",
@@ -90,10 +91,10 @@ class TestDicomFileManager:
             'PhotometricInterpretation': self.PHOTOMETRIC_INTERPRETATION,
             'SequenceOfUltrasoundRegions': self.SEQUENCE_OF_ULTRASOUND_REGIONS,
         }
-        
+
         # Override defaults with provided kwargs
         attributes = {**defaults, **kwargs}
-        
+
         # Create file meta information
         file_meta = FileMetaDataset()
         file_meta.MediaStorageSOPClassUID = attributes['SOPClassUID']
@@ -103,7 +104,7 @@ class TestDicomFileManager:
 
         # Create main dataset
         ds = FileDataset(None, {}, file_meta=file_meta, preamble=b"\0" * 128)
-        
+
         # Set all attributes
         for key, value in attributes.items():
             setattr(ds, key, value)
@@ -112,13 +113,13 @@ class TestDicomFileManager:
         region.PhysicalDeltaX = kwargs.get('PhysicalDeltaX', self.PHYSICAL_DELTA_X)
         region.PhysicalDeltaY = kwargs.get('PhysicalDeltaY', self.PHYSICAL_DELTA_Y)
         ds.SequenceOfUltrasoundRegions = [region]
-        
+
         # Create minimal pixel data (just zeros)
         if hasattr(ds, 'NumberOfFrames') and ds.NumberOfFrames > 1:
             pixel_array_size = ds.Rows * ds.Columns * ds.NumberOfFrames
         else:
             pixel_array_size = ds.Rows * ds.Columns
-        
+
         ds.PixelData = b'\x00' * pixel_array_size
 
         return ds
@@ -128,7 +129,7 @@ class TestDicomFileManager:
         # Generate filename and save
         filename = f"{ds.PatientID}_{ds.SOPInstanceUID}.dcm"
         filepath = os.path.join(temp_dir, filename)
-        
+
         ds.save_as(filepath)
         return filepath
 
@@ -164,6 +165,45 @@ class TestDicomFileManager:
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
         shutil.rmtree(temp_dir)
+
+    @pytest.fixture
+    def sample_image_array_multi_frame(self):
+        """Create a multi-frame RGB image array for testing (frames, height, width, channels)"""
+        return np.random.randint(0, 255, (5, 10, 15, 3), dtype=np.uint8)
+
+    @pytest.fixture
+    def sample_image_array_single_frame(self):
+        """Create a single-frame grayscale image array for testing (frames, height, width, channels)"""
+        return np.random.randint(0, 255, (1, 10, 15, 1), dtype=np.uint8)
+
+    @pytest.fixture
+    def manager_with_data(self, manager, temp_dir):
+        """Create a manager with sample DICOM dataframe"""
+        ds = self.create_test_dicom_file()
+        filepath = self.save_dicom_file(ds, temp_dir)
+
+        # Create dataframe with the test file
+        dicom_data = [{
+            'Filepath': filepath,
+            'AnonFilename': 'test_output.dcm',
+            'PatientUID': self.PATIENT_ID,
+            'StudyUID': self.STUDY_UID,
+            'StudyDate': self.CONTENT_DATE,
+            'SeriesUID': self.SERIES_UID,
+            'SeriesDate': self.CONTENT_DATE,
+            'InstanceUID': self.SOP_INSTANCE_UID,
+            'PhysicalDeltaX': self.PHYSICAL_DELTA_X,
+            'PhysicalDeltaY': self.PHYSICAL_DELTA_Y,
+            'ContentDate': self.CONTENT_DATE,
+            'ContentTime': self.CONTENT_TIME,
+            'Patch': False,
+            'TransducerModel': self.TRANSDUCER_MODEL,
+            'DICOMDataset': ds
+        }]
+
+        manager._create_dataframe(dicom_data)
+        manager.current_dicom_index = 0
+        return manager
 
     def test_init(self, manager):
         """Test DicomFileManager initialization"""
@@ -407,24 +447,24 @@ class TestDicomFileManager:
             'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
         })
         manager.next_dicom_index = 0
-        
+
         # Create some existing output files (file1.dcm and file2.dcm already exist)
         Path(os.path.join(temp_dir, 'file1.dcm')).touch()
         Path(os.path.join(temp_dir, 'file2.dcm')).touch()
         # file3.dcm and file4.dcm don't exist
-        
+
         # Test increment with continue_progress=True
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
-        
+
         # Should skip to file3.dcm (index 2) since file1.dcm and file2.dcm already exist
         assert result is True
         assert manager.next_dicom_index == 2
-        
+
         # Test increment again - should go to file4.dcm (index 3)
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is True
         assert manager.next_dicom_index == 3
-        
+
         # Test increment again - should go beyond end (index 4)
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is False
@@ -513,6 +553,358 @@ class TestDicomFileManager:
         # Directory should still be removed from tracking list
         assert temp_dir not in manager._temp_directories
 
+    def test_save_anonymized_dicom_no_dataframe(self, manager, sample_image_array_single_frame, temp_dir):
+        """Test save_anonymized_dicom with no dataframe"""
+        output_path = os.path.join(temp_dir, "output.dcm")
+
+        # Should not raise exception, just log error
+        manager.save_anonymized_dicom(sample_image_array_single_frame, output_path)
+
+        # File should not be created
+        assert not os.path.exists(output_path)
+
+    def test_save_anonymized_dicom_invalid_index(self, manager, sample_image_array_multi_frame, temp_dir):
+        """Test save_anonymized_dicom with invalid current_dicom_index"""
+        manager.dicom_df = pd.DataFrame({'test': [1, 2, 3]})
+        manager.current_dicom_index = 5  # Out of bounds
+
+        output_path = os.path.join(temp_dir, "output.dcm")
+
+        # Should not raise exception, just log error
+        manager.save_anonymized_dicom(sample_image_array_multi_frame, output_path)
+
+        # File should not be created
+        assert not os.path.exists(output_path)
+
+    def test_save_anonymized_dicom_success_multi_frame(self, manager_with_data, sample_image_array_multi_frame, temp_dir):
+        """Test successful save_anonymized_dicom with multi-frame image array"""
+        output_path = os.path.join(temp_dir, "output.dcm")
+
+        manager_with_data.save_anonymized_dicom(sample_image_array_multi_frame, output_path)
+
+        # File should be created
+        assert os.path.exists(output_path)
+
+        # Verify the DICOM file
+        saved_ds = pydicom.dcmread(output_path)
+        assert saved_ds.NumberOfFrames == 5
+        assert saved_ds.Rows == 10
+        assert saved_ds.Columns == 15
+        assert saved_ds.SamplesPerPixel == 3
+
+    def test_save_anonymized_dicom_success_single_frame(self, manager_with_data, sample_image_array_single_frame, temp_dir):
+        """Test successful save_anonymized_dicom with single-frame image array"""
+        output_path = os.path.join(temp_dir, "output.dcm")
+
+        manager_with_data.save_anonymized_dicom(sample_image_array_single_frame, output_path)
+
+        # File should be created
+        assert os.path.exists(output_path)
+
+        # Verify the DICOM file
+        saved_ds = pydicom.dcmread(output_path)
+        assert saved_ds.NumberOfFrames == 1  # Single frame
+        assert saved_ds.Rows == 10
+        assert saved_ds.Columns == 15
+        assert saved_ds.SamplesPerPixel == 1
+
+    def test_create_base_dicom_dataset_multi_frame(self, manager_with_data, sample_image_array_multi_frame):
+        """Test _create_base_dicom_dataset with multi-frame array"""
+        current_record = manager_with_data.dicom_df.iloc[0]
+
+        ds = manager_with_data._create_base_dicom_dataset(sample_image_array_multi_frame, current_record)
+
+        assert ds.NumberOfFrames == 5
+        assert ds.Rows == 10
+        assert ds.Columns == 15
+        assert ds.SamplesPerPixel == 3
+        assert ds.Modality == 'US'
+        assert ds.PhotometricInterpretation == "YBR_FULL_422"
+
+    def test_create_base_dicom_dataset_single_frame(self, manager_with_data, sample_image_array_single_frame):
+        """Test _create_base_dicom_dataset with single-frame array"""
+        current_record = manager_with_data.dicom_df.iloc[0]
+
+        ds = manager_with_data._create_base_dicom_dataset(sample_image_array_single_frame, current_record)
+
+        assert ds.NumberOfFrames == 1
+        assert ds.Rows == 10
+        assert ds.Columns == 15
+        assert ds.SamplesPerPixel == 1
+        assert ds.PhotometricInterpretation == "MONOCHROME2"
+
+    def test_copy_spacing_info_with_regions(self, manager_with_data):
+        """Test _copy_spacing_info with ultrasound regions"""
+        ds = pydicom.Dataset()
+        current_record = manager_with_data.dicom_df.iloc[0]
+
+        manager_with_data._copy_spacing_info(ds, current_record)
+
+        assert hasattr(ds, 'SequenceOfUltrasoundRegions')
+        assert len(ds.SequenceOfUltrasoundRegions) > 0
+        assert hasattr(ds, 'PixelSpacing')
+        assert len(ds.PixelSpacing) == 2
+
+    def test_copy_spacing_info_without_regions(self, manager_with_data):
+        """Test _copy_spacing_info without ultrasound regions"""
+        ds = pydicom.Dataset()
+        current_record = manager_with_data.dicom_df.iloc[0]
+
+        # Remove ultrasound regions from source
+        current_record.DICOMDataset.SequenceOfUltrasoundRegions = []
+
+        manager_with_data._copy_spacing_info(ds, current_record)
+
+        assert hasattr(ds, 'PixelSpacing')  # Should still have pixel spacing
+
+    def test_copy_source_metadata(self, manager_with_data, temp_dir):
+        """Test _copy_source_metadata"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        # Check copied attributes
+        assert ds.BitsAllocated == self.BITS_ALLOCATED
+        assert ds.BitsStored == self.BITS_STORED
+        assert ds.SeriesDescription == "test.dcm"
+        assert hasattr(ds, 'SOPClassUID')
+        assert hasattr(ds, 'SOPInstanceUID')
+        assert hasattr(ds, 'SeriesInstanceUID')
+
+    def test_copy_and_generate_uids_with_source_uids(self, manager_with_data, temp_dir):
+        """Test _copy_and_generate_uids with existing UIDs in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        # Should copy existing UIDs
+        assert ds.SOPClassUID == source_ds.SOPClassUID
+        assert ds.SOPInstanceUID == source_ds.SOPInstanceUID
+        assert ds.StudyInstanceUID == source_ds.StudyInstanceUID
+        # SeriesInstanceUID should always be generated new
+        assert ds.SeriesInstanceUID != source_ds.SeriesInstanceUID
+
+    def test_copy_and_generate_uids_missing_source_uids(self, manager_with_data, temp_dir):
+        """Test _copy_and_generate_uids with missing UIDs in source"""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()  # Empty dataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        # Should generate new UIDs
+        assert hasattr(ds, 'SOPClassUID')
+        assert hasattr(ds, 'SOPInstanceUID')
+        assert hasattr(ds, 'StudyInstanceUID')
+        assert hasattr(ds, 'SeriesInstanceUID')
+
+    def test_apply_anonymization_with_new_patient_info(self, manager_with_data):
+        """Test _apply_anonymization with new patient information"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+
+        manager_with_data._apply_anonymization(
+            ds, source_ds,
+            new_patient_name="Anonymous^Patient",
+            new_patient_id="ANON123"
+        )
+
+        assert ds.PatientName == "Anonymous^Patient"
+        assert ds.PatientID == "ANON123"
+        assert hasattr(ds, 'StudyDate')  # Date shifting should be applied
+
+    def test_apply_anonymization_without_new_patient_info(self, manager_with_data):
+        """Test _apply_anonymization without new patient information"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientName == source_ds.PatientName
+        assert ds.PatientID == source_ds.PatientID
+
+    def test_apply_date_shifting(self, manager_with_data):
+        """Test _apply_date_shifting"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+
+        manager_with_data._apply_date_shifting(ds, source_ds)
+
+        assert hasattr(ds, 'StudyDate')
+        assert hasattr(ds, 'SeriesDate')
+        assert hasattr(ds, 'ContentDate')
+        assert hasattr(ds, 'StudyTime')
+        assert hasattr(ds, 'SeriesTime')
+        assert hasattr(ds, 'ContentTime')
+
+        # Dates should be shifted (different from original)
+        # Note: Due to seeding, the shift should be consistent
+        assert ds.ContentDate != source_ds.ContentDate
+
+    def test_apply_date_shifting_invalid_dates(self, manager_with_data):
+        """Test _apply_date_shifting with invalid date formats"""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.StudyDate = "invalid_date"
+        source_ds.SeriesDate = "20240101"  # Valid
+        source_ds.ContentDate = ""
+
+        manager_with_data._apply_date_shifting(ds, source_ds)
+
+        # Should handle invalid dates gracefully
+        assert ds.StudyDate == source_ds.StudyDate  # Should keep original invalid date
+        assert ds.SeriesDate != source_ds.SeriesDate  # Should shift valid date
+        assert ds.ContentDate == source_ds.ContentDate  # Should use default
+
+    def test_set_conformance_attributes_multiframe(self, manager_with_data):
+        """Test _set_conformance_attributes with multi-frame dataset"""
+        ds = pydicom.Dataset()
+        ds.NumberOfFrames = 5
+        ds.SamplesPerPixel = 1
+
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+
+        manager_with_data._set_conformance_attributes(ds, source_ds)
+
+        # Check Type 2 elements
+        assert hasattr(ds, 'PatientBirthDate')
+        assert hasattr(ds, 'ReferringPhysicianName')
+        assert hasattr(ds, 'AccessionNumber')
+        assert hasattr(ds, 'Laterality')
+        assert hasattr(ds, 'InstanceNumber')
+        assert hasattr(ds, 'PatientOrientation')
+        assert hasattr(ds, 'ImageType')
+
+        # Check multi-frame specific attributes
+        assert hasattr(ds, 'FrameTime')
+        assert hasattr(ds, 'FrameIncrementPointer')
+
+    def test_set_conformance_attributes_color_image(self, manager_with_data):
+        """Test _set_conformance_attributes with color image"""
+        ds = pydicom.Dataset()
+        ds.SamplesPerPixel = 3
+
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+
+        manager_with_data._set_conformance_attributes(ds, source_ds)
+
+        # Check color image specific attributes
+        assert hasattr(ds, 'PlanarConfiguration')
+
+    def test_set_compressed_pixel_data(self, manager_with_data, sample_image_array_multi_frame):
+        """Test _set_compressed_pixel_data"""
+        ds = pydicom.Dataset()
+
+        manager_with_data._set_compressed_pixel_data(ds, sample_image_array_multi_frame)
+
+        assert hasattr(ds, 'PixelData')
+        assert ds.LossyImageCompression == '01'
+        assert ds.LossyImageCompressionMethod == 'ISO_10918_1'
+        assert ds['PixelData'].VR == 'OB'
+        assert ds['PixelData'].is_undefined_length == True
+
+    def test_compress_frame_to_jpeg_2d(self, manager_with_data):
+        """Test _compress_frame_to_jpeg with 2D frame"""
+        frame = np.random.randint(0, 255, (10, 15), dtype=np.uint8)
+
+        compressed = manager_with_data._compress_frame_to_jpeg(frame)
+
+        assert isinstance(compressed, bytes)
+        assert len(compressed) > 0
+
+    def test_compress_frame_to_jpeg_3d_grayscale(self, manager_with_data):
+        """Test _compress_frame_to_jpeg with 3D grayscale frame"""
+        frame = np.random.randint(0, 255, (10, 15, 1), dtype=np.uint8)
+
+        compressed = manager_with_data._compress_frame_to_jpeg(frame)
+
+        assert isinstance(compressed, bytes)
+        assert len(compressed) > 0
+
+    def test_compress_frame_to_jpeg_3d_color(self, manager_with_data):
+        """Test _compress_frame_to_jpeg with 3D color frame"""
+        frame = np.random.randint(0, 255, (10, 15, 3), dtype=np.uint8)
+
+        compressed = manager_with_data._compress_frame_to_jpeg(frame, quality=85)
+
+        assert isinstance(compressed, bytes)
+        assert len(compressed) > 0
+
+    @patch('pydicom.dataset.FileDataset.save_as')
+    def test_create_and_save_dicom_file(self, mock_save_as, manager_with_data, temp_dir):
+        """Test _create_and_save_dicom_file"""
+        ds = pydicom.Dataset()
+        ds.SOPClassUID = self.SOP_CLASS_UID
+        ds.SOPInstanceUID = self.SOP_INSTANCE_UID
+
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._create_and_save_dicom_file(ds, output_path)
+
+        # Verify save_as was called
+        mock_save_as.assert_called_once_with(output_path)
+
+    def test_get_series_number_for_current_instance_found(self, manager_with_data):
+        """Test _get_series_number_for_current_instance when found"""
+        result = manager_with_data._get_series_number_for_current_instance()
+
+        assert result == "1"  # Should be the series number from dataframe
+
+    def test_get_series_number_for_current_instance_no_dataframe(self, manager):
+        """Test _get_series_number_for_current_instance with no dataframe"""
+        result = manager._get_series_number_for_current_instance()
+
+        assert result == "1"  # Should return default
+
+    def test_get_series_number_for_current_instance_not_found(self, manager_with_data):
+        """Test _get_series_number_for_current_instance when instance not found"""
+        # Modify the dataframe to have different instance UID
+        manager_with_data.dicom_df.loc[0, 'InstanceUID'] = 'different_uid'
+
+        result = manager_with_data._get_series_number_for_current_instance()
+
+        assert result == "1"  # Should return default
+
+    @patch.object(DicomFileManager, '_create_base_dicom_dataset')
+    @patch.object(DicomFileManager, '_copy_source_metadata')
+    @patch.object(DicomFileManager, '_apply_anonymization')
+    @patch.object(DicomFileManager, '_set_conformance_attributes')
+    @patch.object(DicomFileManager, '_set_compressed_pixel_data')
+    @patch.object(DicomFileManager, '_create_and_save_dicom_file')
+    def test_save_anonymized_dicom_integration(self, mock_save_file, mock_set_pixel_data,
+                                              mock_set_conformance, mock_apply_anon,
+                                              mock_copy_metadata, mock_create_base,
+                                              manager_with_data, sample_image_array_multi_frame, temp_dir):
+        """Test the full save_anonymized_dicom integration"""
+        mock_ds = Mock()
+        mock_create_base.return_value = mock_ds
+
+        output_path = os.path.join(temp_dir, "output.dcm")
+
+        manager_with_data.save_anonymized_dicom(
+            sample_image_array_multi_frame,
+            output_path,
+            new_patient_name="Test^Patient",
+            new_patient_id="TEST123"
+        )
+
+        # Verify all methods were called in correct order
+        mock_create_base.assert_called_once()
+        mock_copy_metadata.assert_called_once()
+        mock_apply_anon.assert_called_once_with(
+            mock_ds,
+            manager_with_data.dicom_df.iloc[0].DICOMDataset,
+            "Test^Patient",
+            "TEST123"
+        )
+        mock_set_conformance.assert_called_once()
+        mock_set_pixel_data.assert_called_once()
+        mock_save_file.assert_called_once_with(mock_ds, output_path)
 
 if __name__ == "__main__":
     pytest.main([__file__])
