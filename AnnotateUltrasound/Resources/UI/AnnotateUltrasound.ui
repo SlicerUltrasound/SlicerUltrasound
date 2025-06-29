@@ -16,7 +16,7 @@
                     <item>
                         <widget class="QGroupBox" name="raterInfoGroupBox">
                             <property name="title">
-                                <string/>
+                                <string />
                             </property>
                             <layout class="QVBoxLayout" name="raterInfoVBox">
                                 <item>
@@ -24,7 +24,8 @@
                                         <item>
                                             <widget class="QLabel" name="raterNameLabel">
                                                 <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                                                    <sizepolicy hsizetype="Preferred"
+                                                        vsizetype="Fixed">
                                                         <horstretch>0</horstretch>
                                                         <verstretch>0</verstretch>
                                                     </sizepolicy>
@@ -37,7 +38,8 @@
                                         <item>
                                             <widget class="QLineEdit" name="raterName">
                                                 <property name="sizePolicy">
-                                                    <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                                                    <sizepolicy hsizetype="Expanding"
+                                                        vsizetype="Fixed">
                                                         <horstretch>0</horstretch>
                                                         <verstretch>0</verstretch>
                                                     </sizepolicy>
@@ -56,12 +58,13 @@
                                     </layout>
                                 </item>
                                 <item>
-                                    <widget class="ctkCollapsibleButton" name="raterColorsCollapsibleButton">
+                                    <widget class="ctkCollapsibleButton"
+                                        name="raterColorsCollapsibleButton">
                                         <property name="text">
                                             <string>Rater Selection</string>
                                         </property>
                                         <property name="collapsed">
-                                            <bool>true</bool>
+                                            <bool>false</bool>
                                         </property>
                                         <layout class="QVBoxLayout" name="annotatorVBox">
                                             <item>
@@ -158,7 +161,8 @@
                                 <item>
                                     <widget class="QPushButton" name="saveAndLoadNextButton">
                                         <property name="toolTip">
-                                            <string>Saves annotations and loads next scan (Shortcut A key)</string>
+                                            <string>Saves annotations and loads next scan (Shortcut
+                                                A key)</string>
                                         </property>
                                         <property name="text">
                                             <string>Save &amp;&amp; next [A]</string>
@@ -247,6 +251,46 @@
                                 </property>
                             </widget>
                         </item>
+                        <item row="4" column="0" colspan="2">
+                            <widget class="QPushButton" name="showHideLinesButton">
+                                <property name="toolTip">
+                                    <string>Show or hide all annotation lines (Shortcut L key)</string>
+                                </property>
+                                <property name="text">
+                                    <string>Show/Hide Lines [L]</string>
+                                </property>
+                                <property name="checkable">
+                                    <bool>true</bool>
+                                </property>
+                                <property name="checked">
+                                    <bool>true</bool>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="5" column="0">
+                            <widget class="QLabel" name="label_2">
+                                <property name="sizePolicy">
+                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+                                        <horstretch>0</horstretch>
+                                        <verstretch>0</verstretch>
+                                    </sizepolicy>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="6" column="0">
+                            <widget class="QPushButton" name="addCurrentFrameButton">
+                                <property name="text">
+                                    <string>Add current frame</string>
+                                </property>
+                            </widget>
+                        </item>
+                        <item row="6" column="1">
+                            <widget class="QPushButton" name="removeCurrentFrameButton">
+                                <property name="text">
+                                    <string>Remove selected frame</string>
+                                </property>
+                            </widget>
+                        </item>
                         <item row="7" column="0" colspan="2">
                             <widget class="QTableWidget" name="framesTableWidget" />
                         </item>
@@ -263,20 +307,13 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="5" column="1">
-                            <widget class="QPushButton" name="removeCurrentFrameButton">
-                                <property name="text">
-                                    <string>Remove selected frame</string>
-                                </property>
-                            </widget>
-                        </item>
                         <item row="3" column="0">
                             <widget class="QPushButton" name="overlayVisibilityButton">
                                 <property name="toolTip">
-                                    <string>Toggles overlay display (Shortcut Space bar)</string>
+                                    <string>Toggles overlay display (Shortcut O key)</string>
                                 </property>
                                 <property name="text">
-                                    <string>Overlay [Space]</string>
+                                    <string>Overlay [O]</string>
                                 </property>
                                 <property name="checkable">
                                     <bool>true</bool>
@@ -299,13 +336,6 @@
                                 </property>
                             </widget>
                         </item>
-                        <item row="5" column="0">
-                            <widget class="QPushButton" name="addCurrentFrameButton">
-                                <property name="text">
-                                    <string>Add current frame</string>
-                                </property>
-                            </widget>
-                        </item>
                         <item row="1" column="1">
                             <widget class="QPushButton" name="removePleuraButton">
                                 <property name="toolTip">
@@ -323,28 +353,6 @@
                                 </property>
                                 <property name="text">
                                     <string>Last B-line [D]</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item row="4" column="0">
-                            <widget class="QLabel" name="label_2">
-                                <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-                                        <horstretch>0</horstretch>
-                                        <verstretch>0</verstretch>
-                                    </sizepolicy>
-                                </property>
-                                <property name="minimumSize">
-                                    <size>
-                                        <width>0</width>
-                                        <height>20</height>
-                                    </size>
-                                </property>
-                                <property name="text">
-                                    <string>Annotated frames</string>
-                                </property>
-                                <property name="alignment">
-                                    <set>Qt::AlignBottom|Qt::AlignLeading|Qt::AlignLeft</set>
                                 </property>
                             </widget>
                         </item>
