@@ -6,3 +6,5 @@
 */**/.venv/
 # AI model checkpoints
 AnonymizeUltrasound/Resources/checkpoints/*
+.coverage
+coverage.xml
