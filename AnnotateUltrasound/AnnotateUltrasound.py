@@ -659,13 +659,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Add rows to the table
         if self.logic.annotations is not None and "frame_annotations" in self.logic.annotations:
-            # Sort frame annotations by frame number to ensure consistent ordering
-            sorted_frame_annotations = sorted(
-                self.logic.annotations["frame_annotations"], 
-                key=lambda x: int(x.get("frame_number", 0))
-            )
-            
-            for frame_annotations in sorted_frame_annotations:
+            for frame_annotations in self.logic.annotations["frame_annotations"]:
                 row = self.ui.framesTableWidget.rowCount
                 self.ui.framesTableWidget.insertRow(row)
 
@@ -699,8 +693,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # reenable sorting after populating the table
         self.ui.framesTableWidget.setSortingEnabled(True)
 
-        # Always sort by frame index (column 0) in ascending order to maintain consistent ordering
-        self.ui.framesTableWidget.sortItems(0, qt.Qt.AscendingOrder)
+        # Restore previous sort state
+        self.ui.framesTableWidget.sortItems(sort_column, sort_order)
 
     def createWaitDialog(self, title, message):
         """
