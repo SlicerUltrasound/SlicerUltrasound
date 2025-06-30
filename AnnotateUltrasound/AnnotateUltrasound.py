@@ -145,6 +145,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.updatingGUI = False
 
+        # Flag to prevent multiple updateCurrentFrame calls during line placement
+        self._isUpdatingCurrentFrame = False
+
         # Shortcuts
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutW.setKey(qt.QKeySequence('W'))
@@ -762,88 +765,114 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def saveAnnotations(self):
         """
         Saves current annotations to rater-specific json file.
+        Returns True if save was successful, False otherwise.
         """
-        # Add annotation line control points to the annotations dictionary and save it to file
-        if self.logic.annotations is None:
-            logging.error("saveAnnotations: No annotations loaded")
-            return
+        try:
+            # Add annotation line control points to the annotations dictionary and save it to file
+            if self.logic.annotations is None:
+                logging.error("saveAnnotations: No annotations loaded")
+                return False
 
-        # Check if rater name is set and not empty; if not, prompt user to enter one
-        rater = self._parameterNode.rater
-        if not rater:
-            qt.QMessageBox.warning(
-                slicer.util.mainWindow(),
-                "Missing Rater Name",
-                "Rater name is not set. Please enter your rater name before saving."
-            )
-            self.ui.statusLabel.setText("⚠️ Please enter a rater name before saving.")
-            return
+            # Check if rater name is set and not empty; if not, prompt user to enter one
+            rater = self._parameterNode.rater
+            if not rater:
+                qt.QMessageBox.warning(
+                    slicer.util.mainWindow(),
+                    "Missing Rater Name",
+                    "Rater name is not set. Please enter your rater name before saving."
+                )
+                self.ui.statusLabel.setText("⚠️ Please enter a rater name before saving.")
+                return False
 
-        waitDialog = self.createWaitDialog("Saving annotations", "Saving annotations...")
+            waitDialog = self.createWaitDialog("Saving annotations", "Saving annotations...")
 
-        # Check if any labels are checked
-        annotationLabels = []
-        for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())):
-            widget = self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget()
-            if not isinstance(widget, qt.QGroupBox):
-                continue
-            # Find all checkboxes in groupBox
-            for j in reversed(range(widget.layout().count())):
-                checkBox = widget.layout().itemAt(j).widget()
-                if isinstance(checkBox, qt.QCheckBox) and checkBox.isChecked():
-                    # Use original category/label for saving
-                    origCategory = checkBox.property('originalCategory')
-                    origLabel = checkBox.property('originalLabel')
-                    annotationLabels.append(f"{origCategory}/{origLabel}")
-        self.logic.annotations['labels'] = annotationLabels
+            # Check if any labels are checked
+            annotationLabels = []
+            for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())):
+                widget = self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget()
+                if not isinstance(widget, qt.QGroupBox):
+                    continue
+                # Find all checkboxes in groupBox
+                for j in reversed(range(widget.layout().count())):
+                    checkBox = widget.layout().itemAt(j).widget()
+                    if isinstance(checkBox, qt.QCheckBox) and checkBox.isChecked():
+                        # Use original category/label for saving
+                        origCategory = checkBox.property('originalCategory')
+                        origLabel = checkBox.property('originalLabel')
+                        annotationLabels.append(f"{origCategory}/{origLabel}")
+            self.logic.annotations['labels'] = annotationLabels
 
-        # Filter annotations to include only current rater's lines
-        rater = self._parameterNode.rater.strip().lower()
-        filtered_frames = []
-        for frame in self.logic.annotations.get("frame_annotations", []):
-            pleura = [line for line in frame.get("pleura_lines", []) if line.get("rater", "").strip().lower() == rater]
-            b_lines = [line for line in frame.get("b_lines", []) if line.get("rater", "").strip().lower() == rater]
-            if pleura or b_lines:
-                filtered_frames.append({
-                    "frame_number": frame["frame_number"],
-                    "coordinate_space": "RAS",
-                    "pleura_lines": pleura,
-                    "b_lines": b_lines,
-                    "pleura_percentage": frame.get("pleura_percentage", 0.0)
-                })
+            # Filter annotations to include only current rater's lines
+            rater = self._parameterNode.rater.strip().lower()
+            filtered_frames = []
+            total_pleura_lines = 0
+            total_b_lines = 0
 
-        # if we have frames from the current rater or we deleted all lines so unsavedChanges is true
-        if filtered_frames or self._parameterNode.unsavedChanges:
-            # Convert RAS to LPS before saving
-            save_data = self.logic.convert_ras_to_lps(filtered_frames)
+            for frame in self.logic.annotations.get("frame_annotations", []):
+                pleura = [line for line in frame.get("pleura_lines", []) if line.get("rater", "").strip().lower() == rater]
+                b_lines = [line for line in frame.get("b_lines", []) if line.get("rater", "").strip().lower() == rater]
+                total_pleura_lines += len(pleura)
+                total_b_lines += len(b_lines)
 
-            # Save annotations to file (use rater-specific filename from dicomDf)
-            annotationsFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['AnnotationsFilepath']
-            base_path, ext = os.path.splitext(annotationsFilepath)
-            if not base_path.endswith(f".{rater}"):
-                annotationsFilepath = f"{base_path}.{rater}.json"
-                self.logic.dicomDf.at[self.logic.nextDicomDfIndex - 1, 'AnnotationsFilepath'] = annotationsFilepath
+                if pleura or b_lines:
+                    filtered_frames.append({
+                        "frame_number": frame["frame_number"],
+                        "coordinate_space": "RAS",
+                        "pleura_lines": pleura,
+                        "b_lines": b_lines,
+                        "pleura_percentage": frame.get("pleura_percentage", 0.0)
+                    })
 
-            with open(annotationsFilepath, 'w') as f:
-                json.dump(save_data, f)
+            logging.info(f"Saving {len(filtered_frames)} frames with {total_pleura_lines} pleura lines and {total_b_lines} b-lines for rater '{rater}'")
 
-        waitDialog.close()
+            # if we have frames from the current rater or we deleted all lines so unsavedChanges is true
+            if filtered_frames or self._parameterNode.unsavedChanges:
+                # Convert RAS to LPS before saving
+                save_data = self.logic.convert_ras_to_lps(filtered_frames)
 
-        self._parameterNode.unsavedChanges = False
+                # Save annotations to file (use rater-specific filename from dicomDf)
+                annotationsFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['AnnotationsFilepath']
+                base_path, ext = os.path.splitext(annotationsFilepath)
+                if not base_path.endswith(f".{rater}"):
+                    annotationsFilepath = f"{base_path}.{rater}.json"
+                    self.logic.dicomDf.at[self.logic.nextDicomDfIndex - 1, 'AnnotationsFilepath'] = annotationsFilepath
 
-        if filtered_frames:
-            logging.info(f"Annotations saved to {annotationsFilepath}")
-        else:
-            logging.info(f"No annotations to save for current rater")
+                with open(annotationsFilepath, 'w') as f:
+                    json.dump(save_data, f)
 
-        return True
+                waitDialog.close()
+
+                self._parameterNode.unsavedChanges = False
+
+                statusText = f"✅ Annotations saved successfully to {os.path.basename(annotationsFilepath)}"
+                slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+                self.ui.statusLabel.setText(statusText)
+                logging.info(f"Annotations saved to {annotationsFilepath}")
+                return True
+            else:
+                waitDialog.close()
+                statusText = "ℹ️ No annotations to save"
+                slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+                self.ui.statusLabel.setText(statusText)
+                logging.info(f"No annotations to save for current rater")
+                return True
+
+        except Exception as e:
+            statusText = f"❌ Failed to save annotations: {str(e)}"
+            slicer.util.mainWindow().statusBar().showMessage(statusText, 5000)
+            self.ui.statusLabel.setText(statusText)
+            logging.error(f"Error saving annotations: {e}")
+            return False
 
     def onSaveButton(self):
         """
         Saves current annotations to json file only
         """
-        logging.info('onSaveButton (save')
-        self.saveAnnotations()
+        logging.info('onSaveButton (save)')
+        success = self.saveAnnotations()
+        if not success:
+            # Error message already shown by saveAnnotations
+            return
 
     def onSaveAndLoadNextButton(self):
         """
@@ -851,8 +880,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         logging.info('onSaveAndLoadNextButton (save and load next scan)')
 
-        if self.saveAnnotations():
+        success = self.saveAnnotations()
+        if success:
             self.onNextButton()
+        else:
+            # Error message already shown by saveAnnotations, don't proceed to next
+            return
 
     def onAddLine(self, lineType, checked):
         logging.info(f"onAddLine -- lineType: {lineType}, checked: {checked}")
@@ -873,16 +906,23 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 logging.error(f"Unknown line type {lineType}")
                 return
 
-            logging.info("Auto-saving frame annotations")
-            self.logic.updateCurrentFrame()
-            self.updateGuiFromAnnotations()
-
             # If current line has less than 2 control points, remove it
             if len(linesList) > 0:
                 currentLine = linesList[-1]
                 if currentLine.GetNumberOfControlPoints() < 2:
                     linesList.pop()
                     slicer.mrmlScene.RemoveNode(currentLine)
+
+            # Only update if we're not already updating (prevents duplicate calls)
+            if not self._isUpdatingCurrentFrame:
+                self._isUpdatingCurrentFrame = True
+                try:
+                    logging.info("Auto-saving frame annotations")
+                    self.logic.updateCurrentFrame()
+                    self.updateGuiFromAnnotations()
+                finally:
+                    self._isUpdatingCurrentFrame = False
+
             ratio = self.logic.updateOverlayVolume()
             if ratio is not None:
                 self._parameterNode.pleuraPercentage = ratio * 100
@@ -927,9 +967,15 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             logging.error(f"Unknown line type {lineType}")
             return
 
-        logging.info("Auto-saving frame annotations")
-        self.logic.updateCurrentFrame()
-        self.updateGuiFromAnnotations()
+        # Only update if we're not already updating (prevents duplicate calls)
+        if not self._isUpdatingCurrentFrame:
+            self._isUpdatingCurrentFrame = True
+            try:
+                logging.info("Auto-saving frame annotations")
+                self.logic.updateCurrentFrame()
+                self.updateGuiFromAnnotations()
+            finally:
+                self._isUpdatingCurrentFrame = False
 
     def delayedOnEndPlaceMode(self, lineType):
         logging.info(f"delayedOnEndPlaceMode -- lineType: {lineType}")
@@ -941,9 +987,15 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             logging.error(f"Unknown line type {lineType}")
             return
 
-        logging.info("Auto-saving frame annotations")
-        self.logic.updateCurrentFrame()
-        self.updateGuiFromAnnotations()
+        # Only update if we're not already updating (prevents duplicate calls)
+        if not self._isUpdatingCurrentFrame:
+            self._isUpdatingCurrentFrame = True
+            try:
+                logging.info("Auto-saving frame annotations")
+                self.logic.updateCurrentFrame()
+                self.updateGuiFromAnnotations()
+            finally:
+                self._isUpdatingCurrentFrame = False
 
     def onRemovePleuraLine(self):
         logging.info('onRemovePleuraLine')
@@ -1484,12 +1536,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             self.seenRaters.sort()
         rater_index = self.seenRaters.index(rater)
         if rater_index == 0:
-            pleura_hue = 1/3  # green
-            bline_hue = 2/3   # blue
+            pleura_hue = 2/3  # blue
+            bline_hue = 1/3   # green
         else:
             hue_offset = (rater_index * 0.2) % 1.0
-            pleura_hue = (1/3 + hue_offset) % 1.0
-            bline_hue = (2/3 + hue_offset) % 1.0
+            pleura_hue = (2/3 + hue_offset) % 1.0
+            bline_hue = (1/3 + hue_offset) % 1.0
         # Use fixed saturation and value for all
         sat = 0.85
         val = 0.95
@@ -1608,7 +1660,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return len(self.dicomDf), annotations_created_count
 
     def updateCurrentFrame(self):
-        logging.info('addCurrentFrame')
+        logging.info('updateCurrentFrame')
 
         if self.sequenceBrowserNode is None:
             logging.warning("No sequence browser node found")
@@ -1616,6 +1668,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Get the current frame index from the sequence browser
         currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())  # TODO: investigate whey this could be negative!
+        logging.debug(f"Updating frame {currentFrameIndex} with {len(self.pleuraLines)} pleura lines and {len(self.bLines)} b-lines")
+
         # Check if annotations already has a list of frame annotations. Create it if it doesn't exist.
         if 'frame_annotations' not in self.annotations:
             self.annotations['frame_annotations'] = []
@@ -1633,39 +1687,73 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             }
             self.annotations['frame_annotations'].append(existing)
 
-        existing['pleura_lines'] = []  # Reset the list of pleura lines
+        # Get current rater
+        current_rater = self.getParameterNode().rater.strip().lower()
+        # Remove only current rater's lines from existing annotations
+        existing['pleura_lines'] = [
+            line for line in existing['pleura_lines']
+            if line.get("rater", "").strip().lower() != current_rater
+        ]
+        existing['b_lines'] = [
+            line for line in existing['b_lines']
+            if line.get("rater", "").strip().lower() != current_rater
+        ]
 
-        # Add pleura lines to annotations with new format - only save visible ones
-        for markupNode in self.pleuraLines:
-            # Only save markup nodes that are currently visible (belong to current frame)
-            if markupNode.GetDisplayNode().GetVisibility():
-                coordinates = []
+        # Add current rater's pleura lines to annotations
+        pleura_saved = 0
+        for i, markupNode in enumerate(self.pleuraLines):
+            nodeRater = markupNode.GetAttribute("rater") if markupNode else ""
+            is_visible = markupNode.GetDisplayNode().GetVisibility() if markupNode else False
+            num_points = markupNode.GetNumberOfControlPoints() if markupNode else 0
 
-                for i in range(markupNode.GetNumberOfControlPoints()):
-                    coord = [0, 0, 0]
-                    markupNode.GetNthControlPointPosition(i, coord)
-                    coordinates.append(coord)
+            if nodeRater.strip().lower() != current_rater:
+                continue  # Skip lines from other raters
 
-                if coordinates:
-                    existing['pleura_lines'].append(
-                        {"rater": markupNode.GetAttribute("rater"), "line": {"points": coordinates}})
+            # Only save visible nodes with valid coordinates
+            if not is_visible:
+                continue  # Skip hidden nodes
 
-        existing['b_lines'] = []  # Reset the list of B-lines
+            coordinates = []
+            for j in range(num_points):
+                coord = [0, 0, 0]
+                markupNode.GetNthControlPointPosition(j, coord)
+                coordinates.append(coord)
 
-        # Add B-lines to annotations with new format - only save visible ones
-        for markupNode in self.bLines:
-            # Only save markup nodes that are currently visible (belong to current frame)
-            if markupNode.GetDisplayNode().GetVisibility():
-                coordinates = []
+            if coordinates and len(coordinates) >= 2:  # Only save lines with at least 2 points
+                line_data = {
+                    "rater": markupNode.GetAttribute("rater"),
+                    "line": {"points": coordinates}
+                }
+                existing['pleura_lines'].append(line_data)
+                pleura_saved += 1
 
-                for i in range(markupNode.GetNumberOfControlPoints()):
-                    coord = [0, 0, 0]
-                    markupNode.GetNthControlPointPosition(i, coord)
-                    coordinates.append(coord)
+        # Add current rater's B-lines to annotations
+        bline_saved = 0
+        for i, markupNode in enumerate(self.bLines):
+            nodeRater = markupNode.GetAttribute("rater") if markupNode else ""
+            is_visible = markupNode.GetDisplayNode().GetVisibility() if markupNode else False
+            num_points = markupNode.GetNumberOfControlPoints() if markupNode else 0
 
-                if coordinates:
-                    existing['b_lines'].append(
-                        {"rater": markupNode.GetAttribute("rater"),  "line": {"points": coordinates}})
+            if nodeRater.strip().lower() != current_rater:
+                continue  # Skip lines from other raters
+
+            # Only save visible nodes with valid coordinates
+            if not is_visible:
+                continue  # Skip hidden nodes
+
+            coordinates = []
+            for j in range(num_points):
+                coord = [0, 0, 0]
+                markupNode.GetNthControlPointPosition(j, coord)
+                coordinates.append(coord)
+
+            if coordinates and len(coordinates) >= 2:  # Only save lines with at least 2 points
+                line_data = {
+                    "rater": markupNode.GetAttribute("rater"),
+                    "line": {"points": coordinates}
+                }
+                existing['b_lines'].append(line_data)
+                bline_saved += 1
 
         # Save pleura percentage for current frame
         self.savePleuraPercentageForCurrentFrame()
@@ -1955,8 +2043,11 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         self.annotations = merged_data
 
-        # Preallocate markup nodes based on loaded annotations
-        self.preallocateMarkupNodesFromAnnotations()
+        # Clean up duplicates from the loaded annotation data
+        self.cleanupAnnotationDuplicates()
+
+        # Initialize markup nodes based on loaded annotations
+        self.initializeMarkupNodesFromAnnotations()
 
         if current_rater in self.seenRaters:
             self.seenRaters.remove(current_rater)
@@ -2313,7 +2404,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         pleura_entries = [entry for entry in frame.get("pleura_lines", []) if entry.get("rater") in self.selectedRaters]
         bline_entries = [entry for entry in frame.get("b_lines", []) if entry.get("rater") in self.selectedRaters]
 
-        # Ensure enough markup nodes exist
+        # Ensure we have enough markup nodes (create more if needed, but don't remove for performance)
         while len(self.pleuraLines) < len(pleura_entries):
             self.pleuraLines.append(self.createMarkupLine("Pleura", "", [], [1,1,0]))
         while len(self.bLines) < len(bline_entries):
@@ -2332,15 +2423,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             node.RemoveAllControlPoints()
             for pt in coordinates:
                 node.AddControlPointWorld(*pt)
+
         # Hide unused pleura markups
         for i in range(len(pleura_entries), len(self.pleuraLines)):
             self.pleuraLines[i].GetDisplayNode().SetVisibility(False)
-
-        # Hide pleura markups for non-selected raters
-        for node in self.pleuraLines:
-            nodeRater = node.GetAttribute("rater")
-            if nodeRater not in self.selectedRaters:
-                node.GetDisplayNode().SetVisibility(False)
 
         # Update b-line markups
         for i, entry in enumerate(bline_entries):
@@ -2354,15 +2440,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             node.RemoveAllControlPoints()
             for pt in coordinates:
                 node.AddControlPointWorld(*pt)
+
         # Hide unused b-line markups
         for i in range(len(bline_entries), len(self.bLines)):
             self.bLines[i].GetDisplayNode().SetVisibility(False)
-
-        # Hide b-line markups for non-selected raters
-        for node in self.bLines:
-            nodeRater = node.GetAttribute("rater")
-            if nodeRater not in self.selectedRaters:
-                node.GetDisplayNode().SetVisibility(False)
 
     def updateLineMarkups(self):
         """
@@ -2803,38 +2884,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 parent[elem.name] = elem.value
         return parent
 
-    def preallocateMarkupNodesFromAnnotations(self):
-        """
-        Preallocate markup nodes for pleura and B-lines based on the maximum needed in the loaded annotations.
-        """
-        if not hasattr(self, 'pleuraLines'):
-            self.pleuraLines = []
-        if not hasattr(self, 'bLines'):
-            self.bLines = []
-        max_pleura = 0
-        max_blines = 0
-        if self.annotations and 'frame_annotations' in self.annotations:
-            for frame in self.annotations['frame_annotations']:
-                pleura_count = len(frame.get('pleura_lines', []))
-                bline_count = len(frame.get('b_lines', []))
-                if pleura_count > max_pleura:
-                    max_pleura = pleura_count
-                if bline_count > max_blines:
-                    max_blines = bline_count
-
-        # Set programmatic update flag to prevent unsavedChanges from being set
-        self._isProgrammaticUpdate = True
-        try:
-            # Preallocate pleura markup nodes
-            while len(self.pleuraLines) < max_pleura:
-                self.pleuraLines.append(self.createMarkupLine("Pleura", "", [], [1,1,0]))
-            # Preallocate b-line markup nodes
-            while len(self.bLines) < max_blines:
-                self.bLines.append(self.createMarkupLine("B-line", "", [], [0,1,1]))
-        finally:
-            # Reset programmatic update flag
-            self._isProgrammaticUpdate = False
-
     def process(self,
                 inputVolume: vtkMRMLScalarVolumeNode,
                 outputVolume: vtkMRMLScalarVolumeNode,
@@ -2918,6 +2967,141 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             pleura_color, bline_color = self.getColorsForRater(r)
             colors.append((r, (pleura_color, bline_color)))
         return colors
+
+    def cleanupAnnotationDuplicates(self):
+        """
+        Remove duplicate lines from the annotation data in memory.
+        Lines are only considered duplicates if they have identical points AND the same rater.
+        This prevents duplicates from being displayed. We shouldn't need this anymore but it's here just in case
+        there are files that have duplicates that got saved from previous versions of the module.
+        """
+        if not self.annotations or 'frame_annotations' not in self.annotations:
+            return
+
+        total_removed = 0
+        has_duplicates = False
+
+        for frame in self.annotations['frame_annotations']:
+            frame_num = frame.get('frame_number', 'unknown')
+
+            # Check pleura lines for duplicates
+            if 'pleura_lines' in frame:
+                original_count = len(frame['pleura_lines'])
+                seen_pleura = set()
+                unique_pleura = []
+
+                for i, entry in enumerate(frame['pleura_lines']):
+                    points = entry.get('line', {}).get('points', [])
+                    rater = entry.get('rater', '')
+                    # Create a hash of points and rater
+                    points_hash = hash(tuple(tuple(pt) for pt in points) + (rater,))
+
+                    if points_hash not in seen_pleura:
+                        seen_pleura.add(points_hash)
+                        unique_pleura.append(entry)
+                    else:
+                        has_duplicates = True
+
+                if has_duplicates:
+                    frame['pleura_lines'] = unique_pleura
+                    removed = original_count - len(unique_pleura)
+                    total_removed += removed
+
+            # Check b-lines for duplicates
+            if 'b_lines' in frame:
+                original_count = len(frame['b_lines'])
+                seen_blines = set()
+                unique_blines = []
+
+                for i, entry in enumerate(frame['b_lines']):
+                    points = entry.get('line', {}).get('points', [])
+                    rater = entry.get('rater', '')
+                    # Create a hash of points and rater
+                    points_hash = hash(tuple(tuple(pt) for pt in points) + (rater,))
+
+                    if points_hash not in seen_blines:
+                        seen_blines.add(points_hash)
+                        unique_blines.append(entry)
+                    else:
+                        has_duplicates = True
+
+                if has_duplicates:
+                    frame['b_lines'] = unique_blines
+                    removed = original_count - len(unique_blines)
+                    total_removed += removed
+
+        if has_duplicates:
+            # Reinitialize markup nodes if needed after cleanup
+            self.reinitializeMarkupNodesIfNeeded()
+
+    def initializeMarkupNodesFromAnnotations(self):
+        """
+        Initialize markup nodes based on the maximum number needed across all frames.
+        This ensures we start with the right number of nodes and don't need to create/remove them constantly.
+        """
+        if not self.annotations or 'frame_annotations' not in self.annotations:
+            return
+
+        # Calculate maximum number of lines needed across all frames
+        max_pleura_lines = 0
+        max_blines = 0
+
+        for frame in self.annotations['frame_annotations']:
+            pleura_count = len(frame.get('pleura_lines', []))
+            bline_count = len(frame.get('b_lines', []))
+            max_pleura_lines = max(max_pleura_lines, pleura_count)
+            max_blines = max(max_blines, bline_count)
+
+        # Add some buffer for new lines (at least 2 of each type, but cap at reasonable limits)
+        max_pleura_lines = max(max_pleura_lines, 2)
+        max_blines = max(max_blines, 2)
+
+        # Cap the maximum to prevent excessive node creation
+        max_pleura_lines = min(max_pleura_lines, 10)  # Cap at 10 pleura nodes
+        max_blines = min(max_blines, 10)              # Cap at 10 B-line nodes
+
+        # Clear existing nodes
+        self.clearSceneLines()
+
+        # Create the required number of nodes
+        for i in range(max_pleura_lines):
+            self.pleuraLines.append(self.createMarkupLine("Pleura", "", [], [1,1,0]))
+        for i in range(max_blines):
+            self.bLines.append(self.createMarkupLine("B-line", "", [], [0,1,1]))
+
+    def reinitializeMarkupNodesIfNeeded(self):
+        """
+        Reinitialize markup nodes if the current number doesn't match what's needed.
+        This is useful after cleaning up duplicates or when the annotation data changes significantly.
+        """
+        if not self.annotations or 'frame_annotations' not in self.annotations:
+            return
+
+        # Calculate what we actually need now
+        max_pleura_lines = 0
+        max_blines = 0
+
+        for frame in self.annotations['frame_annotations']:
+            pleura_count = len(frame.get('pleura_lines', []))
+            bline_count = len(frame.get('b_lines', []))
+            max_pleura_lines = max(max_pleura_lines, pleura_count)
+            max_blines = max(max_blines, bline_count)
+
+        # Add buffer
+        max_pleura_lines = max(max_pleura_lines, 2)
+        max_blines = max(max_blines, 2)
+
+        # Cap the maximum
+        max_pleura_lines = min(max_pleura_lines, 10)
+        max_blines = min(max_blines, 10)
+
+        current_pleura = len(self.pleuraLines)
+        current_blines = len(self.bLines)
+
+        # Only reinitialize if there's a significant difference
+        if (abs(current_pleura - max_pleura_lines) > 2 or
+            abs(current_blines - max_blines) > 2):
+            self.initializeMarkupNodesFromAnnotations()
 
 
 #

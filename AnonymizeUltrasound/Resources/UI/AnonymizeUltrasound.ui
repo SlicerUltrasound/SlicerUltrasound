@@ -166,7 +166,7 @@
            </size>
           </property>
           <property name="text">
-           <string>Load next</string>
+           <string>Load next [N]</string>
           </property>
          </widget>
         </item>
@@ -179,7 +179,7 @@
            </size>
           </property>
           <property name="text">
-           <string>Define mask</string>
+           <string>Define mask [M]</string>
           </property>
           <property name="checkable">
            <bool>true</bool>
@@ -198,7 +198,23 @@
            <string>Applies mask and exports anonymized DICOM file</string>
           </property>
           <property name="text">
-           <string>Export</string>
+           <string>Export [E]</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="exportAndNextButton">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="toolTip">
+           <string>Export and load next scan</string>
+          </property>
+          <property name="text">
+           <string>Export and Load Next [A]</string>
           </property>
          </widget>
         </item>
@@ -344,7 +360,7 @@
           <string>Allow defining a fan mask with 1 top point and 2 bottom points</string>
         </property>
         <property name="text">
-          <string>Enable 3-Point Fan Mask</string>
+          <string>Enable 3-Point Fan Mask [C]</string>
         </property>
         </widget>
       </item>

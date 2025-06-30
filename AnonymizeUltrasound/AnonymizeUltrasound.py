@@ -167,6 +167,19 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self._parameterNodeGuiTag = None
         self.compositingModeExit = None
 
+        # --- Keyboard shortcuts ---
+        # M: toggle Define Mask, N: next scan, Space: toggle auto overlay, E: export scan, A: export and load next scan
+        self.shortcutM = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutM.setKey(qt.QKeySequence('M'))
+        self.shortcutN = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutN.setKey(qt.QKeySequence('N'))
+        self.shortcutC = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutC.setKey(qt.QKeySequence('C'))
+        self.shortcutE = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutE.setKey(qt.QKeySequence('E'))
+        self.shortcutA = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutA.setKey(qt.QKeySequence('A'))
+
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
         ScriptedLoadableModuleWidget.setup(self)
@@ -230,6 +243,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.nextButton.clicked.connect(self.onNextButton)
         self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
         self.ui.exportButton.clicked.connect(self.onExportScanButton)
+        if hasattr(self.ui, 'exportAndNextButton'):
+            self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextShortcut)
 
         # Settings widgets
 
@@ -305,9 +320,12 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Start on red-only view. Allow other layouts later.
         slicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUpRedSliceView)
 
+        self.connectKeyboardShortcuts()
+
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
         self.removeObservers()
+        self.disconnectKeyboardShortcuts()
 
     def enter(self) -> None:
         """Called each time the user opens this module."""
@@ -337,6 +355,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Restore compositing mode to the value it was before entering the module
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         sliceCompositeNode.SetCompositing(self.compositingModeExit)
+
+        # Remove keyboard shortcuts when leaving the module
+        self.disconnectKeyboardShortcuts()
 
     def onSceneStartClose(self, caller, event) -> None:
         """Called just before the scene is closed."""
@@ -592,6 +613,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Set red slice compositing mode to 2
         sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
         sliceCompositeNode.SetCompositing(2)
+
+        # Reactivate the main window to ensure keyboard shortcuts work
+        slicer.util.mainWindow().activateWindow()
+        slicer.util.mainWindow().raise_()
+        slicer.util.mainWindow().setFocus()
 
     def onAutoOverlayCheckBoxToggled(self, checked):
         self.logic.showAutoOverlay = checked  # Pass to logic
@@ -867,6 +893,33 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         slicer.app.processEvents()
 
         return dialog
+
+    def connectKeyboardShortcuts(self):
+        """Connect shortcut keys to their corresponding actions."""
+        self.shortcutM.connect('activated()', lambda: self.ui.defineMaskButton.toggle())
+        self.shortcutN.connect('activated()', self.onNextButton)
+        self.shortcutC.connect('activated()', lambda: self.ui.threePointFanCheckBox.toggle())
+        self.shortcutE.connect('activated()', self.onExportScanButton)
+        self.shortcutA.connect('activated()', self.onExportAndNextShortcut)
+
+    def disconnectKeyboardShortcuts(self):
+        """Disconnect shortcut keys when leaving the module to avoid unwanted interactions."""
+        try:
+            self.shortcutM.activated.disconnect()
+            self.shortcutN.activated.disconnect()
+            self.shortcutC.activated.disconnect()
+            self.shortcutE.activated.disconnect()
+            self.shortcutA.activated.disconnect()
+        except Exception:
+            # If shortcuts were not connected yet, ignore
+            pass
+
+    def onExportAndNextShortcut(self):
+        """Helper slot to export the current scan and immediately load the next one (shortcut 'A')."""
+        self.onExportScanButton()
+        # Load next only if export did not show blocking dialogs (user may have canceled)
+        # We simply attempt; internal checks will guard.
+        self.onNextButton()
 
 
 #
