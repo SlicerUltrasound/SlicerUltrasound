@@ -355,6 +355,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.logic.savePleuraPercentageForCurrentFrame()
 
         self.updateGuiFromAnnotations()
+        
+        # Update rater color table to reflect new best performance
+        self.populateRaterColorTable()
 
     def onFramesTableSelectionChanged(self):
         logging.info('onFramesTableSelectionChanged')
@@ -384,6 +387,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         logging.info('onAddCurrentFrame')
         self.logic.updateCurrentFrame()
         self.updateGuiFromAnnotations()
+        
+        # Update rater color table to reflect new best performance
+        self.populateRaterColorTable()
         
 
     def _updateMarkupsAndOverlayProgrammatically(self, setUnsavedChanges=False):
@@ -974,6 +980,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 logging.info("Auto-saving frame annotations")
                 self.logic.updateCurrentFrame()
                 self.updateGuiFromAnnotations()
+                # Update rater color table to reflect new best performance
+                self.populateRaterColorTable()
             finally:
                 self._isUpdatingCurrentFrame = False
 
@@ -994,6 +1002,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 logging.info("Auto-saving frame annotations")
                 self.logic.updateCurrentFrame()
                 self.updateGuiFromAnnotations()
+                # Update rater color table to reflect new best performance
+                self.populateRaterColorTable()
             finally:
                 self._isUpdatingCurrentFrame = False
 
@@ -2184,6 +2194,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                     widget = slicer.modules.annotateultrasound.widgetRepresentation().self()
                     if widget:
                         widget.updateGuiFromAnnotations()
+                        # Update rater color table to reflect new best performance
+                        widget.populateRaterColorTable()
             except Exception as e:
                 logging.warning(f"Could not update GUI after point modification: {e}")
 
@@ -2204,6 +2216,18 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Set unsavedChanges when user finishes placing a line (only if not programmatic)
         if not self._isProgrammaticUpdate:
             parameterNode.unsavedChanges = True
+            
+            # Update GUI to reflect changes in the frames table and rater table
+            try:
+                # Get the widget instance and update the GUI
+                if hasattr(slicer.modules, 'annotateultrasound'):
+                    widget = slicer.modules.annotateultrasound.widgetRepresentation().self()
+                    if widget:
+                        widget.updateGuiFromAnnotations()
+                        # Update rater color table to reflect new best performance
+                        widget.populateRaterColorTable()
+            except Exception as e:
+                logging.warning(f"Could not update GUI after point position defined: {e}")
 
     def fanCornersFromSectorLine(self, p1, p2, center, r1, r2):
         op1 = np.array(p1) - np.array(center)
@@ -2924,6 +2948,89 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
 
+    def calculatePleuraPercentageForRater(self, frame, rater):
+        """
+        Calculate the pleura percentage for a specific rater in a given frame.
+        This calculates the ratio of B-line pixels to pleura pixels for the specified rater only.
+        
+        :param frame: Frame annotation dictionary
+        :param rater: Rater name to calculate percentage for
+        :return: Pleura percentage as a float (0.0 to 1.0)
+        """
+        if not frame or not rater:
+            return 0.0
+            
+        rater = rater.strip().lower()
+        
+        # Get the current parameter node for volume access
+        parameterNode = self.getParameterNode()
+        if not parameterNode.inputVolume or not parameterNode.overlayVolume:
+            return 0.0
+            
+        ultrasoundArray = slicer.util.arrayFromVolume(parameterNode.inputVolume)
+        
+        # Create a temporary mask array for this calculation
+        maskArray = np.zeros([1, ultrasoundArray.shape[1], ultrasoundArray.shape[2], 3], dtype=np.uint8)
+        ijkToRas = vtk.vtkMatrix4x4()
+        parameterNode.inputVolume.GetIJKToRASMatrix(ijkToRas)
+        rasToIjk = vtk.vtkMatrix4x4()
+        vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
+        
+        # Add pleura lines for this specific rater
+        for line in frame.get('pleura_lines', []):
+            if line.get('rater', '').strip().lower() != rater:
+                continue
+                
+            points = line.get('line', {}).get('points', [])
+            if len(points) < 2:
+                continue
+                
+            for i in range(len(points) - 1):
+                coord1 = points[i]
+                coord2 = points[i + 1]
+                coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
+                coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
+                coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
+                coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
+                # Draw mask fan between coord1 and coord2
+                sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2, value=255)
+                # Add sectorArray to maskArray by maximum compounding
+                maskArray[0, :, :, 2] = np.maximum(maskArray[0, :, :, 2], sectorArray)
+        
+        # Add B-lines for this specific rater
+        for line in frame.get('b_lines', []):
+            if line.get('rater', '').strip().lower() != rater:
+                continue
+                
+            points = line.get('line', {}).get('points', [])
+            if len(points) < 2:
+                continue
+                
+            for i in range(len(points) - 1):
+                coord1 = points[i]
+                coord2 = points[i + 1]
+                coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
+                coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
+                coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
+                coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
+                # Draw mask fan between coord1 and coord2
+                sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2)
+                # Add sectorArray to maskArray by maximum compounding
+                maskArray[0, :, :, 1] = np.maximum(maskArray[0, :, :, 1], sectorArray)
+        
+        # Erase all B-lines pixels where there is no pleura line
+        maskArray[0, :, :, 1] = np.where(maskArray[0, :, :, 2] == 0, 0, maskArray[0, :, :, 1])
+        
+        # Calculate the amount of blue pixels (pleura) and green pixels (B-lines)
+        bluePixels = np.count_nonzero(maskArray[0, :, :, 2])
+        greenPixels = np.count_nonzero(maskArray[0, :, :, 1])
+        
+        # Return the ratio of green pixels to blue pixels
+        if bluePixels == 0:
+            return 0.0
+        else:
+            return greenPixels / bluePixels
+
     def getHighestPercentageFramePerRater(self):
         """
         Find the frame with the highest pleura percentage for each rater in the current annotations.
@@ -2934,10 +3041,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         
         rater_performance = {}
         
-        # For each frame, check which raters have lines and update their performance
+        # For each frame, calculate performance for each rater individually
         for frame in self.annotations['frame_annotations']:
             frame_number = int(frame.get('frame_number', -1))
-            pleura_percentage = float(frame.get('pleura_percentage', 0.0))
             
             # Find all raters that have lines in this frame
             raters_in_frame = set()
@@ -2954,10 +3060,13 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 if rater:
                     raters_in_frame.add(rater)
             
-            # Update performance for each rater in this frame
+            # Calculate performance for each rater in this frame
             for rater in raters_in_frame:
+                pleura_percentage = self.calculatePleuraPercentageForRater(frame, rater)
+                
+                # Update performance if this is better than current best
                 if rater not in rater_performance or pleura_percentage > rater_performance[rater][0]:
-                    rater_performance[rater] = (pleura_percentage, frame_number)
+                    rater_performance[rater] = (pleura_percentage * 100, frame_number)  # Convert to percentage
         
         return rater_performance
 
