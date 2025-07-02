@@ -2958,16 +2958,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         
         return rater_performance
 
-    def getAllRaterColors(self):
-        """
-        Returns a list of (rater, (pleura_color, bline_color)) for all seen raters.
-        """
-        colors = []
-        for r in self.seenRaters:
-            pleura_color, bline_color = self.getColorsForRater(r)
-            colors.append((r, (pleura_color, bline_color)))
-        return colors
-
     def cleanupAnnotationDuplicates(self):
         """
         Remove duplicate lines from the annotation data in memory.
