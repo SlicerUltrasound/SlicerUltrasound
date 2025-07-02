@@ -1405,16 +1405,19 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             if r in best_performance:
                 best_percentage, frame_number = best_performance[r]
                 best_item.setText(f"{best_percentage:.1f}% (F{frame_number})")
-                # Color code based on performance: green for low (good), yellow for medium, red for high (bad)
+                # Apply text color directly based on performance
                 if best_percentage <= 15:
-                    best_item.setBackground(qt.QColor(100, 255, 100))  # Green (good condition)
+                    # Good condition - green text
+                    best_item.setForeground(qt.QColor(0, 128, 0))
                 elif best_percentage <= 30:
-                    best_item.setBackground(qt.QColor(255, 255, 100))  # Yellow (moderate condition)
+                    # Moderate condition - orange text
+                    best_item.setForeground(qt.QColor(255, 140, 0))
                 else:
-                    best_item.setBackground(qt.QColor(255, 100, 100))  # Red (poor condition)
+                    # Poor condition - red text
+                    best_item.setForeground(qt.QColor(220, 20, 60))
             else:
                 best_item.setText("No data")
-                best_item.setBackground(qt.QColor(200, 200, 200))  # Gray
+                best_item.setForeground(qt.QColor(128, 128, 128))
 
             self.ui.raterColorTable.setItem(row, 0, rater_item)
             self.ui.raterColorTable.setItem(row, 1, pleura_item)
