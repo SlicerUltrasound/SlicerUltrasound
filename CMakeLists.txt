@@ -18,6 +18,38 @@ find_package(Slicer REQUIRED)
 include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
+# Testing configuration
+if(BUILD_TESTING)
+  # Enable CTest
+  enable_testing()
+
+  # Set test timeout (5 minutes)
+  set(DART_TESTING_TIMEOUT 300)
+
+  # Configure test labels
+  set(TEST_LABELS
+    "unit"
+    "integration"
+    "gui"
+    "slicer"
+    "ultrasound"
+  )
+
+  # Add test labels to all tests
+  foreach(label ${TEST_LABELS})
+    add_test(NAME ${label} COMMAND ${CMAKE_COMMAND} -E echo "Test label: ${label}")
+    set_tests_properties(${label} PROPERTIES LABELS ${label})
+  endforeach()
+
+  # Remove the dummy test
+  remove_test("unit")
+  remove_test("integration")
+  remove_test("gui")
+  remove_test("slicer")
+  remove_test("ultrasound")
+endif()
+
+#-----------------------------------------------------------------------------
 # Extension modules
 add_subdirectory(AnonymizeUltrasound)
 add_subdirectory(AnnotateUltrasound)
@@ -25,6 +57,12 @@ add_subdirectory(MmodeAnalysis)
 add_subdirectory(TimeSeriesAnnotation)
 # add_subdirectory(SceneCleaner)
 ## NEXT_MODULE
+
+#-----------------------------------------------------------------------------
+# Testing infrastructure
+if(BUILD_TESTING)
+  add_subdirectory(Testing)
+endif()
 
 #-----------------------------------------------------------------------------
 include(${Slicer_EXTENSION_GENERATE_CONFIG})

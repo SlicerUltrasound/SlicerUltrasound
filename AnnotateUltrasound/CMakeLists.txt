@@ -4,6 +4,7 @@ set(MODULE_NAME AnnotateUltrasound)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
+  ../common/common.py
   )
 
 set(MODULE_ICON_PNGS
@@ -38,6 +39,13 @@ if(BUILD_TESTING)
   # Register the unittest subclass in the main script as a ctest.
   # Note that the test will also be available at runtime.
   slicer_add_python_unittest(SCRIPT ${MODULE_NAME}.py)
+
+  # Set test properties for the module test
+  set_tests_properties(${MODULE_NAME}ModuleTest PROPERTIES
+    LABELS "unit;slicer;ultrasound"
+    TIMEOUT 300
+    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/lib/Slicer-5.8/qt-scripted-modules"
+  )
 
   # Additional build-time testing
   add_subdirectory(Testing)

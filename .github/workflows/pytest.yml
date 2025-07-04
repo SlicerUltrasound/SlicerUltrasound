@@ -1,41 +1,135 @@
 name: Run Pytests
 
-# Trigger the workflow on pull requests to the main branch
+# Trigger the workflow on pull requests and pushes to any branch for comprehensive testing
 on:
   pull_request:
     branches: [main]
+  push: # Run on all branch pushes for testing
+  workflow_dispatch: # Allow manual triggering
 
 jobs:
-  test:
+  # Job 1: Pure Python unit tests (fastest, no Slicer modules required)
+  unit-tests:
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
         # Match the version in .python-version file.
         python-version: [3.9]
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements-test.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
 
-    - name: Run tests with pytest
-      run: |
-        pytest --cov=. --cov-report=term-missing
+      - name: Debug environment
+        run: |
+          echo "=== Python Environment Debug ==="
+          python --version
+          pip list | grep pytest
+          echo "=== Directory Structure ==="
+          find . -name "test_*.py" -type f | head -10
+          echo "=== Test directories ==="
+          ls -la AnnotateUltrasound/tests/ || echo "AnnotateUltrasound/tests/ not found"
+          ls -la AnonymizeUltrasound/tests/ || echo "AnonymizeUltrasound/tests/ not found"
+          ls -la tests/ || echo "tests/ not found"
+          echo "=== Run all tests script ==="
+          ls -la run_all_tests.py || echo "run_all_tests.py not found"
+
+      - name: Run unit tests with automated test runner
+        run: |
+          python run_all_tests.py
+
+      - name: Fallback - Run tests individually if test runner fails
+        if: failure()
+        run: |
+          echo "=== Test runner failed, trying individual test execution ==="
+          echo "Running AnnotateUltrasound tests..."
+          cd AnnotateUltrasound && python -m pytest tests/ -v || echo "AnnotateUltrasound tests failed"
+          cd ..
+          echo "Running AnonymizeUltrasound tests..."
+          cd AnonymizeUltrasound && python -m pytest tests/ -v || echo "AnonymizeUltrasound tests failed"
+          cd ..
+          echo "Running core tests..."
+          python -m pytest tests/ -v || echo "Core tests failed"
+          echo "Running common tests..."
+          python -m pytest AnonymizeUltrasound/common/tests/ -v || echo "Common tests failed"
+
+      - name: Run unit tests with coverage (detailed)
+        run: |
+          # Run modular tests with coverage
+          cd AnnotateUltrasound && python -m pytest tests/ --cov=../AnnotateUltrasound --cov-append --cov-report=xml --cov-report=term-missing
+          cd ../AnonymizeUltrasound && python -m pytest tests/ --cov=../AnonymizeUltrasound --cov-append --cov-report=xml --cov-report=term-missing
+          cd .. && python -m pytest tests/ --cov=. --cov-append --cov-report=xml --cov-report=term-missing --cov-report=html
+          python -m pytest AnonymizeUltrasound/common/tests/ --cov=AnonymizeUltrasound --cov-append --cov-report=xml --cov-report=term-missing
+
+      - name: Upload unit test coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unit-tests
+          name: codecov-unit-tests
+          fail_ci_if_error: false
+
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-report
+          path: htmlcov/
+
+  # Job 2: Test summary and validation
+  test-summary:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+
+      - name: Validate test organization
+        run: |
+          echo "=== Test Organization Validation ==="
+          echo "AnnotateUltrasound tests:"
+          find AnnotateUltrasound/tests -name "test_*.py" -type f | wc -l
+          echo "AnonymizeUltrasound tests:"
+          find AnonymizeUltrasound/tests -name "test_*.py" -type f | wc -l
+          echo "Core/shared tests:"
+          find tests -name "test_*.py" -type f | wc -l
+          echo "Common tests:"
+          find AnonymizeUltrasound/common/tests -name "test_*.py" -type f | wc -l
+
+      - name: Run performance benchmark
+        run: |
+          echo "=== Performance Benchmark ==="
+          time python run_all_tests.py
+
+      - name: Verify test runner exit code
+        run: |
+          echo "=== Test Runner Validation ==="
+          python run_all_tests.py
+          echo "Exit code: $?"
