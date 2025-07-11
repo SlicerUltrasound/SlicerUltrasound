@@ -38,6 +38,12 @@ except ImportError:
     slicer.util.pip_install('opencv-python')
     import cv2
 
+try:
+    from shapely.geometry import Polygon, LineString
+except ImportError:
+    slicer.util.pip_install('shapely')
+    from shapely.geometry import Polygon, LineString
+
 from collections import defaultdict
 from DICOMLib import DICOMUtils
 from typing import Annotated, Optional
@@ -238,7 +244,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Set up frames table
         self.ui.framesTableWidget.setColumnCount(4)
-        self.ui.framesTableWidget.setHorizontalHeaderLabels(["Frame index", "Pleura lines (N)", "B-lines (N)", "Pleura %"])
+        self.ui.framesTableWidget.setHorizontalHeaderLabels(["Frame (Rater)", "Pleura lines (N)", "B-lines (N)", "Pleura %"])
         header = self.ui.framesTableWidget.horizontalHeader()
         header.setSectionResizeMode(qt.QHeaderView.Stretch)
         self.ui.framesTableWidget.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
@@ -326,10 +332,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         settings.setValue('AnnotateUltrasound/ShowPleuraPercentage', self.ui.showPleuraPercentageCheckBox.checked)
         settings.setValue('AnnotateUltrasound/DepthGuide', self.ui.depthGuideCheckBox.checked)
         settings.setValue('AnnotateUltrasound/Rater', self.ui.raterName.text.strip())
-        ratio = self.logic.updateOverlayVolume()
-        if ratio is not None:
-            self._parameterNode.pleuraPercentage = ratio * 100
-
+        self.logic.updateOverlayVolume()
+        # Calculate and update pleura percentage
+        self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
         # Save pleura percentage for current frame
         self.logic.savePleuraPercentageForCurrentFrame()
 
@@ -346,10 +351,11 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def onClearAllLines(self):
         logging.info('onClearAllLines')
         self.logic.clearAllLines()
-        ratio = self.logic.updateOverlayVolume()
-        if ratio is not None:
-            self._parameterNode.pleuraPercentage = ratio * 100
-            self._parameterNode.unsavedChanges = True
+        self.logic.updateOverlayVolume()
+        # Calculate and update pleura percentage
+        self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
+        
+        self._parameterNode.unsavedChanges = True
 
         # Save pleura percentage for current frame
         self.logic.savePleuraPercentageForCurrentFrame()
@@ -366,7 +372,13 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         if (selectedRow == -1):
             return
 
-        selectedFrameIndex = int(self.ui.framesTableWidget.item(selectedRow, 0).text())
+        frameText = self.ui.framesTableWidget.item(selectedRow, 0).text()
+        
+        # Parse frame number from text like "0 (rater1)" or just "0"
+        if "(" in frameText:
+            selectedFrameIndex = int(frameText.split("(")[0].strip())
+        else:
+            selectedFrameIndex = int(frameText)
 
         # Get the current frame index from the sequence browser
 
@@ -399,12 +411,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.logic._isProgrammaticUpdate = True
         try:
             self.logic.updateLineMarkups()
-            ratio = self.logic.updateOverlayVolume()
-            if ratio is not None:
-                self._parameterNode.pleuraPercentage = ratio * 100
-            else:
-                self._parameterNode.pleuraPercentage = 0.0
-
+            self.logic.updateOverlayVolume()    
+            # Calculate and update pleura percentage
+            self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
             # Save pleura percentage for current frame
             self.logic.savePleuraPercentageForCurrentFrame()
 
@@ -663,38 +672,80 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Remove all rows from the table
         self.ui.framesTableWidget.setRowCount(0)
 
-        # Add rows to the table
+        # Add rows to the table - one row per rater per frame
         if self.logic.annotations is not None and "frame_annotations" in self.logic.annotations:
             for frame_annotations in self.logic.annotations["frame_annotations"]:
-                row = self.ui.framesTableWidget.rowCount
-                self.ui.framesTableWidget.insertRow(row)
-
-                frame_number = int(frame_annotations.get("frame_number", row))
-                frame_number_item = qt.QTableWidgetItem()
-                frame_number_item.setData(qt.Qt.DisplayRole, frame_number)
-                self.ui.framesTableWidget.setItem(row, 0, frame_number_item)
-
-                pleura_count = len([
-                    pleura_line for pleura_line in frame_annotations.get("pleura_lines", [])
-                    if pleura_line is not None and isinstance(pleura_line.get("line"), dict)
-                ])
-                pleura_item = qt.QTableWidgetItem()
-                pleura_item.setData(qt.Qt.DisplayRole, pleura_count)
-                self.ui.framesTableWidget.setItem(row, 1, pleura_item)
-
-                bline_count = len([
-                    b_line for b_line in frame_annotations.get("b_lines", [])
-                    if b_line is not None and isinstance(b_line.get("line"), dict)
-                ])
-                bline_item = qt.QTableWidgetItem()
-                bline_item.setData(qt.Qt.DisplayRole, bline_count)
-                self.ui.framesTableWidget.setItem(row, 2, bline_item)
-
-                # Add pleura percentage column
-                pleura_percentage = frame_annotations.get("pleura_percentage", 0.0)
-                pleura_percentage_item = qt.QTableWidgetItem()
-                pleura_percentage_item.setData(qt.Qt.DisplayRole, f"{pleura_percentage:.1f}")
-                self.ui.framesTableWidget.setItem(row, 3, pleura_percentage_item)
+                # Get all raters that have lines in this frame
+                raters_in_frame = set()
+                
+                # Check pleura lines
+                for line in frame_annotations.get("pleura_lines", []):
+                    rater = line.get("rater", "").strip().lower()
+                    if rater:
+                        raters_in_frame.add(rater)
+                
+                # Check B-lines
+                for line in frame_annotations.get("b_lines", []):
+                    rater = line.get("rater", "").strip().lower()
+                    if rater:
+                        raters_in_frame.add(rater)
+                
+                # If no raters found, create one row with empty data
+                if not raters_in_frame:
+                    row = self.ui.framesTableWidget.rowCount
+                    self.ui.framesTableWidget.insertRow(row)
+                    
+                    frame_number = int(frame_annotations.get("frame_number", row))
+                    frame_number_item = qt.QTableWidgetItem()
+                    frame_number_item.setData(qt.Qt.DisplayRole, frame_number)
+                    self.ui.framesTableWidget.setItem(row, 0, frame_number_item)
+                    
+                    pleura_item = qt.QTableWidgetItem()
+                    pleura_item.setData(qt.Qt.DisplayRole, 0)
+                    self.ui.framesTableWidget.setItem(row, 1, pleura_item)
+                    
+                    bline_item = qt.QTableWidgetItem()
+                    bline_item.setData(qt.Qt.DisplayRole, 0)
+                    self.ui.framesTableWidget.setItem(row, 2, bline_item)
+                    
+                    pleura_percentage_item = qt.QTableWidgetItem()
+                    pleura_percentage_item.setData(qt.Qt.DisplayRole, "0.0")
+                    self.ui.framesTableWidget.setItem(row, 3, pleura_percentage_item)
+                else:
+                    # Create one row per rater for this frame
+                    for rater in sorted(raters_in_frame):
+                        row = self.ui.framesTableWidget.rowCount
+                        self.ui.framesTableWidget.insertRow(row)
+                        
+                        frame_number = int(frame_annotations.get("frame_number", row))
+                        frame_number_item = qt.QTableWidgetItem()
+                        frame_number_item.setData(qt.Qt.DisplayRole, f"{frame_number} ({rater})")
+                        self.ui.framesTableWidget.setItem(row, 0, frame_number_item)
+                        
+                        # Count lines for this specific rater
+                        pleura_count = len([
+                            pleura_line for pleura_line in frame_annotations.get("pleura_lines", [])
+                            if pleura_line is not None and isinstance(pleura_line.get("line"), dict) 
+                            and pleura_line.get("rater", "").strip().lower() == rater
+                        ])
+                        pleura_item = qt.QTableWidgetItem()
+                        pleura_item.setData(qt.Qt.DisplayRole, pleura_count)
+                        self.ui.framesTableWidget.setItem(row, 1, pleura_item)
+                        
+                        bline_count = len([
+                            b_line for b_line in frame_annotations.get("b_lines", [])
+                            if b_line is not None and isinstance(b_line.get("line"), dict)
+                            and b_line.get("rater", "").strip().lower() == rater
+                        ])
+                        bline_item = qt.QTableWidgetItem()
+                        bline_item.setData(qt.Qt.DisplayRole, bline_count)
+                        self.ui.framesTableWidget.setItem(row, 2, bline_item)
+                        
+                        # Calculate pleura percentage for this specific rater
+                        pleura_percentage = self.logic.calculatePleuraPercentageForRater(frame_annotations, rater)
+                        pleura_percentage_item = qt.QTableWidgetItem()
+                        pleura_percentage_item.setData(qt.Qt.DisplayRole, f"{pleura_percentage*100:.1f}")
+                        self.ui.framesTableWidget.setItem(row, 3, pleura_percentage_item)
 
         # reenable sorting after populating the table
         self.ui.framesTableWidget.setSortingEnabled(True)
@@ -1390,8 +1441,16 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.raterColorTable.setColumnWidth(2, 30)
         self.ui.raterColorTable.setColumnWidth(3, 80)  # Width for highest percentage column
         
-        # Get highest percentage for each rater
-        best_performance = self.logic.getHighestPercentageFramePerRater()
+        # Force recalculation of highest percentage for each rater
+        try:
+            # Clear any cached data to force recalculation
+            if hasattr(self.logic, '_lastOverlayMaskHash'):
+                delattr(self.logic, '_lastOverlayMaskHash')
+            best_performance = self.logic.getHighestPercentageFramePerRater()
+            logging.info(f"Best performance data: {best_performance}")
+        except Exception as e:
+            logging.warning(f"Error getting highest percentage frame per rater: {e}")
+            best_performance = {}
         
         for row, (r, (pleura_color, bline_color)) in enumerate(colors):
             rater_item = qt.QTableWidgetItem(r)
@@ -1799,15 +1858,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             logging.debug(f"No existing annotation for frame {currentFrameIndex}")
             return
 
-        # Get the pleura percentage from the parameter node
-        parameterNode = self.getParameterNode()
-        ratio = parameterNode.pleuraPercentage
-        if ratio is not None:
-            existing['pleura_percentage'] = ratio
-        else:
-            existing['pleura_percentage'] = 0.0
-
-        logging.info(f"Updated pleura percentage to {existing['pleura_percentage']:.1f}% for frame {currentFrameIndex}")
+        # Calculate pleura percentage specifically for the current rater
+        current_rater = self.getParameterNode().rater.strip().lower()
+        pleura_percentage = self.calculatePleuraPercentageForRater(existing, current_rater)
+        
+        # Convert to percentage and save
+        existing['pleura_percentage'] = pleura_percentage * 100
 
     def removeFrame(self, frameIndex):
         logging.info(f"removeFrame -- frameIndex: {frameIndex}")
@@ -1875,10 +1931,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         try:
             self.updateLineMarkups()
             ratio = self.updateOverlayVolume()
-            if ratio is not None:
-                parameterNode.pleuraPercentage = ratio * 100
-            else:
-                parameterNode.pleuraPercentage = 0.0
+            
+            # Calculate and update pleura percentage
+            self._calculateAndUpdatePleuraPercentage(parameterNode)
         finally:
             self._isProgrammaticUpdate = False
 
@@ -2142,10 +2197,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
             slicer.mrmlScene.RemoveNode(currentLine)
-            ratio = self.updateOverlayVolume()
-            if ratio is not None:
-                parameterNode = self.getParameterNode()
-                parameterNode.pleuraPercentage = ratio * 100
+            self.updateOverlayVolume()
+            # Calculate and update pleura percentage
+            parameterNode = self.getParameterNode()
+            self._calculateAndUpdatePleuraPercentage(parameterNode)
 
             # Save pleura percentage for current frame
             self.savePleuraPercentageForCurrentFrame()
@@ -2160,19 +2215,20 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
             slicer.mrmlScene.RemoveNode(currentLine)
-            ratio = self.updateOverlayVolume()
-            if ratio is not None:
-                parameterNode = self.getParameterNode()
-                parameterNode.pleuraPercentage = ratio * 100
+            self.updateOverlayVolume()
+            # Calculate and update pleura percentage
+            parameterNode = self.getParameterNode()
+            self._calculateAndUpdatePleuraPercentage(parameterNode)
 
             # Save pleura percentage for current frame
             self.savePleuraPercentageForCurrentFrame()
 
     def onPointModified(self, caller, event):
         parameterNode = self.getParameterNode()
-        ratio = self.updateOverlayVolume()
-        if ratio is not None:
-            parameterNode.pleuraPercentage = ratio * 100
+        self.updateOverlayVolume()
+        
+        # Calculate and update pleura percentage
+        self._calculateAndUpdatePleuraPercentage(parameterNode)
 
         # Save pleura percentage for current frame
         self.savePleuraPercentageForCurrentFrame()
@@ -2196,6 +2252,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                         widget.updateGuiFromAnnotations()
                         # Update rater color table to reflect new best performance
                         widget.populateRaterColorTable()
+                        # Force a repaint to ensure the table updates
+                        widget.ui.raterColorTable.repaint()
             except Exception as e:
                 logging.warning(f"Could not update GUI after point modification: {e}")
 
@@ -2206,9 +2264,11 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             parameterNode.lineBeingPlaced = None
             self.removeObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined)
 
-        ratio = self.updateOverlayVolume()
-        if ratio is not None:
-            parameterNode.pleuraPercentage = ratio * 100
+        # Update overlay volume when line is finished
+        self.updateOverlayVolume()
+        
+        # Calculate and update pleura percentage
+        self._calculateAndUpdatePleuraPercentage(parameterNode)
 
         # Save pleura percentage for current frame
         self.savePleuraPercentageForCurrentFrame()
@@ -2226,6 +2286,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                         widget.updateGuiFromAnnotations()
                         # Update rater color table to reflect new best performance
                         widget.populateRaterColorTable()
+                        # Force a repaint to ensure the table updates
+                        widget.ui.raterColorTable.repaint()
             except Exception as e:
                 logging.warning(f"Could not update GUI after point position defined: {e}")
 
@@ -2950,86 +3012,20 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
     def calculatePleuraPercentageForRater(self, frame, rater):
         """
-        Calculate the pleura percentage for a specific rater in a given frame.
-        This calculates the ratio of B-line pixels to pleura pixels for the specified rater only.
-        
+        Calculate the pleura percentage for a specific rater in a given frame using the new mathematical method.
         :param frame: Frame annotation dictionary
         :param rater: Rater name to calculate percentage for
         :return: Pleura percentage as a float (0.0 to 1.0)
         """
         if not frame or not rater:
             return 0.0
-            
         rater = rater.strip().lower()
-        
-        # Get the current parameter node for volume access
-        parameterNode = self.getParameterNode()
-        if not parameterNode.inputVolume or not parameterNode.overlayVolume:
-            return 0.0
-            
-        ultrasoundArray = slicer.util.arrayFromVolume(parameterNode.inputVolume)
-        
-        # Create a temporary mask array for this calculation
-        maskArray = np.zeros([1, ultrasoundArray.shape[1], ultrasoundArray.shape[2], 3], dtype=np.uint8)
-        ijkToRas = vtk.vtkMatrix4x4()
-        parameterNode.inputVolume.GetIJKToRASMatrix(ijkToRas)
-        rasToIjk = vtk.vtkMatrix4x4()
-        vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
-        
-        # Add pleura lines for this specific rater
-        for line in frame.get('pleura_lines', []):
-            if line.get('rater', '').strip().lower() != rater:
-                continue
-                
-            points = line.get('line', {}).get('points', [])
-            if len(points) < 2:
-                continue
-                
-            for i in range(len(points) - 1):
-                coord1 = points[i]
-                coord2 = points[i + 1]
-                coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
-                coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
-                coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
-                coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
-                # Draw mask fan between coord1 and coord2
-                sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2, value=255)
-                # Add sectorArray to maskArray by maximum compounding
-                maskArray[0, :, :, 2] = np.maximum(maskArray[0, :, :, 2], sectorArray)
-        
-        # Add B-lines for this specific rater
-        for line in frame.get('b_lines', []):
-            if line.get('rater', '').strip().lower() != rater:
-                continue
-                
-            points = line.get('line', {}).get('points', [])
-            if len(points) < 2:
-                continue
-                
-            for i in range(len(points) - 1):
-                coord1 = points[i]
-                coord2 = points[i + 1]
-                coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
-                coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
-                coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
-                coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
-                # Draw mask fan between coord1 and coord2
-                sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2)
-                # Add sectorArray to maskArray by maximum compounding
-                maskArray[0, :, :, 1] = np.maximum(maskArray[0, :, :, 1], sectorArray)
-        
-        # Erase all B-lines pixels where there is no pleura line
-        maskArray[0, :, :, 1] = np.where(maskArray[0, :, :, 2] == 0, 0, maskArray[0, :, :, 1])
-        
-        # Calculate the amount of blue pixels (pleura) and green pixels (B-lines)
-        bluePixels = np.count_nonzero(maskArray[0, :, :, 2])
-        greenPixels = np.count_nonzero(maskArray[0, :, :, 1])
-        
-        # Return the ratio of green pixels to blue pixels
-        if bluePixels == 0:
-            return 0.0
-        else:
-            return greenPixels / bluePixels
+        # Filter pleura and b-lines for this rater
+        pleura_lines = [line for line in frame.get('pleura_lines', []) if line.get('rater', '').strip().lower() == rater]
+        b_lines = [line for line in frame.get('b_lines', []) if line.get('rater', '').strip().lower() == rater]
+        # Use the current fan geometry from annotations
+        fanGeometry = self.annotations if hasattr(self, 'annotations') else self.logic.annotations
+        return self.calculatePleuraPercentage(pleura_lines, b_lines, fanGeometry)
 
     def getHighestPercentageFramePerRater(self):
         """
@@ -3039,10 +3035,13 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if self.annotations is None or 'frame_annotations' not in self.annotations:
             return {}
         
+        frame_annotations = self.annotations['frame_annotations']
         rater_performance = {}
         
+        logging.info(f"Calculating highest percentages for {len(frame_annotations)} frames")
+        
         # For each frame, calculate performance for each rater individually
-        for frame in self.annotations['frame_annotations']:
+        for frame in frame_annotations:
             frame_number = int(frame.get('frame_number', -1))
             
             # Find all raters that have lines in this frame
@@ -3062,12 +3061,19 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             
             # Calculate performance for each rater in this frame
             for rater in raters_in_frame:
-                pleura_percentage = self.calculatePleuraPercentageForRater(frame, rater)
-                
-                # Update performance if this is better than current best
-                if rater not in rater_performance or pleura_percentage > rater_performance[rater][0]:
-                    rater_performance[rater] = (pleura_percentage * 100, frame_number)  # Convert to percentage
+                try:
+                    pleura_percentage = self.calculatePleuraPercentageForRater(frame, rater)
+                    percentage_value = pleura_percentage * 100  # Convert to percentage
+                    
+                    # Update performance if this is better than current best
+                    if rater not in rater_performance or percentage_value > rater_performance[rater][0]:
+                        rater_performance[rater] = (percentage_value, frame_number)
+                        logging.info(f"New best for {rater}: {percentage_value:.1f}% (F{frame_number})")
+                except Exception as e:
+                    logging.warning(f"Error calculating percentage for rater {rater} in frame {frame_number}: {e}")
+                    continue
         
+        logging.info(f"Final rater performance: {rater_performance}")
         return rater_performance
 
     def cleanupAnnotationDuplicates(self):
@@ -3204,6 +3210,191 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if (abs(current_pleura - max_pleura_lines) > 2 or
             abs(current_blines - max_blines) > 2):
             self.initializeMarkupNodesFromAnnotations()
+
+    def calculatePleuraPercentage(self, pleuraLines, bLines, fanGeometry):
+        """
+        Calculate pleura percentage using Shapely geometry for precise wedge creation and intersection.
+        This function creates polygon wedges for each line segment and computes geometric intersections.
+        
+        :param pleuraLines: List of pleura line markup nodes or coordinate data
+        :param bLines: List of B-line markup nodes or coordinate data  
+        :param fanGeometry: Dictionary containing fan geometry parameters
+        :return: Pleura percentage as a float (0.0 to 1.0)
+        """
+        if not fanGeometry or "mask_type" not in fanGeometry or fanGeometry["mask_type"] != "fan":
+            logging.error("Invalid fan geometry provided")
+            return 0.0
+            
+        # Extract fan geometry parameters
+        center_rows_px = fanGeometry["center_rows_px"]
+        center_cols_px = fanGeometry["center_cols_px"]
+        radius1 = fanGeometry["radius1"]
+        radius2 = fanGeometry["radius2"]
+        
+        center = (center_cols_px, center_rows_px)
+        r1 = radius1
+        r2 = radius2
+        
+        # Helper function to compute angle
+        def compute_angle(pt, center):
+            dx = pt[0] - center[0]
+            dy = pt[1] - center[1]
+            return np.arctan2(dy, dx)
+        
+        # Helper function to create wedge polygon
+        def create_wedge(pt1, pt2, center, r1, r2, num_points=100):
+            angle_start = compute_angle(pt1, center)
+            angle_end = compute_angle(pt2, center)
+            
+            if angle_start > angle_end:
+                angle_start, angle_end = angle_end, angle_start
+            
+            arc_outer = np.array([
+                [center[0] + r2 * np.cos(a), center[1] + r2 * np.sin(a)]
+                for a in np.linspace(angle_start, angle_end, num_points)
+            ])
+            
+            arc_inner = np.array([
+                [center[0] + r1 * np.cos(a), center[1] + r1 * np.sin(a)]
+                for a in np.linspace(angle_end, angle_start, num_points)
+            ])
+            
+            return Polygon(np.vstack([arc_outer, arc_inner]))
+        
+        # Convert markup nodes to coordinate data format
+        pleura_data = []
+        for line in pleuraLines:
+            if hasattr(line, 'GetNumberOfControlPoints'):  # Markup node
+                for i in range(line.GetNumberOfControlPoints() - 1):
+                    coord1 = [0, 0, 0]
+                    coord2 = [0, 0, 0]
+                    line.GetNthControlPointPosition(i, coord1)
+                    line.GetNthControlPointPosition(i + 1, coord2)
+                    # Convert RAS to pixel coordinates
+                    coord1_px = self._rasToPixelCoordinates(coord1, fanGeometry)
+                    coord2_px = self._rasToPixelCoordinates(coord2, fanGeometry)
+                    pleura_data.append({
+                        "line": {"points": [coord1_px, coord2_px]}
+                    })
+            else:  # Coordinate data
+                points = line.get('line', {}).get('points', [])
+                if len(points) < 2:
+                    continue
+                for i in range(len(points) - 1):
+                    coord1_px = self._rasToPixelCoordinates(points[i], fanGeometry)
+                    coord2_px = self._rasToPixelCoordinates(points[i + 1], fanGeometry)
+                    pleura_data.append({
+                        "line": {"points": [coord1_px, coord2_px]}
+                    })
+        
+        bline_data = []
+        for line in bLines:
+            if hasattr(line, 'GetNumberOfControlPoints'):  # Markup node
+                for i in range(line.GetNumberOfControlPoints() - 1):
+                    coord1 = [0, 0, 0]
+                    coord2 = [0, 0, 0]
+                    line.GetNthControlPointPosition(i, coord1)
+                    line.GetNthControlPointPosition(i + 1, coord2)
+                    # Convert RAS to pixel coordinates
+                    coord1_px = self._rasToPixelCoordinates(coord1, fanGeometry)
+                    coord2_px = self._rasToPixelCoordinates(coord2, fanGeometry)
+                    bline_data.append({
+                        "line": {"points": [coord1_px, coord2_px]}
+                    })
+            else:  # Coordinate data
+                points = line.get('line', {}).get('points', [])
+                if len(points) < 2:
+                    continue
+                for i in range(len(points) - 1):
+                    coord1_px = self._rasToPixelCoordinates(points[i], fanGeometry)
+                    coord2_px = self._rasToPixelCoordinates(points[i + 1], fanGeometry)
+                    bline_data.append({
+                        "line": {"points": [coord1_px, coord2_px]}
+                    })
+        
+        # Build all B-line wedge polygons once
+        bline_wedges = []
+        for b in bline_data:
+            pts = b["line"]["points"]
+            wedge = create_wedge(pts[0], pts[1], center, r1, r2)
+            bline_wedges.append(wedge)
+        
+        # Calculate total pleura area and overlap
+        total_pleura_area = 0.0
+        total_overlap_area = 0.0
+        
+        for pleura in pleura_data:
+            pleura_pts = pleura["line"]["points"]
+            pleura_ls = LineString([pleura_pts[0][:2], pleura_pts[1][:2]])
+            pleura_len = pleura_ls.length
+            
+            # Create pleura wedge for area calculation
+            pleura_wedge = create_wedge(pleura_pts[0], pleura_pts[1], center, r1, r2)
+            total_pleura_area += pleura_wedge.area
+            
+            # Calculate overlap with B-line wedges
+            for wedge in bline_wedges:
+                try:
+                    intersection = pleura_wedge.intersection(wedge)
+                    if not intersection.is_empty:
+                        overlap_area = intersection.area
+                        total_overlap_area += overlap_area
+                except Exception as e:
+                    logging.warning(f"Error computing intersection: {e}")
+        
+        # Return the ratio
+        if total_pleura_area == 0:
+            return 0.0
+        else:
+            return total_overlap_area / total_pleura_area
+
+    def _rasToPixelCoordinates(self, rasPoint, fanGeometry):
+        """
+        Convert RAS coordinates to pixel (IJK) coordinates using the input volume's IJKToRAS matrix.
+        :param rasPoint: Point in RAS coordinates [x, y, z]
+        :param fanGeometry: Fan geometry dictionary (not used here, but kept for interface compatibility)
+        :return: Point in pixel coordinates [x, y]
+        """
+        parameterNode = self.getParameterNode() if hasattr(self, 'getParameterNode') else self.logic.getParameterNode()
+        ijkToRas = vtk.vtkMatrix4x4()
+        parameterNode.inputVolume.GetIJKToRASMatrix(ijkToRas)
+        rasToIjk = vtk.vtkMatrix4x4()
+        vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
+        ijk = rasToIjk.MultiplyPoint(list(rasPoint) + [1])
+        ijk_int = [int(round(ijk[0])), int(round(ijk[1]))]
+        return ijk_int
+    
+
+    def _calculateAndUpdatePleuraPercentage(self, parameterNode=None):
+        """
+        Calculate pleura percentage for current frame and update parameter node.
+        If only one rater is selected, calculates percentage for that specific rater.
+        Otherwise, uses overlay volume ratio for multiple raters or no raters.
+        """
+        if parameterNode is None:
+            parameterNode = self.getParameterNode()
+            
+        # If only one rater is selected, calculate percentage for that specific rater
+        if hasattr(self, "selectedRaters") and len(self.selectedRaters) == 1:
+            current_rater = list(self.selectedRaters)[0]
+            if self.sequenceBrowserNode is not None and self.annotations is not None:
+                currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())
+                frame = next((f for f in self.annotations.get('frame_annotations', [])
+                            if int(f.get("frame_number", -1)) == currentFrameIndex), None)
+                if frame:
+                    rater_percentage = self.calculatePleuraPercentageForRater(frame, current_rater)
+                    parameterNode.pleuraPercentage = rater_percentage * 100
+                else:
+                    parameterNode.pleuraPercentage = 0.0
+            else:
+                parameterNode.pleuraPercentage = 0.0
+        else:
+            # Use the overlay volume ratio for multiple raters or no raters
+            ratio = self.updateOverlayVolume()
+            if ratio is not None:
+                parameterNode.pleuraPercentage = ratio * 100
+            else:
+                parameterNode.pleuraPercentage = 0.0
 
 
 #
