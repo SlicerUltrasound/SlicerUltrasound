@@ -40,9 +40,11 @@ except ImportError:
 
 try:
     from shapely.geometry import Polygon, LineString
+    from shapely.ops import unary_union
 except ImportError:
     slicer.util.pip_install('shapely')
     from shapely.geometry import Polygon, LineString
+    from shapely.ops import unary_union
 
 from collections import defaultdict
 from DICOMLib import DICOMUtils
@@ -3319,6 +3321,16 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             wedge = create_wedge(pts[0], pts[1], center, r1, r2)
             bline_wedges.append(wedge)
         
+        # Create union of all B-line wedges to avoid double-counting overlaps
+        bline_union = None
+        if bline_wedges:
+            try:
+                bline_union = unary_union(bline_wedges)
+            except Exception as e:
+                logging.warning(f"Error creating B-line union: {e}")
+                # Fallback to empty union if there's an error
+                bline_union = None
+        
         # Calculate total pleura area and overlap
         total_pleura_area = 0.0
         total_overlap_area = 0.0
@@ -3332,10 +3344,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             pleura_wedge = create_wedge(pleura_pts[0], pleura_pts[1], center, r1, r2)
             total_pleura_area += pleura_wedge.area
             
-            # Calculate overlap with B-line wedges
-            for wedge in bline_wedges:
+            # Calculate overlap with the union of all B-line wedges (avoids double-counting)
+            if bline_union is not None:
                 try:
-                    intersection = pleura_wedge.intersection(wedge)
+                    intersection = pleura_wedge.intersection(bline_union)
                     if not intersection.is_empty:
                         overlap_area = intersection.area
                         total_overlap_area += overlap_area
