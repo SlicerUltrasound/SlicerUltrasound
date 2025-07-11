@@ -3340,6 +3340,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             pleura_ls = LineString([pleura_pts[0][:2], pleura_pts[1][:2]])
             pleura_len = pleura_ls.length
             
+            # Skip lines with zero length to avoid potential division-by-zero issues
+            if pleura_len == 0:
+                continue
+            
             # Create pleura wedge for area calculation
             pleura_wedge = create_wedge(pleura_pts[0], pleura_pts[1], center, r1, r2)
             total_pleura_area += pleura_wedge.area
