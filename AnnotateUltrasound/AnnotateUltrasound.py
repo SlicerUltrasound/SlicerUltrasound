@@ -334,9 +334,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         settings.setValue('AnnotateUltrasound/ShowPleuraPercentage', self.ui.showPleuraPercentageCheckBox.checked)
         settings.setValue('AnnotateUltrasound/DepthGuide', self.ui.depthGuideCheckBox.checked)
         settings.setValue('AnnotateUltrasound/Rater', self.ui.raterName.text.strip())
-        self.logic.updateOverlayVolume()
+        # self.logic.updateOverlayVolume()
+        ratio = self.logic.updateOverlayVolume()
+        if ratio is not None:
+            self._parameterNode.pleuraPercentage = ratio * 100
+        else:
+            self._parameterNode.pleuraPercentage = 0.0
         # Calculate and update pleura percentage
-        self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
+        # self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
         # Save pleura percentage for current frame
         self.logic.savePleuraPercentageForCurrentFrame()
 
@@ -353,9 +358,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def onClearAllLines(self):
         logging.info('onClearAllLines')
         self.logic.clearAllLines()
-        self.logic.updateOverlayVolume()
+        # self.logic.updateOverlayVolume()
+        ratio = self.logic.updateOverlayVolume()
+        if ratio is not None:
+            self._parameterNode.pleuraPercentage = ratio * 100
+        else:
+            self._parameterNode.pleuraPercentage = 0.0
         # Calculate and update pleura percentage
-        self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
+        # self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
         
         self._parameterNode.unsavedChanges = True
 
@@ -413,9 +423,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.logic._isProgrammaticUpdate = True
         try:
             self.logic.updateLineMarkups()
-            self.logic.updateOverlayVolume()    
+            # self.logic.updateOverlayVolume()    
             # Calculate and update pleura percentage
-            self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
+            # self.logic._calculateAndUpdatePleuraPercentage(self._parameterNode)
+            ratio = self.logic.updateOverlayVolume()
+            if ratio is not None:
+                self._parameterNode.pleuraPercentage = ratio * 100
+            else:
+                self._parameterNode.pleuraPercentage = 0.0
             # Save pleura percentage for current frame
             self.logic.savePleuraPercentageForCurrentFrame()
 
@@ -1933,9 +1948,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         try:
             self.updateLineMarkups()
             ratio = self.updateOverlayVolume()
-            
+            if ratio is not None:
+                parameterNode.pleuraPercentage = ratio * 100
+            else:
+                parameterNode.pleuraPercentage = 0.0
             # Calculate and update pleura percentage
-            self._calculateAndUpdatePleuraPercentage(parameterNode)
+            # self._calculateAndUpdatePleuraPercentage(parameterNode)
         finally:
             self._isProgrammaticUpdate = False
 
@@ -2199,10 +2217,15 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
             slicer.mrmlScene.RemoveNode(currentLine)
-            self.updateOverlayVolume()
+            # self.updateOverlayVolume()
             # Calculate and update pleura percentage
             parameterNode = self.getParameterNode()
-            self._calculateAndUpdatePleuraPercentage(parameterNode)
+            # self._calculateAndUpdatePleuraPercentage(parameterNode)
+            ratio = self.updateOverlayVolume()
+            if ratio is not None:
+                parameterNode.pleuraPercentage = ratio * 100
+            else:
+                parameterNode.pleuraPercentage = 0.0
 
             # Save pleura percentage for current frame
             self.savePleuraPercentageForCurrentFrame()
@@ -2217,20 +2240,29 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
             slicer.mrmlScene.RemoveNode(currentLine)
-            self.updateOverlayVolume()
+            # self.updateOverlayVolume()
             # Calculate and update pleura percentage
             parameterNode = self.getParameterNode()
-            self._calculateAndUpdatePleuraPercentage(parameterNode)
+            # self._calculateAndUpdatePleuraPercentage(parameterNode)
+            ratio = self.updateOverlayVolume()
+            if ratio is not None:
+                parameterNode.pleuraPercentage = ratio * 100
+            else:
+                parameterNode.pleuraPercentage = 0.0
 
             # Save pleura percentage for current frame
             self.savePleuraPercentageForCurrentFrame()
 
     def onPointModified(self, caller, event):
         parameterNode = self.getParameterNode()
-        self.updateOverlayVolume()
-        
+        ratio = self.updateOverlayVolume()
+        if ratio is not None:
+            parameterNode.pleuraPercentage = ratio * 100
+        else:
+            parameterNode.pleuraPercentage = 0.0
+
         # Calculate and update pleura percentage
-        self._calculateAndUpdatePleuraPercentage(parameterNode)
+        #self._calculateAndUpdatePleuraPercentage(parameterNode)
 
         # Save pleura percentage for current frame
         self.savePleuraPercentageForCurrentFrame()
@@ -2267,10 +2299,15 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             self.removeObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined)
 
         # Update overlay volume when line is finished
-        self.updateOverlayVolume()
+        # self.updateOverlayVolume()
+        ratio = self.updateOverlayVolume()
+        if ratio is not None:
+            parameterNode.pleuraPercentage = ratio * 100
+        else:
+            parameterNode.pleuraPercentage = 0.0
         
         # Calculate and update pleura percentage
-        self._calculateAndUpdatePleuraPercentage(parameterNode)
+        # self._calculateAndUpdatePleuraPercentage(parameterNode)
 
         # Save pleura percentage for current frame
         self.savePleuraPercentageForCurrentFrame()
@@ -3027,7 +3064,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         b_lines = [line for line in frame.get('b_lines', []) if line.get('rater', '').strip().lower() == rater]
         # Use the current fan geometry from annotations
         fanGeometry = self.annotations if hasattr(self, 'annotations') else self.logic.annotations
-        return self.calculatePleuraPercentage(pleura_lines, b_lines, fanGeometry)
+        #return self.calculatePleuraPercentage(pleura_lines, b_lines, fanGeometry)
+        return self.calculatePleuraPercentageLineMethod(pleura_lines, b_lines, fanGeometry)
 
     def getHighestPercentageFramePerRater(self):
         """
@@ -3379,7 +3417,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         ijk = rasToIjk.MultiplyPoint(list(rasPoint) + [1])
         ijk_int = [int(round(ijk[0])), int(round(ijk[1]))]
         return ijk_int
-    
+
 
     def _calculateAndUpdatePleuraPercentage(self, parameterNode=None):
         """
@@ -3411,6 +3449,117 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 parameterNode.pleuraPercentage = ratio * 100
             else:
                 parameterNode.pleuraPercentage = 0.0
+
+    def calculatePleuraPercentageLineMethod(self, pleuraLines, bLines, fanGeometry):
+        """
+        Projects lines from both ends of each B-line toward the pleura line and calculates
+        the percentage of pleura length covered. Handles overlap, overshooting, and caps at 100%.
+
+        :param pleuraLines: List of pleura line markup nodes or coordinate data
+        :param bLines: List of B-line markup nodes or coordinate data
+        :param fanGeometry: Dictionary with center_rows_px, center_cols_px, radius1, radius2
+        :return: pleura_percentage (0.0 to 1.0)
+        """
+        from shapely.geometry import LineString, Point, MultiLineString
+        from shapely.ops import linemerge, unary_union
+
+        cx = fanGeometry["center_cols_px"]
+        cy = fanGeometry["center_rows_px"]
+
+        # Merge pleura segments
+        pleura_segments = []
+        for line in pleuraLines:
+            if hasattr(line, 'GetNumberOfControlPoints'):
+                for i in range(line.GetNumberOfControlPoints() - 1):
+                    p1, p2 = [0, 0, 0], [0, 0, 0]
+                    line.GetNthControlPointPosition(i, p1)
+                    line.GetNthControlPointPosition(i + 1, p2)
+                    px1 = self._rasToPixelCoordinates(p1, fanGeometry)
+                    px2 = self._rasToPixelCoordinates(p2, fanGeometry)
+                    pleura_segments.append(LineString([px1[:2], px2[:2]]))
+            else:
+                points = line.get('line', {}).get('points', [])
+                for i in range(len(points) - 1):
+                    px1 = self._rasToPixelCoordinates(points[i], fanGeometry)
+                    px2 = self._rasToPixelCoordinates(points[i + 1], fanGeometry)
+                    pleura_segments.append(LineString([px1[:2], px2[:2]]))
+
+        if not pleura_segments:
+            return 0.0
+
+        merged_pleura = linemerge(pleura_segments)
+        if merged_pleura.is_empty:
+            return 0.0
+        total_pleura_length = merged_pleura.length
+
+        # Handle MultiLineString case
+        if isinstance(merged_pleura, MultiLineString):
+            merged_pleura = linemerge(merged_pleura)
+
+        coverage_segments = []
+
+        for bline in bLines:
+            b_points = []
+            if hasattr(bline, 'GetNumberOfControlPoints'):
+                for i in range(bline.GetNumberOfControlPoints()):
+                    pt = [0, 0, 0]
+                    bline.GetNthControlPointPosition(i, pt)
+                    b_points.append(self._rasToPixelCoordinates(pt, fanGeometry))
+            else:
+                b_points = [self._rasToPixelCoordinates(p, fanGeometry) for p in bline.get("line", {}).get("points", [])]
+
+            if len(b_points) < 2:
+                continue
+
+            intersection_points = []
+
+            for pt in b_points[:2]:
+                angle = np.arctan2(pt[1] - cy, pt[0] - cx)
+                ray = LineString([
+                    (cx + 5000 * np.cos(angle), cy + 5000 * np.sin(angle)),
+                    (cx - 5000 * np.cos(angle), cy - 5000 * np.sin(angle))
+                ])
+                intersection = merged_pleura.intersection(ray)
+
+                # If intersection is empty, find closest point on pleura
+                if intersection.is_empty:
+                    nearest_point = merged_pleura.interpolate(merged_pleura.project(Point(pt[:2])))
+                    intersection_points.append(nearest_point)
+                elif isinstance(intersection, Point):
+                    intersection_points.append(intersection)
+                elif isinstance(intersection, LineString):
+                    coords = list(intersection.coords)
+                    if coords:
+                        intersection_points.append(Point(coords[0]))
+                elif intersection.geom_type == 'MultiPoint':
+                    intersection_points.append(intersection.geoms[0])
+                elif isinstance(intersection, MultiLineString):
+                    coords = list(intersection.geoms[0].coords)
+                    if coords:
+                        intersection_points.append(Point(coords[0]))
+
+            if len(intersection_points) == 2:
+                span = LineString([intersection_points[0], intersection_points[1]])
+                coverage_segments.append(span)
+
+        # Buffer segments slightly to merge overlaps
+        buffered_segments = [seg.buffer(0.5) for seg in coverage_segments]
+        merged_polygons = unary_union(buffered_segments)
+
+        # Intersect with pleura to get valid coverage
+        cleaned_coverage = merged_polygons.intersection(merged_pleura)
+
+        if cleaned_coverage.is_empty:
+            total_covered_length = 0.0
+        elif cleaned_coverage.geom_type in ("LineString", "MultiLineString"):
+            total_covered_length = cleaned_coverage.length
+        else:
+            total_covered_length = 0.0
+
+        pleura_percentage = total_covered_length / total_pleura_length if total_pleura_length > 0 else 0.0
+        return min(pleura_percentage, 1.0)
+
+
 
 
 #
