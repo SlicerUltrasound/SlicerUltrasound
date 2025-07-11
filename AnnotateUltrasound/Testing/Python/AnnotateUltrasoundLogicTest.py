@@ -210,8 +210,9 @@ class AnnotateUltrasoundLogicTest(ScriptedLoadableModuleTest):
 
                 # Test updating current frame
                 logic.annotations = loaded_annotations
-                if hasattr(logic, 'updateCurrentFrame'):
-                    logic.updateCurrentFrame()
+                if hasattr(logic, 'syncMarkupsToAnnotations'):
+                    logic.syncMarkupsToAnnotations()
+                    logic.refreshDisplay(updateOverlay=True, updateGui=True)
 
                 # Verify annotations are preserved
                 self.assertIsNotNone(logic.annotations)
@@ -326,8 +327,53 @@ def runTest():
     """
     Run the tests.
     """
-    test = AnnotateUltrasoundLogicTest()
-    test.runTest()
+    import unittest
+
+    # Create a test suite
+    suite = unittest.TestSuite()
+
+    # Create test instance
+    test_instance = AnnotateUltrasoundLogicTest()
+
+    # Add all test methods to the suite
+    test_methods = [method for method in dir(test_instance) if method.startswith('test_')]
+    for method_name in test_methods:
+        suite.addTest(AnnotateUltrasoundLogicTest(method_name))
+
+    # Run the tests with a test runner
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+
+    # Print summary
+    print(f"\n=== Test Summary ===")
+    print(f"Tests run: {result.testsRun}")
+    print(f"Failures: {len(result.failures)}")
+    print(f"Errors: {len(result.errors)}")
+
+    if result.failures:
+        print(f"\n=== Failures ===")
+        for test, traceback in result.failures:
+            print(f"FAIL: {test}")
+            print(traceback)
+
+    if result.errors:
+        print(f"\n=== Errors ===")
+        for test, traceback in result.errors:
+            print(f"ERROR: {test}")
+            print(traceback)
+
+    # Return success/failure
+    return len(result.failures) == 0 and len(result.errors) == 0
 
 if __name__ == '__main__':
-    runTest()
+    success = runTest()
+    if success:
+        print("✅ All logic tests completed successfully!")
+    else:
+        print("❌ Some logic tests failed!")
+
+    # Exit Slicer after test completion
+    print("Tests complete. Exiting Slicer...")
+    slicer.util.quit()
+
+    exit(0 if success else 1)

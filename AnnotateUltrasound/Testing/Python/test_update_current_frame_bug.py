@@ -139,7 +139,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Created pleura line")
 
         # Update current frame to save the annotation
-        logic.updateCurrentFrame()
+        logic.syncMarkupsToAnnotations()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated current frame")
 
         # Verify we have 1 pleura line
@@ -157,7 +158,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Now at frame {}".format(current_frame))
 
         # Trigger update (this should hide lines from frame 0)
-        logic.updateLineMarkups()
+        logic.syncAnnotationsToMarkups()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated line markups")
         frame1_visible_pleura_count = countVisiblePleuraLines(logic)
         print("Got {} visible pleura lines at frame 1".format(frame1_visible_pleura_count))
@@ -170,7 +172,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Created second pleura line")
 
         # Update current frame to save the annotation
-        logic.updateCurrentFrame()
+        logic.syncMarkupsToAnnotations()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated current frame")
 
         # Verify we have 1 pleura line visible at frame 1
@@ -188,7 +191,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Back to frame {}".format(current_frame))
 
         # Trigger update (this should show only frame 0 lines)
-        logic.updateLineMarkups()
+        logic.syncAnnotationsToMarkups()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated line markups")
 
         # Step 5: Verify only 1 pleura line is visible at frame 0 (the bug would show multiple)
@@ -223,7 +227,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Back to frame {}".format(current_frame))
 
         # Trigger update (this should show only frame 1 lines)
-        logic.updateLineMarkups()
+        logic.syncAnnotationsToMarkups()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated line markups")
 
         # Check visibility at frame 1
@@ -273,7 +278,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("Modified point 2: {}".format(new_point2))
 
         # Update current frame to save the changes
-        logic.updateCurrentFrame()
+        logic.syncMarkupsToAnnotations()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated current frame after modifying points")
 
         # Verify the points are modified
@@ -303,7 +309,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Navigated to frame {}".format(current_frame))
 
         # Trigger update
-        logic.updateLineMarkups()
+        logic.syncAnnotationsToMarkups()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated line markups at frame 0")
 
         # Go back to frame 1
@@ -312,7 +319,8 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("SUCCESS: Navigated back to frame {}".format(current_frame))
 
         # Trigger update
-        logic.updateLineMarkups()
+        logic.syncAnnotationsToMarkups()
+        logic.refreshDisplay(updateOverlay=True, updateGui=True)
         print("SUCCESS: Updated line markups at frame 1")
 
         # Check that the modified points are still there

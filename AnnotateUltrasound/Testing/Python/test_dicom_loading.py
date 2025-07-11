@@ -64,12 +64,13 @@ class DicomLoadingTest:
             self.test_annotation_saving()
 
             print("✅ All DICOM loading tests passed!")
+            return True
 
         except Exception as e:
             print(f"❌ DICOM loading test failed: {e}")
             import traceback
             traceback.print_exc()
-            raise
+            return False
         finally:
             self.tearDown()
 
@@ -285,16 +286,21 @@ class DicomLoadingTest:
 def runDicomTest():
     """Run the DICOM loading test."""
     test = DicomLoadingTest()
-    test.runTest()
+    success = test.runTest()
 
-    # Add a small delay to ensure all output is printed
-    import time
-    time.sleep(1)
+    # Print final result
+    if success:
+        print("✅ All DICOM loading tests completed successfully!")
+    else:
+        print("❌ Some DICOM loading tests failed!")
 
-    # Quit Slicer after test completion
-    print("Test completed. Quitting Slicer...")
+    # Exit Slicer after test completion
+    print("Tests complete. Exiting Slicer...")
     slicer.util.quit()
+
+    return success
 
 
 if __name__ == "__main__":
-    runDicomTest()
+    success = runDicomTest()
+    exit(0 if success else 1)

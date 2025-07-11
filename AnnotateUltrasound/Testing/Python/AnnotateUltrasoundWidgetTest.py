@@ -101,28 +101,55 @@ class AnnotateUltrasoundWidgetTest:
         """Run all GUI tests."""
         print("=== Running AnnotateUltrasound WidgetTests ===")
 
+        results = []
+
         self.setUp()
 
         try:
-            self.test_minimal_rater_persistence()
-            self.test_widget_creation()
-            self.test_button_interactions()
-            self.test_rater_table_interactions()
-            self.test_keyboard_shortcuts()
-            self.test_line_creation_workflow()
+            # Run each test and collect results
+            test_methods = [method for method in dir(self) if method.startswith('test_')]
 
-            print("✅ All GUI tests passed!")
+            for test_method in test_methods:
+                print(f"\n--- Running {test_method} ---")
+                try:
+                    getattr(self, test_method)()
+                    results.append((test_method, True, None))
+                    print(f"✅ {test_method} passed")
+                except Exception as e:
+                    results.append((test_method, False, str(e)))
+                    print(f"❌ {test_method} failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # Print summary
+            print(f"\n=== Test Summary ===")
+            print(f"Tests run: {len(results)}")
+            passed = sum(1 for _, success, _ in results if success)
+            failed = len(results) - passed
+            print(f"Passed: {passed}")
+            print(f"Failed: {failed}")
+
+            if failed > 0:
+                print(f"\n=== Failed Tests ===")
+                for test_name, success, error in results:
+                    if not success:
+                        print(f"FAIL: {test_name} - {error}")
+
+            if failed == 0:
+                print("✅ All GUI tests passed!")
+            else:
+                print(f"❌ {failed} test(s) failed")
 
         except Exception as e:
-            print(f"❌ GUI test failed: {e}")
+            print(f"❌ Test setup failed: {e}")
             import traceback
             traceback.print_exc()
             raise
         finally:
             self.tearDown()
-            print("Tests complete. Exiting Slicer...")
-            # Exit Slicer to prevent hanging
-            slicer.util.quit()
+            print("Tests complete.")
+
+        return failed == 0
 
     def test_minimal_rater_persistence(self):
         """Minimal test: set rater name, press Enter, click addPleuraButton, print state before and after."""
@@ -254,7 +281,7 @@ class AnnotateUltrasoundWidgetTest:
         # Check if shortcuts are enabled
         print(f"Shortcut W enabled: {widget.shortcutW.isEnabled()}")
         print(f"Shortcut S enabled: {widget.shortcutS.isEnabled()}")
-        print(f"Shortcut O enabled: {widget.shortcutO.isEnabled()}")
+        print(f"Shortcut Space enabled: {widget.shortcutSpace.isEnabled()}")
 
         # Check rater name - required for onAddLine to work
         print(f"Rater name before test: '{widget._parameterNode.rater}'")
@@ -352,15 +379,15 @@ class AnnotateUltrasoundWidgetTest:
         # Test O key (toggle overlay)
         widget.ui.overlayVisibilityButton.setFocus()
         overlay_before = widget.ui.overlayVisibilityButton.isChecked()
-        print(f"Overlay visibility before O: {overlay_before}")
-        sendKeyToMainWindow(qt.Qt.Key_O)
-        slicer.util.delayDisplay("O key sent", 500)
+        print(f"Overlay visibility before Space: {overlay_before}")
+        sendKeyToMainWindow(qt.Qt.Key_Space)
+        slicer.util.delayDisplay("Space key sent", 500)
         overlay_after = widget.ui.overlayVisibilityButton.isChecked()
-        print(f"Overlay visibility after O: {overlay_after}")
+        print(f"Overlay visibility after Space: {overlay_after}")
         if overlay_after != overlay_before:
-            print("✅ O key toggled overlay visibility")
+            print("✅ Space key toggled overlay visibility")
         else:
-            print("❌ O key did not toggle overlay visibility")
+            print("❌ Space key did not toggle overlay visibility")
 
         # Test complete workflow: W key + mouse interaction to draw pleura line
         print("\nTesting complete pleura line drawing workflow...")
@@ -444,16 +471,23 @@ class AnnotateUltrasoundWidgetTest:
 def runGUITest():
     """Run the GUI test."""
     test = AnnotateUltrasoundWidgetTest()
-    test.runTest()
+    success = test.runTest()
 
+    # Print final result
+    if success:
+        print("✅ All GUI tests completed successfully!")
+    else:
+        print("❌ Some GUI tests failed!")
 
+    # Exit Slicer after test completion
+    print("Tests complete. Exiting Slicer...")
+    slicer.util.quit()
 
-# Defer test execution with QTimer.singleShot to ensure the Slicer GUI is fully initialized
-import qt
+    return success
 
-def runGUITest():
-    """Run the GUI test."""
-    test = AnnotateUltrasoundWidgetTest()
-    test.runTest()
-
-qt.QTimer.singleShot(0, runGUITest)
+if __name__ == '__main__':
+    # Run the test directly
+    runGUITest()
+else:
+    # Defer test execution with QTimer.singleShot to ensure the Slicer GUI is fully initialized
+    qt.QTimer.singleShot(0, runGUITest)
