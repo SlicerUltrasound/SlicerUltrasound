@@ -36,7 +36,6 @@ from slicer import vtkMRMLMarkupsFiducialNode
 
 from common.dicom_file_manager import DicomFileManager
 
-
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
@@ -56,7 +55,6 @@ class AnonymizeUltrasound(ScriptedLoadableModule):
             """)
 
         slicer.app.connect("startupCompleted()", onSlicerStartupCompleted)
-
 
 def onSlicerStartupCompleted():
     """
@@ -95,10 +93,6 @@ def onSlicerStartupCompleted():
         slicer.util.pip_install('PyYAML')
         import yaml
 
-#
-# AnonymizeUltrasoundParameterNode
-#
-
 class AnonymizerStatus(Enum):
     INITIAL = 0               # No data loaded yet
     INPUT_READY = 1           # Valid input folder parsed
@@ -121,11 +115,6 @@ class AnonymizeUltrasoundParameterNode:
     studyInstanceUid: str = ""                             # Currently loaded study
     seriesInstanceUid: str = ""                            # Currently loaded series
 
-#
-# AnonymizeUltrasoundWidget
-#
-
-
 class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -142,6 +131,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     LABELS_PATH_SETTING = "AnonymizeUltrasound/LabelsPath"
     THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
     ENABLE_MASK_CACHE_SETTING = "AnonymizeUltrasound/enableMaskCache"
+    PRESERVE_DIRECTORY_STRUCTURE_SETTING = "AnonymizeUltrasound/preserveDirectoryStructure"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -232,6 +222,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextShortcut)
 
         # Settings widgets
+
+        preserveDirectoryStructure = settings.value(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING)
+        if preserveDirectoryStructure and preserveDirectoryStructure.lower() == "true":
+            self.ui.preserveDirectoryStructureCheckBox.checked = True
+        else:
+            self.ui.preserveDirectoryStructureCheckBox.checked = False
+        self.ui.preserveDirectoryStructureCheckBox.connect('toggled(bool)',
+                                                          lambda newValue: self.onSettingChanged(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING, str(newValue)))
 
         enableMaskCache = settings.value(self.ENABLE_MASK_CACHE_SETTING)
         if enableMaskCache and enableMaskCache.lower() == "true":
@@ -508,7 +506,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             statusText += " dicom files found in input folder."
 
         if self.ui.continueProgressCheckBox.checked:
-            numDone = self.logic.dicom_file_manager.update_progress_from_output(outputDirectory)
+            preserve_directory_structure = self.ui.preserveDirectoryStructureCheckBox.checked
+            # Find the number of files already processed in the output directory
+            numDone = self.logic.dicom_file_manager.update_progress_from_output(outputDirectory, preserve_directory_structure)
             if numDone is None:
                 statusText += '\nAll files have been processed. Cannot load more files from input folder.'
             elif numDone < 1:
@@ -593,7 +593,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
             # Get the file path from the dataframe
 
-            filepath = current_dicom_record['Filepath']
+            filepath = current_dicom_record['FilePath']
             statusText += filepath
             self.ui.statusLabel.text = statusText
 
@@ -766,7 +766,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         Callback function for the export scan button.
         """
         logging.info('Export scan button pressed')
-
+        preserve_directory_structure = self.ui.preserveDirectoryStructureCheckBox.checked
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
         currentSequenceBrowser = self._parameterNode.ultrasoundSequenceBrowser
         if currentSequenceBrowser is None:
@@ -835,7 +835,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             headersDirectory=headersDirectory,
             labels = annotationLabels,
             new_patient_name = new_patient_name,
-            new_patient_id = new_patient_id)
+            new_patient_id = new_patient_id,
+            preserve_directory_structure = preserve_directory_structure)
 
         # Restore selected item number in sequence browser
         currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
@@ -940,14 +941,15 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """
         return self.dicom_file_manager.get_number_of_instances()
 
-    def loadNextSequence(self, outputDirectory, continueProgress=True):
+    def loadNextSequence(self, outputDirectory, continueProgress=True, preserve_directory_structure=True):
         """
         Load next sequence in the list of DICOM files.
         Returns the index of the loaded sequence in the dataframe of DICOM files, or None if no more sequences are available.
         """
         self.resetScene()
         parameterNode = self.getParameterNode()
-        current_dicom_index, sequence_browser = self.dicom_file_manager.load_sequence(parameterNode, outputDirectory, continueProgress)
+
+        current_dicom_index, sequence_browser = self.dicom_file_manager.load_sequence(parameterNode, outputDirectory, continueProgress, preserve_directory_structure)
 
         # If no more sequences are available, return None
         if sequence_browser is None:
@@ -1653,6 +1655,16 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         return cv2.bitwise_or(image, mask)
 
     def maskSequence(self, three_point=False):
+        """
+        Apply mask to all frames in the ultrasound sequence.
+
+        This method updates the mask volume based on the current mask markups,
+        then applies the mask to every frame in the ultrasound sequence by
+        multiplying each pixel with the corresponding mask value.
+
+        :param three_point: If True, use three-point fan mask mode. If False, use four-point mask mode.
+        :type three_point: bool
+        """
         self.updateMaskVolume(three_point=three_point)
 
         parameterNode = self.getParameterNode()
@@ -1690,15 +1702,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         proxyNode = self.getCurrentProxyNode()
         proxyNode.GetImageData().Modified()
 
-    def convertToJsonCompatible(self, obj):
-        if isinstance(obj, pydicom.multival.MultiValue):
-            return list(obj)
-        if isinstance(obj, pydicom.valuerep.PersonName):
-            return str(obj)
-        if isinstance(obj, bytes):
-            return obj.decode('latin-1')
-        raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
-
     def findKeyInDict(self, d: dict, target_key: str):
         """
         Recursively search for a key in a nested dictionary.
@@ -1721,8 +1724,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return 'N/A'
 
-    def saveDicomFile(self, dicomFilePath, new_patient_name=None, new_patient_id=None):
-        """Save anonymized DICOM file using DicomFileManager."""
+    def saveDicomFile(self, dicomFilePath, new_patient_name='', new_patient_id=''):
+        """
+        Save the current ultrasound sequence as an anonymized DICOM file.
+        """
         parameterNode = self.getParameterNode()
 
         # Collect image data from sequence browser as a numpy array
@@ -1763,17 +1768,37 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     outputFilename = None,
                     headersDirectory = None,
                     labels = None,
-                    new_patient_name = None,
-                    new_patient_id = None):
+                    new_patient_name = "",
+                    new_patient_id = "",
+                    preserve_directory_structure = True):
         """
-        Export image array to DICOM files.
+        Export the current ultrasound sequence as an anonymized DICOM file with optional annotation labels.
 
-        :param outputDirectory: Output directory where the DICOM files will be saved.
-        :param outputFilename: Output file name without extension. If None, a file name will be generated based
-            on patient ID and instance UID.
-        :param labels: List of annotation labels to be saved in accompanying CSV file.
-        :param new_patient_name: New patient name to be used in the DICOM file.
-        :param new_patient_id: New patient ID to be used in the DICOM file.
+        Args:
+            outputDirectory (str): Directory path where the DICOM file will be saved
+            outputFilename (str, optional): Custom filename for the output DICOM. If None,
+                generates filename from DICOM dataset. Defaults to None.
+            headersDirectory (str, optional): Directory path to save original DICOM headers
+                as JSON files. If None, headers are not saved. Defaults to None.
+            labels (list, optional): List of annotation labels to include in the output
+                JSON file. Defaults to None.
+            new_patient_name (str, optional): Anonymized patient name to use in the output
+                DICOM. If None, uses original name. Defaults to "".
+            new_patient_id (str, optional): Anonymized patient ID to use in the output
+                DICOM. If None, uses original ID. Defaults to "".
+            preserve_directory_structure (bool, optional): Whether to maintain the original
+                directory structure in the output path. Defaults to True.
+
+        Returns:
+            tuple: (dicomFilePath, jsonFilePath, dicomHeaderFilePath) - Paths to the saved
+                DICOM file, annotations JSON file, and DICOM header JSON file respectively.
+                Returns (None, None, None) if export fails.
+
+        Note:
+            - Collects image data from the sequence browser and saves as anonymized DICOM
+            - Creates output directories if they don't exist
+            - Saves sequence information and annotations to JSON file
+            - Optionally saves original DICOM headers with partial anonymization
         """
         # Record sequence information to a dictionary. This will be saved in the annotations JSON file.
         current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
@@ -1797,26 +1822,15 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if outputFilename is None or outputFilename == "":
             return None, None, None
 
-        dicomFilePath = os.path.join(outputDirectory, outputFilename)
+        # Generate complete output path with directory structure consideration
+        dicomFilePath = self.dicom_file_manager.generate_output_filepath(
+            outputDirectory, current_dicom_record.RelativePath, preserve_directory_structure)
+
         self.saveDicomFile(dicomFilePath, new_patient_name, new_patient_id)
 
         # Save original DICOM header to a json file. This may not be completely anonymized.
-        dicomHeaderFilePath = None
-        if headersDirectory is not None:
-            if not os.path.exists(headersDirectory):
-                os.makedirs(headersDirectory)
-            dicomHeaderFileName = outputFilename.replace(".dcm", "_DICOMHeader.json")
-            dicomHeaderFilePath = os.path.join(headersDirectory, dicomHeaderFileName)
-            with open(dicomHeaderFilePath, 'w') as outfile:
-                if self.dicom_file_manager.dicom_df is not None:
-                    anonymizedDicomHeader = self.dicom_file_manager.dicom_header_to_dict(current_dicom_record.DICOMDataset)
-                    # Make the PatientName equal to the outputFilename without extension
-                    if "Patient's Name" in anonymizedDicomHeader:
-                        anonymizedDicomHeader["Patient's Name"] = outputFilename.split(".")[0]
-                    # Make the month and day of the patient birth date 01 to anonymize the patient
-                    if "Patient's Birth Date" in anonymizedDicomHeader:
-                        anonymizedDicomHeader["Patient's Birth Date"] = anonymizedDicomHeader["Patient's Birth Date"][:4] + "0101"
-                    json.dump(anonymizedDicomHeader, outfile, default=self.convertToJsonCompatible)
+        dicomHeaderFilePath = self.dicom_file_manager.save_anonymized_dicom_header(
+            current_dicom_record, headersDirectory, preserve_directory_structure, outputFilename)
 
         # Add mask parameters to sequenceInfo
         for key, value in self.maskParameters.items():
@@ -1827,8 +1841,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             sequenceInfo["AnnotationLabels"] = labels
 
         # Save sequenceInfo to a file
-        annotationsFilename = outputFilename.replace(".dcm", ".json")
-        sequenceInfoFilePath = os.path.join(outputDirectory, annotationsFilename)
+        sequenceInfoFilename = dicomFilePath.replace(".dcm", ".json")
+        sequenceInfoFilePath = os.path.join(outputDirectory, sequenceInfoFilename)
+
         with open(sequenceInfoFilePath, 'w') as outfile:
             json.dump(sequenceInfo, outfile)
 
