@@ -2306,6 +2306,56 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         return markupNode
 
+    def _updateMarkupNode(self, node, entry):
+        """
+        Update a markup node with the given entry.
+        """
+        # Check if node is still valid
+        if not node or not slicer.mrmlScene.IsNodePresent(node):
+            return
+
+        coordinates = entry.get("line", {}).get("points", [])
+        rater = entry.get("rater", "")
+        color_pleura, _ = self.getColorsForRater(rater)
+        node.SetAttribute("rater", rater)
+
+        # Ensure display node exists
+        displayNode = node.GetDisplayNode()
+        if displayNode is None:
+            # Check if scene is valid before creating display nodes
+            if not slicer.mrmlScene:
+                return
+            try:
+                node.CreateDefaultDisplayNodes()
+                displayNode = node.GetDisplayNode()
+                if displayNode is None:
+                    logging.error(f"Failed to create display node for markup node {node.GetName()}")
+                    return
+            except Exception as e:
+                logging.error(f"Exception creating display node for {node.GetName()}: {e}")
+                return
+
+        if node in self.pleuraLines:
+            color_pleura, _ = self.getColorsForRater(rater)
+            displayNode.SetSelectedColor(color_pleura)
+        else:
+            _, color_bline = self.getColorsForRater(rater)
+            displayNode.SetSelectedColor(color_bline)
+        displayNode.SetVisibility(True)
+
+        # Update control points
+        node.RemoveAllControlPoints()
+        for pt in coordinates:
+            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+            node.AddControlPointWorld(*pt)
+            if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+                self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
+            if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+                self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+
     def clearSceneLines(self):
         """
         Remove all pleura lines and B-lines from the scene and from the list of lines.
@@ -2602,53 +2652,24 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Update pleura markups
         for i, entry in enumerate(pleura_entries):
             node = self.pleuraLines[i]
-            coordinates = entry.get("line", {}).get("points", [])
-            rater = entry.get("rater", "")
-            color_pleura, _ = self.getColorsForRater(rater)
-            node.SetAttribute("rater", rater)
-            node.GetDisplayNode().SetSelectedColor(color_pleura)
-            node.GetDisplayNode().SetVisibility(True)
-            # Update control points
-            node.RemoveAllControlPoints()
-            for pt in coordinates:
-                if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                    self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-                if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                    self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-                node.AddControlPointWorld(*pt)
-                if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                    self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-                if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                    self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+            self._updateMarkupNode(node, entry)
 
         # Hide unused pleura markups
         for i in range(len(pleura_entries), len(self.pleuraLines)):
-            self.pleuraLines[i].GetDisplayNode().SetVisibility(False)
+            displayNode = self.pleuraLines[i].GetDisplayNode()
+            if displayNode:
+                displayNode.SetVisibility(False)
 
         # Update b-line markups
         for i, entry in enumerate(bline_entries):
             node = self.bLines[i]
-            coordinates = entry.get("line", {}).get("points", [])
-            rater = entry.get("rater", "")
-            _, color_bline = self.getColorsForRater(rater)
-            node.SetAttribute("rater", rater)
-            node.GetDisplayNode().SetSelectedColor(color_bline)
-            node.GetDisplayNode().SetVisibility(True)
-            node.RemoveAllControlPoints()
-            for pt in coordinates:
-                if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                    self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-                if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                    self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-                node.AddControlPointWorld(*pt)
-                if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                    self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-                if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                    self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+            self._updateMarkupNode(node, entry)
 
         # Hide unused b-line markups
         for i in range(len(bline_entries), len(self.bLines)):
-            self.bLines[i].GetDisplayNode().SetVisibility(False)
+            displayNode = self.bLines[i].GetDisplayNode()
+            if displayNode:
+                displayNode.SetVisibility(False)
 
     def drawDepthGuideLine(self, image_size_rows, image_size_cols, depth_ratio=0.5, color=(0, 255, 255), thickness=4, dash_length=20, dash_gap=16):
         """
@@ -2823,7 +2844,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         """
         parameterNode = self.getParameterNode()
 
-        if parameterNode.overlayVolume is None:
+        if parameterNode is None or parameterNode.overlayVolume is None:
             logging.debug("updateOverlayVolume: No overlay volume found! Cannot update overlay volume.")
             return None
 
@@ -2835,10 +2856,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         if parameterNode.inputVolume is None:
             logging.debug("No input volume found, not updating overlay volume.")
-            return None
-
-        if self.annotations is None:
-            logging.warning("updateOverlayVolume: No annotations loaded")
             # Make sure all voxels are set to 0
             parameterNode.overlayVolume.GetImageData().GetPointData().GetScalars().Fill(0)
             return None
