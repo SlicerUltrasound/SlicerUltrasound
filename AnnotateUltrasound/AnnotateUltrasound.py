@@ -342,9 +342,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.skipToUnlabeledButton.clicked.connect(self.onSkipToUnlabeledButton)
 
         self.ui.addPleuraButton.toggled.connect(lambda checked: self.onAddLine("Pleura", checked))
-        self.ui.removePleuraButton.clicked.connect(lambda: self.onRemoveLine("Pleura"))
+        self.ui.removePleuraButton.clicked.connect(lambda checked: self.onRemoveLine("Pleura", checked))
         self.ui.addBlineButton.toggled.connect(lambda checked: self.onAddLine("Bline", checked))
-        self.ui.removeBlineButton.clicked.connect(lambda: self.onRemoveLine("Bline"))
+        self.ui.removeBlineButton.clicked.connect(lambda checked:  self.onRemoveLine("Bline", checked))
         self.ui.overlayVisibilityButton.toggled.connect(self.overlayVisibilityToggled)
         self.ui.clearAllLinesButton.clicked.connect(self.onClearAllLines)
         self.ui.addCurrentFrameButton.clicked.connect(self.onAddCurrentFrame)
@@ -1075,16 +1075,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             logging.error(f"Unknown line type {lineType}")
             return
 
-        # Only update if we're not already updating (prevents duplicate calls)
-        if not self._isUpdatingCurrentFrame:
-            self._isUpdatingCurrentFrame = True
-            try:
-                logging.info("Auto-saving frame annotations")
-                self.logic.syncMarkupsToAnnotations()
-                self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
-            finally:
-                self._isUpdatingCurrentFrame = False
-
     def delayedOnEndPlaceMode(self, lineType):
         logging.info(f"delayedOnEndPlaceMode -- lineType: {lineType}")
         if lineType == "Pleura":
@@ -1112,7 +1102,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         logging.info('onRemovePleuraLine')
         self.logic.removeLastPleuraLine()
 
-    def onRemoveLine(self, lineType):
+    def onRemoveLine(self, lineType, _):
         logging.info(f"onRemoveLine -- lineType: {lineType}")
         if lineType == "Pleura":
             self.logic.removeLastPleuraLine()
@@ -1266,13 +1256,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             # Set foreground volume to None
             redSliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceCompositeNode()
             redSliceCompositeNode.SetForegroundVolumeID(None)
-
-    def updateZonalOverlay(self):
-        # Print the coordinates of all points in all markup nodes
-        for markupNode in self.logic.pleuraLines:
-            for i in range(markupNode.GetNumberOfControlPoints()):
-                coord = [0, 0, 0]
-                markupNode.GetNthControlPointPosition(i, coord)
 
     def onDepthGuideToggled(self, toggled):
         # Save new state in application settings and update overlay volume to show/hide the depth guide
@@ -2290,6 +2273,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Update display for new frame
         self.syncAnnotationsToMarkups()
         self.refreshDisplay(updateOverlay=True, updateGui=True)
+
+    def getUnusedMarkupNode(self, lineList):
+        for node in lineList:
+            if node.GetNumberOfControlPoints() == 0:
+                return node
+        return None
 
     def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0]):
         markupNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")

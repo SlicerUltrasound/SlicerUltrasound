@@ -299,11 +299,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
 
     def cleanup(self):
         # Remove click observer on red view
-        if hasattr(self, '_clickObserverTag'):
-            sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
-            renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
-            renderWindowInteractor.RemoveObserver(self._clickObserverTag)
-            self._clickObserverTag = None
+        self.removeClickObserverFromRedView()
 
         super().cleanup()
 
@@ -315,6 +311,13 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
         renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
         self._clickObserverTag = renderWindowInteractor.AddObserver(vtk.vtkCommand.LeftButtonPressEvent, self.onRedViewClick)
+
+    def removeClickObserverFromRedView(self):
+        if hasattr(self, '_clickObserverTag') and self._clickObserverTag is not None:
+            sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+            renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
+            renderWindowInteractor.RemoveObserver(self._clickObserverTag)
+            self._clickObserverTag = None
 
     # --- Distance point to segment ---
     def distancePointToSegment(self, p, a, b):
@@ -373,7 +376,53 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self.logic.syncAnnotationsToMarkups()
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
 
+    def onAddLine(self, lineType, checked):
+        # Remove click observer before starting line placement
+        self.removeClickObserverFromRedView()
+        super().onAddLine(lineType, checked)
+        if not checked:
+            self.setupClickObserverOnRedView()
+
+    def onRemoveLine(self, lineType, checked):
+        # Remove click observer before starting line removal
+        self.removeClickObserverFromRedView()
+        super().onRemoveLine(lineType, checked)
+        if not checked:
+            self.setupClickObserverOnRedView()
+
+    def removeLastPleuraLine(self):
+        print(f"Called Adjudicate removeLastPleuraLine")
+        self.logic._suppressSync = True
+        super().removeLastPleuraLine()
+        self.logic._suppressSync = False
+
+    def removeLastBline(self):
+        print(f"Called Adjudicate removeLastBline")
+
+        self.logic._suppressSync = True
+        super().removeLastBline()
+        self.logic._suppressSync = False
+
+    def onEndPlaceMode(self, caller, event):
+        # Call the next line using qtimer
+        lineType = self._parameterNode.lineBeingPlaced.GetName()
+        logging.info(f'onEndPlaceMode -- lineType: {lineType}')
+        if lineType == "Pleura":
+            qt.QTimer.singleShot(0, lambda: self.delayedOnEndPlaceMode("Pleura"))
+        elif lineType == "B-line":
+            qt.QTimer.singleShot(0, lambda: self.delayedOnEndPlaceMode("Bline"))
+        else:
+            logging.error(f"Unknown line type {lineType}")
+            return
+
+    def delayedOnEndPlaceMode(self, lineType):
+        super().delayedOnEndPlaceMode(lineType)
+        # Re-add click observer after line placement
+        self.setupClickObserverOnRedView()
+
     def onSelectionChanged(self, caller, event):
+        if self.logic._suppressSync:
+            return
         selectionNode = slicer.app.applicationLogic().GetSelectionNode()
         selectedNodeID = selectionNode.GetActivePlaceNodeID()
         if selectedNodeID:
@@ -1068,7 +1117,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         """
         Called when the logic class is instantiated. Can be used for initializing member variables.
         """
-        ScriptedLoadableModuleLogic.__init__(self)
+        super().__init__()
 
         # These variables keep their values when the scene is cleared
         self.dicomDf = None
@@ -1085,6 +1134,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
         # Flag to track when we're doing programmatic updates (to avoid setting unsavedChanges)
         self._isProgrammaticUpdate = False
+        self._suppressSync = False
 
     # Static variable to track seen raters and their order
     seenRaters = []
@@ -1368,10 +1418,11 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         return self.nextDicomDfIndex
 
     def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0], validation=None):
+        self._suppressSync = True
         markupNode = super().createMarkupLine(name, rater, coordinates, color)
         if markupNode is not None and validation is not None:
             markupNode.SetAttribute("validation", json.dumps(validation))
-
+        self._suppressSync = False
         return markupNode
 
     def _updateMarkupNode(self, node, entry, selectedNodeID):
