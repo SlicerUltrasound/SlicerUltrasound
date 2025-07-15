@@ -294,6 +294,19 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self.initializeParameterNode()
         # Load fixed labels file
         self.onLabelsFileSelected()
+        # set up click observer on red view
+        self.setupClickObserverOnRedView()
+
+    def cleanup(self):
+        # Remove click observer on red view
+        if hasattr(self, '_clickObserverTag'):
+            sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+            renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
+            renderWindowInteractor.RemoveObserver(self._clickObserverTag)
+            self._clickObserverTag = None
+
+        super().cleanup()
+
 
     # These functions are used to handle clicks on the red view when selecting lines by clicking on the red view
     # near the line to be selected.
@@ -402,7 +415,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         selectionNode = slicer.app.applicationLogic().GetSelectionNode()
         selectedNodeID = selectionNode.GetActivePlaceNodeID()
         if not selectedNodeID:
-            slicer.util.showStatusMessage(f"No line selected to {action_verb}.", 3000)
+            slicer.util.showStatusMessage(f"No line selected to adjudicate.", 3000)
             return
         markupNode = slicer.mrmlScene.GetNodeByID(selectedNodeID)
         if not markupNode or not markupNode.GetClassName() == "vtkMRMLMarkupsLineNode":
