@@ -403,18 +403,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         super().removeLastBline()
         self.logic._suppressSync = False
 
-    def onEndPlaceMode(self, caller, event):
-        # Call the next line using qtimer
-        lineType = self._parameterNode.lineBeingPlaced.GetName()
-        logging.info(f'onEndPlaceMode -- lineType: {lineType}')
-        if lineType == "Pleura":
-            qt.QTimer.singleShot(0, lambda: self.delayedOnEndPlaceMode("Pleura"))
-        elif lineType == "B-line":
-            qt.QTimer.singleShot(0, lambda: self.delayedOnEndPlaceMode("Bline"))
-        else:
-            logging.error(f"Unknown line type {lineType}")
-            return
-
     def delayedOnEndPlaceMode(self, lineType):
         super().delayedOnEndPlaceMode(lineType)
         # Re-add click observer after line placement
@@ -752,110 +740,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
     def refocusAndRestoreShortcuts(self, delay: int = 200):
         qt.QTimer.singleShot(delay, self._delayedSetRedViewFocus)
         qt.QTimer.singleShot(delay + 100, self._restoreFocusAndShortcuts)
-
-    def onReadInputButton(self):
-        """
-        Read the input directory and update the dicomDf dataframe, using rater-specific annotation files.
-
-        :return: True if the input directory was read successfully, False otherwise.
-        """
-        logging.info('adjudicate: onReadInputButton')
-
-        inputDirectory = self.ui.inputDirectoryButton.directory
-        if not inputDirectory:
-            statusText = '⚠️ Please select an input directory'
-            slicer.util.mainWindow().statusBar().showMessage(statusText, 5000)
-            self.ui.statusLabel.setText(statusText)
-            self._parameterNode.dfLoaded = False
-            return
-
-        rater = self._parameterNode.rater
-        if not rater:
-            qt.QMessageBox.warning(
-                slicer.util.mainWindow(),
-                "Missing Rater Name",
-                "Please enter a rater name before loading the input directory."
-            )
-            self.ui.statusLabel.setText("⚠️ Please enter a rater name before loading.")
-            self._parameterNode.dfLoaded = False
-            return
-
-        # Remove existing sequence browser observer before reloading
-        if self.logic.sequenceBrowserNode:
-            self.removeObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.logic.onSequenceBrowserModified)
-
-        numFilesFound = self.logic.updateInputDf(rater, inputDirectory)
-        logging.info(f"Found {numFilesFound} DICOM files")
-        statusText = f"Found {numFilesFound} DICOM files"
-
-        if numFilesFound > 0:
-            self._parameterNode.dfLoaded = True
-            # Update progress bar
-            self.ui.progressBar.minimum = 0
-            self.ui.progressBar.maximum = numFilesFound
-            self.ui.progressBar.value = 0
-            waitDialog = self.createWaitDialog("Loading first sequence", "Loading first sequence...")
-
-            # Set navigation flag to prevent rater table state changes
-            self._isNavigating = True
-
-            # Reset the DICOM index to start from the beginning when reloading
-            self.logic.nextDicomDfIndex = 0
-
-            self.currentDicomDfIndex = self.logic.loadNextSequence()
-
-            # Add observer for the new sequence browser node
-            if self.logic.sequenceBrowserNode:
-                self.addObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.logic.onSequenceBrowserModified)
-
-            # Update self.ui.currentFileLabel using the DICOM file name
-            currentDicomFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['Filepath']
-            currentDicomFilename = os.path.basename(currentDicomFilepath)
-            statusText = f"Current file ({self.logic.nextDicomDfIndex}/{len(self.logic.dicomDf)}): {currentDicomFilename}"
-            self.ui.currentFileLabel.setText(statusText)
-            self.ui.statusLabel.setText('')
-            slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
-            self.logic.sequenceBrowserNode.SetSelectedItemNumber(0)
-            # Update annotations and refresh display
-            self.logic.syncMarkupsToAnnotations()
-            self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
-
-            self.ui.intensitySlider.setValue(0)
-
-            # After loading the first sequence, extract seen raters and update checkboxes
-            self.extractSeenAndSelectedRaters()
-
-            self._updateRaterColorTableCheckboxes()
-            self.updateGuiFromAnnotations()
-
-            # Close the wait dialog
-            waitDialog.close()
-
-            self.ui.progressBar.value = self.currentDicomDfIndex
-
-            self.ui.overlayVisibilityButton.setChecked(True)
-
-            # Mark that this is no longer the first DICOM load
-            self._isFirstDicomLoad = False
-        else:
-            statusText = 'Could not find any files to load in input directory tree!'
-            slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
-            self.ui.statusLabel.setText(statusText)
-
-        self._updateGUIFromParameterNode()
-
-        # Restore focus and shortcuts after loading input
-        self.refocusAndRestoreShortcuts()
-
-        # Clear navigation flag after all operations are complete
-        self._isNavigating = False
-
-    def confirmUnsavedChanges(self):
-        """
-        Asks the user if they want to save unsaved changes before continuing.
-        """
-        return super().confirmUnsavedChanges()
-
 
     def updateGuiFromAnnotations(self):
         super().updateGuiFromAnnotations()
@@ -1220,7 +1104,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         progress_dialog.close()
 
         # Return the number of rows in the dataframe
-        return len(self.dicomDf)
+        return len(self.dicomDf), 0
 
     def loadNextSequence(self):
         """
@@ -1516,6 +1400,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
             node.AddControlPointWorld(*pt)
+            node.Modified()
             if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
                 self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
             if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
@@ -1523,7 +1408,9 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
     def _updateMarkupNodesForFrame(self, frame):
         """
-        Update markup nodes for pleura and b-lines for the given frame.
+        Override: Update markup nodes for pleura and b-lines for the given frame.
+        Only updates the markup nodes for the selected raters. Passed selected node
+        to _updateMarkupNode to highlight the selected node.
         """
 
         # Check if scene is valid before proceeding
@@ -1537,53 +1424,40 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         selectionNode = slicer.app.applicationLogic().GetSelectionNode()
         selectedNodeID = selectionNode.GetActivePlaceNodeID() if selectionNode else None
 
-        # Ensure we have enough markup nodes (create more if needed, but don't remove for performance)
-        while len(self.pleuraLines) < len(pleura_entries):
-            self.pleuraLines.append(self.createMarkupLine("Pleura", "", [], [1,1,0]))
-        while len(self.bLines) < len(bline_entries):
-            self.bLines.append(self.createMarkupLine("B-line", "", [], [0,1,1]))
-
+        # Update pleura markups
         # Update pleura markups
         for i, entry in enumerate(pleura_entries):
-            node = self.pleuraLines[i]
+            if i >= len(self.pleuraLines):
+                node = self.createMarkupLine("Pleura", entry.get("rater", ""), entry.get("coordinates", []), [1,1,0])
+                self.pleuraLines.append(node)
+            else:
+                node = self.pleuraLines[i]
             self._updateMarkupNode(node, entry, selectedNodeID)
 
-        # Hide unused pleura markups
-        for i in range(len(pleura_entries), len(self.pleuraLines)):
-            displayNode = self.pleuraLines[i].GetDisplayNode()
-            if displayNode:
-                displayNode.SetVisibility(False)
-
-        # Hide pleura markups for non-selected raters
-        for node in self.pleuraLines:
-            nodeRater = node.GetAttribute("rater")
-            if nodeRater not in self.selectedRaters:
-                displayNode = node.GetDisplayNode()
-                if displayNode:
-                    displayNode.SetVisibility(False)
+        # free unused pleura markups
+        unused_pleura_lines = len(self.pleuraLines) - len(pleura_entries)
+        for i in range(unused_pleura_lines):
+            node = self.pleuraLines.pop()
+            self._freeMarkupNode(node)
 
         # Update b-line markups
         for i, entry in enumerate(bline_entries):
-            node = self.bLines[i]
+            if i >= len(self.bLines):
+                node = self.createMarkupLine("B-line", entry.get("rater", ""), entry.get("coordinates", []), [0,1,1])
+                self.bLines.append(node)
+            else:
+                node = self.bLines[i]
             self._updateMarkupNode(node, entry, selectedNodeID)
 
-        # Hide unused b-line markups
-        for i in range(len(bline_entries), len(self.bLines)):
-            displayNode = self.bLines[i].GetDisplayNode()
-            if displayNode:
-                displayNode.SetVisibility(False)
-
-       # Hide b-line markups for non-selected raters
-        for node in self.bLines:
-            nodeRater = node.GetAttribute("rater")
-            if nodeRater not in self.selectedRaters:
-                displayNode = node.GetDisplayNode()
-                if displayNode:
-                    displayNode.SetVisibility(False)
+        # free unused b-line markups
+        unused_b_lines = len(self.bLines) - len(bline_entries)
+        for i in range(unused_b_lines):
+            node = self.bLines.pop()
+            self._freeMarkupNode(node)
 
     def updateOverlayVolume(self):
         """
-        Update the overlay volume based on the annotations.
+        Override: Update the overlay volume based on the validated annotations.
 
         :return: The ratio of green pixels to blue pixels in the overlay volume. None if inputs not defined yet.
         """
@@ -1787,141 +1661,6 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         # Select all real raters by default (exclude __selected_node__)
         self.realRaters = [r for r in self.seenRaters if r != "__selected_node__" and r != "__adjudicated_node__"]
         self.setSelectedRaters(set(self.realRaters))
-
-    def cleanupAnnotationDuplicates(self):
-        """
-        Remove duplicate lines from the annotation data in memory.
-        Lines are only considered duplicates if they have identical points AND the same rater.
-        This prevents duplicates from being displayed. We shouldn't need this anymore but it's here just in case
-        there are files that have duplicates that got saved from previous versions of the module.
-        """
-        if not self.annotations or 'frame_annotations' not in self.annotations:
-            return
-
-        total_removed = 0
-        has_duplicates = False
-
-        for frame in self.annotations['frame_annotations']:
-            frame_num = frame.get('frame_number', 'unknown')
-
-            # Check pleura lines for duplicates
-            if 'pleura_lines' in frame:
-                original_count = len(frame['pleura_lines'])
-                seen_pleura = set()
-                unique_pleura = []
-
-                for i, entry in enumerate(frame['pleura_lines']):
-                    points = entry.get('line', {}).get('points', [])
-                    rater = entry.get('rater', '')
-                    # Create a hash of points and rater
-                    points_hash = hash(tuple(tuple(pt) for pt in points) + (rater,))
-
-                    if points_hash not in seen_pleura:
-                        seen_pleura.add(points_hash)
-                        unique_pleura.append(entry)
-                    else:
-                        has_duplicates = True
-
-                if has_duplicates:
-                    frame['pleura_lines'] = unique_pleura
-                    removed = original_count - len(unique_pleura)
-                    total_removed += removed
-
-            # Check b-lines for duplicates
-            if 'b_lines' in frame:
-                original_count = len(frame['b_lines'])
-                seen_blines = set()
-                unique_blines = []
-
-                for i, entry in enumerate(frame['b_lines']):
-                    points = entry.get('line', {}).get('points', [])
-                    rater = entry.get('rater', '')
-                    # Create a hash of points and rater
-                    points_hash = hash(tuple(tuple(pt) for pt in points) + (rater,))
-
-                    if points_hash not in seen_blines:
-                        seen_blines.add(points_hash)
-                        unique_blines.append(entry)
-                    else:
-                        has_duplicates = True
-
-                if has_duplicates:
-                    frame['b_lines'] = unique_blines
-                    removed = original_count - len(unique_blines)
-                    total_removed += removed
-
-        if has_duplicates:
-            # Reinitialize markup nodes if needed after cleanup
-            self.reinitializeMarkupNodesIfNeeded()
-
-    def initializeMarkupNodesFromAnnotations(self):
-        """
-        Initialize markup nodes based on the maximum number needed across all frames.
-        This ensures we start with the right number of nodes and don't need to create/remove them constantly.
-        """
-        if not self.annotations or 'frame_annotations' not in self.annotations:
-            return
-
-        # Calculate maximum number of lines needed across all frames
-        max_pleura_lines = 0
-        max_blines = 0
-
-        for frame in self.annotations['frame_annotations']:
-            pleura_count = len(frame.get('pleura_lines', []))
-            bline_count = len(frame.get('b_lines', []))
-            max_pleura_lines = max(max_pleura_lines, pleura_count)
-            max_blines = max(max_blines, bline_count)
-
-        # Add some buffer for new lines (at least 2 of each type, but cap at reasonable limits)
-        max_pleura_lines = max(max_pleura_lines, 2)
-        max_blines = max(max_blines, 2)
-
-        # Cap the maximum to prevent excessive node creation
-        max_pleura_lines = min(max_pleura_lines, 10)  # Cap at 10 pleura nodes
-        max_blines = min(max_blines, 10)              # Cap at 10 B-line nodes
-
-        # Clear existing nodes
-        self.clearSceneLines()
-
-        # Create the required number of nodes
-        for i in range(max_pleura_lines):
-            self.pleuraLines.append(self.createMarkupLine("Pleura", "", [], [1,1,0]))
-        for i in range(max_blines):
-            self.bLines.append(self.createMarkupLine("B-line", "", [], [0,1,1]))
-
-    def reinitializeMarkupNodesIfNeeded(self):
-        """
-        Reinitialize markup nodes if the current number doesn't match what's needed.
-        This is useful after cleaning up duplicates or when the annotation data changes significantly.
-        """
-        if not self.annotations or 'frame_annotations' not in self.annotations:
-            return
-
-        # Calculate what we actually need now
-        max_pleura_lines = 0
-        max_blines = 0
-
-        for frame in self.annotations['frame_annotations']:
-            pleura_count = len(frame.get('pleura_lines', []))
-            bline_count = len(frame.get('b_lines', []))
-            max_pleura_lines = max(max_pleura_lines, pleura_count)
-            max_blines = max(max_blines, bline_count)
-
-        # Add buffer
-        max_pleura_lines = max(max_pleura_lines, 2)
-        max_blines = max(max_blines, 2)
-
-        # Cap the maximum
-        max_pleura_lines = min(max_pleura_lines, 10)
-        max_blines = min(max_blines, 10)
-
-        current_pleura = len(self.pleuraLines)
-        current_blines = len(self.bLines)
-
-        # Only reinitialize if there's a significant difference
-        if (abs(current_pleura - max_pleura_lines) > 2 or
-            abs(current_blines - max_blines) > 2):
-            self.initializeMarkupNodesFromAnnotations()
 
     def syncMarkupsToAnnotations(self):
         """

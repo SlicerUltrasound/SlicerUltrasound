@@ -1057,8 +1057,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             logging.error(f"Unknown line type {lineType}")
             return
 
-        # Put interaction model to place line markup
+        # Suppress sync to avoid having selection node based handlers run
+        # while we are adding a line
+        if hasattr(self.logic, "_suppressSync"):
+            self.logic._suppressSync = True
         selectionNode.SetActivePlaceNodeID(newLineNode.GetID())
+        if hasattr(self.logic, "_suppressSync"):
+            self.logic._suppressSync = False
+        # Put interaction model to place line markup
         interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
         interactionNode.SetCurrentInteractionMode(interactionNode.Place)
         interactionNode.SetPlaceModePersistence(0)
@@ -2725,9 +2731,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             self._updateMarkupNode(node, entry)
 
         # free unused pleura markups
-        for i in range(len(pleura_entries), len(self.pleuraLines)):
-            node = self.pleuraLines[i]
-            self.pleuraLines.remove(node)
+        unused_pleura_lines = len(self.pleuraLines) - len(pleura_entries)
+        for i in range(unused_pleura_lines):
+            node = self.pleuraLines.pop()
             self._freeMarkupNode(node)
 
         # Update b-line markups
@@ -2740,9 +2746,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             self._updateMarkupNode(node, entry)
 
         # free unused b-line markups
-        for i in range(len(bline_entries), len(self.bLines)):
-            node = self.bLines[i]
-            self.bLines.remove(node)
+        unused_b_lines = len(self.bLines) - len(bline_entries)
+        for i in range(unused_b_lines):
+            node = self.bLines.pop()
             self._freeMarkupNode(node)
 
     def drawDepthGuideLine(self, image_size_rows, image_size_cols, depth_ratio=0.5, color=(0, 255, 255), thickness=4, dash_length=20, dash_gap=16):
