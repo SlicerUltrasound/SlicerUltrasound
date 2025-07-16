@@ -31,9 +31,3 @@ slicerMacroBuildScriptedModule(
   RESOURCES ${MODULE_PYTHON_RESOURCES}
   WITH_GENERIC_TESTS
   )
-
-#-----------------------------------------------------------------------------
-if(BUILD_TESTING)
-  # Additional build-time testing
-  add_subdirectory(Testing/Python)
-endif()
