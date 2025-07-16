@@ -540,7 +540,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Remove existing sequence browser observer before reloading
         if self.logic.sequenceBrowserNode:
-            self.removeObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.logic.onSequenceBrowserModified)
+            if self.hasObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.logic.onSequenceBrowserModified):
+                self.removeObserver(self.logic.sequenceBrowserNode, vtk.vtkCommand.ModifiedEvent, self.logic.onSequenceBrowserModified)
 
         numFilesFound, numAnnotationsCreated = self.logic.updateInputDf(rater, inputDirectory)
         logging.info(f"Found {numFilesFound} DICOM files")
@@ -1002,10 +1003,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def onAddLine(self, lineType, checked):
         logging.info(f"onAddLine -- lineType: {lineType}, checked: {checked}")
 
-        interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-        self.removeObservers(self.onEndPlaceMode)
-
         if not checked:
+            self.removeObservers(self.onEndPlaceMode)
+
             # Return mouse interaction to default
             interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
             interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
@@ -1034,17 +1034,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                     self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
                 finally:
                     self._isUpdatingCurrentFrame = False
-
-            ratio = self.logic.updateOverlayVolume()
-            if ratio is not None:
-                self._parameterNode.pleuraPercentage = ratio * 100
             return
 
-        # Put interaction model to place line markup
-        interactionNode.SetCurrentInteractionMode(interactionNode.Place)
-        interactionNode.SetPlaceModePersistence(0)
+        # if we are already placing a line, don't place another one - we are being called from an unrelated callback
+        if self._parameterNode.lineBeingPlaced:
+            return
 
-        self.addObserver(interactionNode, interactionNode.EndPlacementEvent, self.onEndPlaceMode)
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectionNode.SetActivePlaceNodeID("")
 
         # Create a new markup fiducial node
         rater = self._parameterNode.rater
@@ -1059,6 +1056,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         else:
             logging.error(f"Unknown line type {lineType}")
             return
+
+        # Put interaction model to place line markup
+        selectionNode.SetActivePlaceNodeID(newLineNode.GetID())
+        interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
+        interactionNode.SetCurrentInteractionMode(interactionNode.Place)
+        interactionNode.SetPlaceModePersistence(0)
+
+        self.addObserver(interactionNode, interactionNode.EndPlacementEvent, self.onEndPlaceMode)
 
         self._parameterNode.lineBeingPlaced = newLineNode
         self._parameterNode.unsavedChanges = True
@@ -1381,7 +1386,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         if self._parameterNode:
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._updateGUIFromParameterNode)
+            if self.hasObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._updateGUIFromParameterNode):
+                self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._updateGUIFromParameterNode)
         self._parameterNode = inputParameterNode
         if self.logic and self._parameterNode:
             self.logic.parameterNode = self._parameterNode
@@ -2018,11 +2024,29 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
     def clearScene(self):
         self.annotations = None
         for node in self.pleuraLines:
-            self._freeMarkupNode(node)
+            self.pleuraLines.remove(node)
+            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+            slicer.mrmlScene.RemoveNode(node)
         self.pleuraLines = []
         for node in self.bLines:
-            self._freeMarkupNode(node)
+            self.bLines.remove(node)
+            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+            slicer.mrmlScene.RemoveNode(node)
         self.bLines = []
+        for node in self.freeMarkupNodes:
+            self.freeMarkupNodes.remove(node)
+            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+            slicer.mrmlScene.RemoveNode(node)
+        self.freeMarkupNodes = []
         self.sequenceBrowserNode = None
         # Reset overlay volume reference in parameter node
         if self.parameterNode:
@@ -2249,7 +2273,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.setSelectedRaters(self.realRaters)
 
         # Set programmatic update flag to prevent unsavedChanges from being set
-        #self.syncAnnotationsToMarkups()
+        self.syncAnnotationsToMarkups()
         self.refreshDisplay(updateOverlay=True, updateGui=True)
         parameterNode.EndModify(previousNodeState)
 
@@ -2294,24 +2318,30 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return markupNode
 
     def _freeMarkupNode(self, markupNode):
-        self.removeObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
-        self.removeObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
+        if self.hasObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointModified):
+            self.removeObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointModified)
+        if self.hasObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointPositionDefined):
+            self.removeObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointPositionDefined)
         markupNode.RemoveAllControlPoints()
         markupNode.SetName("")
         markupNode.SetAttribute("rater", "")
         markupNode.GetDisplayNode().SetPropertiesLabelVisibility(False)
         markupNode.GetDisplayNode().SetSelectedColor([1, 1, 0])
+        markupNode.Modified()
         self.freeMarkupNodes.append(markupNode)
 
     def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0]):
         markupNode = self._getUnusedMarkupNode()
         if markupNode is None:
             markupNode = self._allocateNewMarkupNode()
-        markupNode.CreateDefaultDisplayNodes()
+        displayNode = markupNode.GetDisplayNode()
+        if displayNode is None:
+            markupNode.CreateDefaultDisplayNodes()
+            displayNode = markupNode.GetDisplayNode()
         markupNode.SetName(name)
         markupNode.SetAttribute("rater", rater)
-        markupNode.GetDisplayNode().SetPropertiesLabelVisibility(False)
-        markupNode.GetDisplayNode().SetSelectedColor(color)
+        displayNode.SetPropertiesLabelVisibility(False)
+        displayNode.SetSelectedColor(color)
         for coord in coordinates:
             markupNode.AddControlPointWorld(coord[0], coord[1], coord[2])
 
@@ -2365,29 +2395,30 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
             node.AddControlPointWorld(*pt)
+            node.Modified()
             if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
                 self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
             if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
 
-    def clearSceneLines(self):
+    def clearSceneLines(self, sync=False):
         """
         Remove all pleura lines and B-lines from the scene and from the list of lines.
         """
         # Remove all pleura lines
         while len(self.pleuraLines) > 0:
-            self.removeLastPleuraLine()
+            self.removeLastPleuraLine(sync=sync)
 
         # Remove all B-lines
         while len(self.bLines) > 0:
-            self.removeLastBline()
+            self.removeLastBline(sync=sync)
 
     def clearAllLines(self):
         """
         Remove all pleura lines and B-lines from the scene and from the list of lines.
         Only updates the annotation if the current frame is already in the annotations.
         """
-        self.clearSceneLines()
+        self.clearSceneLines(sync=False)
         # Only update annotation if current frame is already present
         if self.sequenceBrowserNode is not None and self.annotations is not None and 'frame_annotations' in self.annotations:
             currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())
@@ -2395,31 +2426,57 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 self.syncMarkupsToAnnotations()
                 self.refreshDisplay(updateOverlay=True, updateGui=True)
 
-    def removeLastPleuraLine(self):
+    def removeLastPleuraLine(self, sync=True):
         """
         Remove the last pleura line from the scene and from the list of pleura lines.
         """
         if len(self.pleuraLines) > 0:
-            currentLine = self.pleuraLines.pop()
-            self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
+            # find the last pleura line for the rater
+            parameterNode = self.getParameterNode()
+            current_rater = parameterNode.rater.strip().lower()
+            currentLine = None
+            for line in reversed(self.pleuraLines):
+                if line.GetAttribute("rater") == current_rater:
+                    currentLine = line
+                    break
+            if currentLine is None:
+                statusText = f"No pleura line found for rater {current_rater}"
+                slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+                return
+            if self.hasObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified):
+                self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
             self._freeMarkupNode(currentLine)
-            self.syncMarkupsToAnnotations()
-            self.refreshDisplay(updateOverlay=True, updateGui=True)
+            if sync:
+                self.syncMarkupsToAnnotations()
+                self.refreshDisplay(updateOverlay=True, updateGui=True)
 
-    def removeLastBline(self):
+    def removeLastBline(self, sync=True):
         """
         Remove the last B-line from the scene and from the list of B-lines.
         """
         if len(self.bLines) > 0:
-            currentLine = self.bLines.pop()
-            self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
+            # find the last B-line for the rater
+            currentLine = None
+            parameterNode = self.getParameterNode()
+            current_rater = parameterNode.rater.strip().lower()
+            for line in reversed(self.bLines):
+                if line.GetAttribute("rater") == current_rater:
+                    currentLine = line
+                    break
+            if currentLine is None:
+                statusText = f"No B-line found for rater {current_rater}"
+                slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+                return
+            if self.hasObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified):
+                self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
             self._freeMarkupNode(currentLine)
-            self.syncMarkupsToAnnotations()
-            self.refreshDisplay(updateOverlay=True, updateGui=True)
+            if sync:
+                self.syncMarkupsToAnnotations()
+                self.refreshDisplay(updateOverlay=True, updateGui=True)
 
     def onPointModified(self, caller, event):
         numControlPoints = caller.GetNumberOfControlPoints()
@@ -2439,7 +2496,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         numControlPoints = caller.GetNumberOfControlPoints()
         if numControlPoints >= 2:
             parameterNode.lineBeingPlaced = None
-            self.removeObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined)
+            if self.hasObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined):
+                self.removeObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined)
 
         # Save current markup state to annotations
         self.syncMarkupsToAnnotations()
@@ -2659,25 +2717,33 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Update pleura markups
         for i, entry in enumerate(pleura_entries):
-            node = self.pleuraLines[i]
+            if i >= len(self.pleuraLines):
+                node = self.createMarkupLine("Pleura", entry.get("rater", ""), entry.get("coordinates", []), [1,1,0])
+                self.pleuraLines.append(node)
+            else:
+                node = self.pleuraLines[i]
             self._updateMarkupNode(node, entry)
 
-        # Hide unused pleura markups
+        # free unused pleura markups
         for i in range(len(pleura_entries), len(self.pleuraLines)):
-            displayNode = self.pleuraLines[i].GetDisplayNode()
-            if displayNode:
-                displayNode.SetVisibility(False)
+            node = self.pleuraLines[i]
+            self.pleuraLines.remove(node)
+            self._freeMarkupNode(node)
 
         # Update b-line markups
         for i, entry in enumerate(bline_entries):
-            node = self.bLines[i]
+            if i >= len(self.bLines):
+                node = self.createMarkupLine("B-line", entry.get("rater", ""), entry.get("coordinates", []), [0,1,1])
+                self.bLines.append(node)
+            else:
+                node = self.bLines[i]
             self._updateMarkupNode(node, entry)
 
-        # Hide unused b-line markups
+        # free unused b-line markups
         for i in range(len(bline_entries), len(self.bLines)):
-            displayNode = self.bLines[i].GetDisplayNode()
-            if displayNode:
-                displayNode.SetVisibility(False)
+            node = self.bLines[i]
+            self.bLines.remove(node)
+            self._freeMarkupNode(node)
 
     def drawDepthGuideLine(self, image_size_rows, image_size_cols, depth_ratio=0.5, color=(0, 255, 255), thickness=4, dash_length=20, dash_gap=16):
         """
@@ -3208,10 +3274,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.clearSceneLines()
 
         # Create the required number of nodes
-        for i in range(max_pleura_lines):
-            self.pleuraLines.append(self.createMarkupLine("Pleura", "", [], [1,1,0]))
-        for i in range(max_blines):
-            self.bLines.append(self.createMarkupLine("B-line", "", [], [0,1,1]))
+        for i in range(len(self.freeMarkupNodes), max_pleura_lines):
+            node = self._allocateNewMarkupNode()
+            self.freeMarkupNodes.append(node)
+        for i in range(len(self.freeMarkupNodes), max_blines):
+            node = self._allocateNewMarkupNode()
+            self.freeMarkupNodes.append(node)
 
     def reinitializeMarkupNodesIfNeeded(self):
         """
@@ -3241,10 +3309,11 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         current_pleura = len(self.pleuraLines)
         current_blines = len(self.bLines)
+        current_free = len(self.freeMarkupNodes)
 
         # Only reinitialize if there's a significant difference
-        if (abs(current_pleura - max_pleura_lines) > 2 or
-            abs(current_blines - max_blines) > 2):
+        if (abs(current_pleura - max_pleura_lines - current_free) > 2 or
+            abs(current_blines - max_blines - current_free) > 2):
             self.initializeMarkupNodesFromAnnotations()
 
     def syncMarkupsToAnnotations(self):
@@ -3351,7 +3420,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if not slicer.mrmlScene:
             return
 
-        if self.annotations is None:
+        if self.annotations is None or 'frame_annotations' not in self.annotations:
             logging.debug("No annotations loaded")
             # Hide all markups
             for node in self.pleuraLines:
@@ -3365,15 +3434,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             return
 
         currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())
-
-        if 'frame_annotations' not in self.annotations:
-            logging.debug("No frame annotations found")
-            # Hide all markups
-            for node in self.pleuraLines:
-                node.GetDisplayNode().SetVisibility(False)
-            for node in self.bLines:
-                node.GetDisplayNode().SetVisibility(False)
-            return
 
         frame = next((item for item in self.annotations['frame_annotations']
                      if str(item.get("frame_number")) == str(currentFrameIndex)), None)
