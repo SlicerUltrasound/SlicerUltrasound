@@ -2417,18 +2417,22 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         displayNode.SetVisibility(True)
 
         # Update control points
+        hasPointModifiedObserver = self.hasObserver(node, node.PointModifiedEvent, self.onPointModified)
+        hasPointPositionDefinedObserver = self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        if hasPointModifiedObserver:
+            self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+        if hasPointPositionDefinedObserver:
+            self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+
         node.RemoveAllControlPoints()
         for pt in coordinates:
-            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
             node.AddControlPointWorld(*pt)
             node.Modified()
-            if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+
+        if not hasPointModifiedObserver:
+            self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
+        if not hasPointPositionDefinedObserver:
+            self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
 
     def clearSceneLines(self, sync=False):
         """
@@ -2530,14 +2534,14 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if self.hasObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(caller, caller.PointPositionDefinedEvent, self.onPointPositionDefined)
 
-        # Save current markup state to annotations
-        self.syncMarkupsToAnnotations()
-        # Update overlay display
-        self.refreshDisplay(updateOverlay=True, updateGui=True)
+            # Save current markup state to annotations
+            self.syncMarkupsToAnnotations()
+            # Update overlay display
+            self.refreshDisplay(updateOverlay=True, updateGui=True)
 
-        # Set unsavedChanges when user finishes placing a line (only if not programmatic)
-        if not self._isProgrammaticUpdate:
-            parameterNode.unsavedChanges = True
+            # Set unsavedChanges when user finishes placing a line (only if not programmatic)
+            if not self._isProgrammaticUpdate:
+                parameterNode.unsavedChanges = True
 
     def fanCornersFromSectorLine(self, p1, p2, center, r1, r2):
         op1 = np.array(p1) - np.array(center)
@@ -2611,7 +2615,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Handle the case when the lines are parallel
         if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
-            logging.warning("Left and right lines are parallel")
+            logging.warning(f"Left and right lines are parallel: topLeft: {topLeft}, topRight: {topRight}, bottomLeft: {bottomLeft}, bottomRight: {bottomRight}, leftLineA: {leftLineA}, leftLineB: {leftLineB}, rightLineA: {rightLineA}, rightLineB: {rightLineB}")
             return mask_array
 
         # Compute intersection point of the two lines
@@ -3001,6 +3005,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 coord2 = [0, 0, 0]
                 markupNode.GetNthControlPointPosition(i, coord1)
                 markupNode.GetNthControlPointPosition(i + 1, coord2)
+                # Skip if the two control points are the same, this sometimes happens when we start placing a line
+                if coord1 == coord2:
+                    continue
                 coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
                 coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
                 coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
@@ -3023,6 +3030,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 coord2 = [0, 0, 0]
                 markupNode.GetNthControlPointPosition(i, coord1)
                 markupNode.GetNthControlPointPosition(i + 1, coord2)
+                # Skip if the two control points are the same, this sometimes happens when we start placing a line
+                if coord1 == coord2:
+                    continue
                 coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
                 coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
                 coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
