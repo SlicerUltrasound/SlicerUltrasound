@@ -432,7 +432,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         displayNode.SetLevel(127+value)
 
     def onClearAllLines(self):
-        logging.info('onClearAllLines')
+        logging.debug('onClearAllLines')
         self.logic.clearAllLines()
         ratio = self.logic.updateOverlayVolume()
         if ratio is not None:
@@ -441,7 +441,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.updateGuiFromAnnotations()
 
     def onFramesTableSelectionChanged(self):
-        logging.info('onFramesTableSelectionChanged')
+        logging.debug('onFramesTableSelectionChanged')
 
         selectedRow = self.ui.framesTableWidget.currentRow()
         if (selectedRow == -1):
@@ -463,13 +463,13 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.logic.sequenceBrowserNode.SetSelectedItemNumber(selectedFrameIndex)
 
     def onAddCurrentFrame(self):
-        logging.info('onAddCurrentFrame')
+        logging.debug('onAddCurrentFrame')
         self.logic.syncMarkupsToAnnotations()
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
         self.updateGuiFromAnnotations()
 
     def onRemoveCurrentFrame(self):
-        logging.info('removeCurrentFrame')
+        logging.debug('removeCurrentFrame')
 
         # Get the current frame index from the sequence browser
         if self.logic.sequenceBrowserNode is None:
@@ -482,7 +482,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.updateGuiFromAnnotations()
 
     def onInputDirectorySelected(self):
-        logging.info('onInputDirectorySelected')
+        logging.debug('onInputDirectorySelected')
 
         inputDirectory = self.ui.inputDirectoryButton.directory
         if not inputDirectory:
@@ -517,7 +517,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         :return: True if the input directory was read successfully, False otherwise.
         """
-        logging.info('onReadInputButton')
+        logging.debug('onReadInputButton')
 
         inputDirectory = self.ui.inputDirectoryButton.directory
         if not inputDirectory:
@@ -636,7 +636,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         return True
 
     def onNextButton(self):
-        logging.info('onNextButton')
+        logging.debug('onNextButton')
 
         if self.logic.dicomDf is None:
             self.ui.statusLabel.setText("Please read input directory first")
@@ -809,7 +809,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         return waitDialog
 
     def onPreviousButton(self):
-        logging.info('onPreviousButton')
+        logging.debug('onPreviousButton')
 
         if not self.confirmUnsavedChanges():
             return
@@ -981,7 +981,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         Saves current annotations to json file only
         """
-        logging.info('onSaveButton (save)')
+        logging.debug('onSaveButton (save)')
         success = self.saveAnnotations()
         if not success:
             # Error message already shown by saveAnnotations
@@ -991,7 +991,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         Saves current annotations to json file and loads next sequence.
         """
-        logging.info('onSaveAndLoadNextButton (save and load next scan)')
+        logging.debug('onSaveAndLoadNextButton (save and load next scan)')
 
         success = self.saveAnnotations()
         if success:
@@ -1001,7 +1001,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             return
 
     def onAddLine(self, lineType, checked):
-        logging.info(f"onAddLine -- lineType: {lineType}, checked: {checked}")
+        logging.debug(f"onAddLine -- lineType: {lineType}, checked: {checked}")
 
         if not checked:
             self.removeObservers(self.onEndPlaceMode)
@@ -1038,7 +1038,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # if we are already placing a line, don't place another one - we are being called from an unrelated callback
         if self._parameterNode.lineBeingPlaced:
-            logging.info(f"Already placing a line, ignoring add line")
+            logging.debug(f"Already placing a line, ignoring add line")
             return
 
         selectionNode = slicer.app.applicationLogic().GetSelectionNode()
@@ -1084,7 +1084,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             logging.error(f"No line being placed")
             return
         lineType = self._parameterNode.lineBeingPlaced.GetName()
-        logging.info(f'onEndPlaceMode -- lineType: {lineType}')
+        logging.debug(f'onEndPlaceMode -- lineType: {lineType}')
         # Call the next line using qtimer
         if lineType == "Pleura":
             qt.QTimer.singleShot(0, lambda: self.delayedOnEndPlaceMode("Pleura"))
@@ -1095,7 +1095,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             return
 
     def delayedOnEndPlaceMode(self, lineType):
-        logging.info(f"delayedOnEndPlaceMode -- lineType: {lineType}")
+        logging.debug(f"delayedOnEndPlaceMode -- lineType: {lineType}")
         if lineType == "Pleura":
             self.ui.addPleuraButton.setChecked(False)
         elif lineType == "Bline":
@@ -1118,11 +1118,11 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 self._isUpdatingCurrentFrame = False
 
     def onRemovePleuraLine(self):
-        logging.info('onRemovePleuraLine')
+        logging.debug('onRemovePleuraLine')
         self.logic.removeLastPleuraLine()
 
     def onRemoveLine(self, lineType, _):
-        logging.info(f"onRemoveLine -- lineType: {lineType}")
+        logging.debug(f"onRemoveLine -- lineType: {lineType}")
         if lineType == "Pleura":
             self.logic.removeLastPleuraLine()
         elif lineType == "Bline":
@@ -1183,7 +1183,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.labelsScrollAreaWidgetContents.layout().addWidget(categoryGroupBox)
 
     def onLabelCheckBoxToggled(self, checkBox, checked):
-        logging.info(f"onLabelCheckBoxToggled -- checked: {checked}")
+        logging.debug(f"onLabelCheckBoxToggled -- checked: {checked}")
         if self.logic.annotations is None:
             logging.error("onLabelCheckBoxToggled: No annotations loaded")
             return
@@ -1261,7 +1261,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         return None
 
     def overlayVisibilityToggled(self, checked):
-        logging.info(f"overlayVisibilityToggled -- checked: {checked}")
+        logging.debug(f"overlayVisibilityToggled -- checked: {checked}")
         if checked:
             # Set overlay volume as foreground in slice viewers
             redSliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceCompositeNode()
@@ -2014,7 +2014,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return len(self.dicomDf), annotations_created_count
 
     def removeFrame(self, frameIndex):
-        logging.info(f"removeFrame -- frameIndex: {frameIndex}")
+        logging.debug(f"removeFrame -- frameIndex: {frameIndex}")
         if self.annotations is None:
             logging.warning("removeFrame: No annotations loaded")
             return
@@ -2152,7 +2152,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             for patientUID in patientUIDs:
                 loadedNodeIDs.extend(DICOMUtils.loadPatientByUID(patientUID))
 
-        logging.info(f"Loaded {len(loadedNodeIDs)} nodes")
+        logging.debug(f"Loaded {len(loadedNodeIDs)} nodes")
 
         # Check loadedNodeIDs and collect sequence browser nodes to display them later
         currentSequenceBrowser = None
@@ -3157,7 +3157,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         import time
         startTime = time.time()
-        logging.info('Processing started')
+        logging.debug('Processing started')
 
         # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
         cliParams = {
@@ -3171,7 +3171,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         slicer.mrmlScene.RemoveNode(cliNode)
 
         stopTime = time.time()
-        logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+        logging.debug(f'Processing completed in {stopTime-startTime:.2f} seconds')
 
     def extractAndSetupRaters(self):
         """
