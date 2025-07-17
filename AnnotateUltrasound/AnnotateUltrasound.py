@@ -1038,10 +1038,15 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # if we are already placing a line, don't place another one - we are being called from an unrelated callback
         if self._parameterNode.lineBeingPlaced:
+            logging.info(f"Already placing a line, ignoring add line")
             return
 
         selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        if hasattr(self.logic, "_suppressSync"):
+            self.logic._suppressSync = True
         selectionNode.SetActivePlaceNodeID("")
+        if hasattr(self.logic, "_suppressSync"):
+            self.logic._suppressSync = False
 
         # Create a new markup fiducial node
         rater = self._parameterNode.rater
@@ -1075,9 +1080,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self._parameterNode.unsavedChanges = True
 
     def onEndPlaceMode(self, caller, event):
-        # Call the next line using qtimer
+        if self._parameterNode is None or self._parameterNode.lineBeingPlaced is None:
+            logging.error(f"No line being placed")
+            return
         lineType = self._parameterNode.lineBeingPlaced.GetName()
         logging.info(f'onEndPlaceMode -- lineType: {lineType}')
+        # Call the next line using qtimer
         if lineType == "Pleura":
             qt.QTimer.singleShot(0, lambda: self.delayedOnEndPlaceMode("Pleura"))
         elif lineType == "B-line":
@@ -2324,6 +2332,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return markupNode
 
     def _freeMarkupNode(self, markupNode):
+        # Handle None nodes gracefully
+        if markupNode is None:
+            return
+
         if self.hasObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointModified):
             self.removeObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointModified)
         if self.hasObserver(markupNode, vtk.vtkCommand.ModifiedEvent, self.onPointPositionDefined):
@@ -2331,8 +2343,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         markupNode.RemoveAllControlPoints()
         markupNode.SetName("")
         markupNode.SetAttribute("rater", "")
-        markupNode.GetDisplayNode().SetPropertiesLabelVisibility(False)
-        markupNode.GetDisplayNode().SetSelectedColor([1, 1, 0])
         markupNode.Modified()
         self.freeMarkupNodes.append(markupNode)
 
@@ -2453,6 +2463,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
+            self.pleuraLines.remove(currentLine)
             self._freeMarkupNode(currentLine)
             if sync:
                 self.syncMarkupsToAnnotations()
@@ -2479,6 +2490,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
+            self.bLines.remove(currentLine)
             self._freeMarkupNode(currentLine)
             if sync:
                 self.syncMarkupsToAnnotations()
