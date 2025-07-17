@@ -26,6 +26,7 @@ class TestFreeMarkupNodes(unittest.TestCase):
         # Clear any existing nodes
         self.logic.clearSceneLines()
         self.logic.freeMarkupNodes = []
+        self.logic.useFreeList = True
 
     def tearDown(self):
         """Clean up after each test."""
@@ -249,7 +250,7 @@ class TestFreeMarkupNodes(unittest.TestCase):
         self.logic._freeMarkupNode(node)
 
         # Node should be reset after being freed
-        self.assertEqual(node.GetName(), "")
+        self.assertEqual(node.GetName(), "freeMarkupNode")
         self.assertEqual(node.GetAttribute("rater"), "")
 
     def test_node_visibility_after_reuse(self):
