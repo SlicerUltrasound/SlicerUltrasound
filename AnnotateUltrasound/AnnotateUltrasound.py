@@ -664,6 +664,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Saving settings
         showDepthGuide = self._parameterNode.depthGuideVisible
 
+        # Reset back to showing all lines on new clip
+        self.onShowHideLines(True)
+
         currentDicomDfIndex = self.logic.loadNextSequence()
 
         # Add observer for the new sequence browser node
@@ -1795,11 +1798,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             # Toggle button state
             self.ui.showHideLinesButton.setChecked(not self.ui.showHideLinesButton.isChecked())
             checked = self.ui.showHideLinesButton.isChecked()
-        # Set visibility of all lines
-        for node in self.logic.pleuraLines + self.logic.bLines:
-            displayNode = node.GetDisplayNode()
-            if displayNode:
-                displayNode.SetVisibility(checked)
+        # Toggle visibility of all lines from the logic class
+        self.logic.onShowHideLines(checked)
+
         # Also toggle overlay visibility
         self.ui.overlayVisibilityButton.setChecked(checked)
 
@@ -1836,6 +1837,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.depthGuideMode = 1
         logging.debug(f"Initialized depthGuideMode to {self.depthGuideMode}")
         self.parameterNode = self._getOrCreateParameterNode()
+        self.showHideLines = True
         self.useFreeList = False
 
         # Flag to track when we're doing programmatic updates (to avoid setting unsavedChanges)
@@ -2379,6 +2381,14 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         return markupNode
 
+    def onShowHideLines(self, checked=None):
+        """Toggle visibility of all lines."""
+        self.showHideLines = checked
+        for node in self.pleuraLines + self.bLines:
+            displayNode = node.GetDisplayNode()
+            if displayNode:
+                displayNode.SetVisibility(checked)
+
     def _updateMarkupNode(self, node, entry):
         """
         Update a markup node with the given entry.
@@ -2414,7 +2424,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         else:
             _, color_bline = self.getColorsForRater(rater)
             displayNode.SetSelectedColor(color_bline)
-        displayNode.SetVisibility(True)
+
+        # Set visibility of the line
+        displayNode.SetVisibility(self.showHideLines)
 
         # Update control points
         hasPointModifiedObserver = self.hasObserver(node, node.PointModifiedEvent, self.onPointModified)
