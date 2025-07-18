@@ -221,6 +221,7 @@ class AnnotateUltrasoundWidgetTest:
         # Button should change state
         new_state = self.widget.ui.addPleuraButton.isChecked()
         self.assertNotEqual(initial_state, new_state)
+        self.widget._parameterNode.lineBeingPlaced = None
 
         # Test Add B-line button
         self.widget.onRaterNameChanged()  # Ensure rater is synced before clicking
@@ -231,6 +232,7 @@ class AnnotateUltrasoundWidgetTest:
 
         new_state = self.widget.ui.addBlineButton.isChecked()
         self.assertNotEqual(initial_state, new_state)
+        self.widget._parameterNode.lineBeingPlaced = None
 
         print("✅ Button interactions test passed")
 
@@ -270,7 +272,9 @@ class AnnotateUltrasoundWidgetTest:
             if self.logic.dicomDf is not None:
                 print(f"Logic dicomDf shape: {self.logic.dicomDf.shape}")
         else:
-            print("❌ Parameter node is still None after Read Input click")
+            error_msg = "❌ Parameter node is still None after Read Input click"
+            print(error_msg)
+            raise AssertionError(error_msg)
 
         # Now continue with annotation shortcut and drawing simulation
 
@@ -361,7 +365,10 @@ class AnnotateUltrasoundWidgetTest:
         if pleura_button_after != pleura_button_before:
             print("✅ W key toggled pleura annotation mode")
         else:
-            print("❌ W key did not toggle pleura annotation mode")
+            error_msg = "❌ W key did not toggle pleura annotation mode"
+            print(error_msg)
+            raise AssertionError(error_msg)
+        self.widget._parameterNode.lineBeingPlaced = None
 
         # Test S key (toggle B-line annotation mode)
         widget.ui.addBlineButton.setFocus()
@@ -374,7 +381,10 @@ class AnnotateUltrasoundWidgetTest:
         if bline_button_after != bline_button_before:
             print("✅ S key toggled B-line annotation mode")
         else:
-            print("❌ S key did not toggle B-line annotation mode")
+            error_msg = "❌ S key did not toggle B-line annotation mode"
+            print(error_msg)
+            raise AssertionError(error_msg)
+        self.widget._parameterNode.lineBeingPlaced = None
 
         # Test O key (toggle overlay)
         widget.ui.overlayVisibilityButton.setFocus()
@@ -387,7 +397,9 @@ class AnnotateUltrasoundWidgetTest:
         if overlay_after != overlay_before:
             print("✅ Space key toggled overlay visibility")
         else:
-            print("❌ Space key did not toggle overlay visibility")
+            error_msg = "❌ Space key did not toggle overlay visibility"
+            print(error_msg)
+            raise AssertionError(error_msg)
 
         # Test complete workflow: W key + mouse interaction to draw pleura line
         print("\nTesting complete pleura line drawing workflow...")
@@ -407,7 +419,9 @@ class AnnotateUltrasoundWidgetTest:
         if pleura_count_after > pleura_count_before:
             print("✅ Complete pleura line drawing workflow worked")
         else:
-            print("❌ Complete pleura line drawing workflow failed")
+            error_msg = "❌ Complete pleura line drawing workflow failed"
+            print(error_msg)
+            raise AssertionError(error_msg)
 
         print("Keyboard shortcut test completed")
 
@@ -425,11 +439,11 @@ class AnnotateUltrasoundWidgetTest:
 
         # Test creating a pleura line
         coordinates = [[0, 0, 0], [1, 1, 1]]
-        line = self.logic.createMarkupLine("test_pleura", "test_rater", coordinates)
+        line = self.logic.createMarkupLine("Pleura", "test_rater", coordinates)
         self.assertIsNotNone(line)
 
         # Test creating a B-line
-        line = self.logic.createMarkupLine("test_bline", "test_rater", coordinates)
+        line = self.logic.createMarkupLine("B-line", "test_rater", coordinates)
         self.assertIsNotNone(line)
 
         print("✅ Line creation workflow test passed")
