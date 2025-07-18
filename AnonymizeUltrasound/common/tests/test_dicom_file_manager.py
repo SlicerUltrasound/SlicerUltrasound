@@ -10,7 +10,7 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom import Sequence
 from unittest.mock import Mock, patch
 from pathlib import Path
-import logging
+import json
 
 # Mock slicer module for testing
 sys.modules['slicer'] = Mock()
@@ -29,7 +29,7 @@ class TestDicomFileManager:
     """Test suite for DicomFileManager class"""
 
     PATIENT_ID = "TEST123"
-    PATIENT_NAME = "Test^Patient"
+    PATIENT_NAME = "REMOVE^THIS^PATIENT^NAME"
     STUDY_UID = "1.2.840.113619.2.55.3.604688432.781.1591781234.467"
     SERIES_UID = "1.2.840.113619.2.55.3.604688432.781.1591781234.468"
     SOP_INSTANCE_UID = "1.2.840.113619.2.55.3.604688432.781.1591781234.469"
@@ -53,6 +53,8 @@ class TestDicomFileManager:
     IMPLEMENTATION_CLASS_UID = '1.2.826.0.1.3680043.8.498.1'  # Example UID
     PHYSICAL_DELTA_X = 0.1
     PHYSICAL_DELTA_Y = 0.15
+    INPUT_FOLDER = '/'
+    FILE_NAME = "test_output.dcm"
 
     def create_test_dicom_file(self, **kwargs) -> FileDataset:
         """Create a temporary DICOM file for testing
@@ -186,8 +188,9 @@ class TestDicomFileManager:
 
         # Create dataframe with the test file
         dicom_data = [{
-            'Filepath': filepath,
-            'AnonFilename': 'test_output.dcm',
+            'FilePath': filepath,
+            'RelativePath': os.path.relpath(filepath, temp_dir),
+            'AnonFilename': self.FILE_NAME,
             'PatientUID': self.PATIENT_ID,
             'StudyUID': self.STUDY_UID,
             'StudyDate': self.CONTENT_DATE,
@@ -236,11 +239,12 @@ class TestDicomFileManager:
 
     def test_extract_dicom_info(self, manager, sample_dicom_filepath):
         """Test DICOM info extraction"""
-        result = manager._extract_dicom_info(sample_dicom_filepath, False)
+        result = manager._extract_dicom_info(sample_dicom_filepath, self.INPUT_FOLDER, False)
 
         assert result is not None
-        assert len(result) == 13
-        assert result['Filepath'] == sample_dicom_filepath
+        assert len(result) == 14
+        assert result['FilePath'] == sample_dicom_filepath
+        assert result['RelativePath'] == os.path.relpath(sample_dicom_filepath, self.INPUT_FOLDER)
         assert result['AnonFilename'] == "4657494024_53302064.dcm"
         assert result['PatientUID'] == self.PATIENT_ID
         assert result['StudyUID'] == self.STUDY_UID
@@ -256,12 +260,12 @@ class TestDicomFileManager:
 
     def test_extract_dicom_info_skip_single_frame(self, manager, single_frame_dicom_filepath):
         """Test skipping single frame files when requested"""
-        result = manager._extract_dicom_info(single_frame_dicom_filepath, True)
+        result = manager._extract_dicom_info(single_frame_dicom_filepath, self.INPUT_FOLDER, True)
         assert result is None
 
     def test_extract_dicom_info_non_ultrasound(self, manager, non_ultrasound_dicom_filepath):
         """Test skipping non-ultrasound modalities"""
-        result = manager._extract_dicom_info(non_ultrasound_dicom_filepath, False)
+        result = manager._extract_dicom_info(non_ultrasound_dicom_filepath, self.INPUT_FOLDER, False)
         assert result is None
 
     def test_extract_dicom_info_missing_required_fields(self, manager, temp_dir):
@@ -270,9 +274,38 @@ class TestDicomFileManager:
         filepath = self.save_dicom_file(ds, temp_dir)
         Path(filepath).touch()
 
-        result = manager._extract_dicom_info(filepath, False)
+        result = manager._extract_dicom_info(filepath, self.INPUT_FOLDER, False)
 
         assert result is None
+
+    def test_extract_dicom_info_includes_relative_path(self, manager, temp_dir):
+        # Create a subdirectory structure
+        subdir = os.path.join(temp_dir, "patient1", "study1")
+        os.makedirs(subdir)
+
+        ds = self.create_test_dicom_file()
+        filepath = self.save_dicom_file(ds, subdir)
+
+        result = manager._extract_dicom_info(filepath, temp_dir, False)
+
+        assert result is not None
+        assert 'RelativePath' in result
+        assert result['RelativePath'] == os.path.relpath(filepath, temp_dir)
+        # Should also have FilePath for backward compatibility
+        assert result['FilePath'] == filepath
+
+    def test_extract_dicom_info_with_nested_structure(self, manager, temp_dir):
+        nested_dir = os.path.join(temp_dir, "patient", "study", "series", "instance")
+        os.makedirs(nested_dir)
+
+        ds = self.create_test_dicom_file()
+        filepath = self.save_dicom_file(ds, nested_dir)
+
+        result = manager._extract_dicom_info(filepath, temp_dir, False)
+
+        assert result is not None
+        expected_relative = os.path.join("patient", "study", "series", "instance", os.path.basename(filepath))
+        assert result['RelativePath'] == expected_relative
 
     def test_extract_spacing_info_with_regions(self, manager):
         """Test spacing extraction with ultrasound regions"""
@@ -301,11 +334,12 @@ class TestDicomFileManager:
         filename = manager._generate_filename_from_dicom(dataset)
         assert filename == "4657494024_53302064.dcm"
 
-    def test_create_dataframe(self, manager):
+    def test_create_dataframe(self, manager, temp_dir):
         """Test dataframe creation"""
         dicom_data = [
             {
-                'Filepath': 'file1.dcm',
+                'FilePath': 'file1.dcm',
+                'RelativePath': os.path.relpath('file1.dcm', temp_dir),
                 'ContentDate': '20240101',
                 'ContentTime': '120000',
                 'PatientUID': 'patient123',
@@ -315,7 +349,8 @@ class TestDicomFileManager:
                 'TransducerModel': 'sc6-1s'
             },
             {
-                'Filepath': 'file2.dcm',
+                'FilePath': 'file2.dcm',
+                'RelativePath': os.path.relpath('file2.dcm', temp_dir),
                 'ContentDate': '20240101',
                 'ContentTime': '120100',
                 'PatientUID': 'patient123',
@@ -335,34 +370,65 @@ class TestDicomFileManager:
 
     def test_update_progress_from_output_no_dataframe(self, manager):
         """Test progress update with no dataframe"""
-        result = manager.update_progress_from_output("output")
+        result = manager.update_progress_from_output("output", True)
         assert result is None
 
     def test_update_progress_from_output_all_processed(self, manager, temp_dir):
         """Test progress update when all files are processed"""
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
-            'AnonFilename': ['file1.dcm', 'file2.dcm']
+            'AnonFilename': ['file1.dcm', 'file2.dcm'],
+            'RelativePath': ['file1.dcm', 'file2.dcm']
         })
 
         # Create output files
         for filename in ['file1.dcm', 'file2.dcm']:
             Path(os.path.join(temp_dir, filename)).touch()
 
-        result = manager.update_progress_from_output(temp_dir)
+        result = manager.update_progress_from_output(temp_dir, True)
         assert result is None  # All files processed
 
     def test_update_progress_from_output_partial_processed(self, manager, temp_dir):
         """Test progress update with partially processed files"""
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
-            'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm']
+            'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm'],
+            'RelativePath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
         })
 
         # Create only first file
         Path(os.path.join(temp_dir, 'file1.dcm')).touch()
 
-        result = manager.update_progress_from_output(temp_dir)
+        result = manager.update_progress_from_output(temp_dir, True)
+        assert result == 1
+        assert manager.next_dicom_index == 1
+
+    def test_update_progress_from_output_with_preserve_structure(self, manager, temp_dir):
+        # Create test dataframe with RelativePath
+        manager.dicom_df = pd.DataFrame({
+            'RelativePath': ['patient1/file1.dcm', 'patient2/file2.dcm', 'patient3/file3.dcm']
+        })
+
+        # Create nested directory structure and first file
+        os.makedirs(os.path.join(temp_dir, 'patient1'))
+        Path(os.path.join(temp_dir, 'patient1', 'file1.dcm')).touch()
+
+        result = manager.update_progress_from_output(temp_dir, preserve_directory_structure=True)
+
+        assert result == 1
+        assert manager.next_dicom_index == 1
+
+    def test_update_progress_from_output_with_flatten_structure(self, manager, temp_dir):
+        # Create test dataframe with RelativePath
+        manager.dicom_df = pd.DataFrame({
+            'RelativePath': ['patient1/subdir/file1.dcm', 'patient2/subdir/file2.dcm']
+        })
+
+        # Create flattened file (should be found at root level)
+        Path(os.path.join(temp_dir, 'file1.dcm')).touch()
+
+        result = manager.update_progress_from_output(temp_dir, preserve_directory_structure=False)
+
         assert result == 1
         assert manager.next_dicom_index == 1
 
@@ -370,7 +436,7 @@ class TestDicomFileManager:
         """Test getting file path for instance UID when found"""
         manager.dicom_df = pd.DataFrame({
             'InstanceUID': ['UID1', 'UID2', 'UID3'],
-            'Filepath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
+            'FilePath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
         })
 
         result = manager._get_file_for_instance_uid('UID2')
@@ -380,7 +446,7 @@ class TestDicomFileManager:
         """Test getting file path for instance UID when not found"""
         manager.dicom_df = pd.DataFrame({
             'InstanceUID': ['UID1', 'UID2'],
-            'Filepath': ['file1.dcm', 'file2.dcm']
+            'FilePath': ['file1.dcm', 'file2.dcm']
         })
 
         result = manager._get_file_for_instance_uid('UID999')
@@ -446,7 +512,8 @@ class TestDicomFileManager:
         """Test DICOM index increment with continue progress"""
         # Create test dataframe with multiple files
         manager.dicom_df = pd.DataFrame({
-            'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
+            'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm'],
+            'RelativePath': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
         })
         manager.next_dicom_index = 0
 
@@ -471,6 +538,53 @@ class TestDicomFileManager:
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is False
         assert manager.next_dicom_index == 4
+
+    def test_increment_dicom_index_with_preserve_structure(self, manager, temp_dir):
+        # Create test dataframe
+        manager.dicom_df = pd.DataFrame({
+            'RelativePath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
+        })
+        manager.next_dicom_index = 0
+
+        # Create first and second files in nested input directory
+        os.makedirs(os.path.join(temp_dir, 'dir1'))
+        Path(os.path.join(temp_dir, 'dir1', 'file1.dcm')).touch()
+        os.makedirs(os.path.join(temp_dir, 'dir2'))
+        Path(os.path.join(temp_dir, 'dir2', 'file2.dcm')).touch()
+
+        result = manager._increment_dicom_index(
+            temp_dir,
+            continue_progress=True,
+            preserve_directory_structure=True
+        )
+
+        # Since the output directory is preserved, the next file to be processed is the
+        # third file in the input directory since the first two files already exist in the output directory.
+        assert manager.next_dicom_index == 2
+        assert result is True
+
+    def test_increment_dicom_index_without_preserve_structure(self, manager, temp_dir):
+        # Create test dataframe
+        manager.dicom_df = pd.DataFrame({
+            'RelativePath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
+        })
+
+        # Create first and second files in nested input directory
+        os.makedirs(os.path.join(temp_dir, 'dir1'))
+        Path(os.path.join(temp_dir, 'dir1', 'file1.dcm')).touch()
+        os.makedirs(os.path.join(temp_dir, 'dir2'))
+        Path(os.path.join(temp_dir, 'dir2', 'file2.dcm')).touch()
+
+        result = manager._increment_dicom_index(
+            temp_dir,
+            continue_progress=True,
+            preserve_directory_structure=False
+        )
+
+        # Since the output directory is not preserved, the next file to be processed is the
+        # second file in the input directory since the first file already exists in the output directory.
+        assert manager.next_dicom_index == 1
+        assert result is True
 
     @patch('os.path.exists')
     @patch('shutil.rmtree')
@@ -514,7 +628,7 @@ class TestDicomFileManager:
         mock_dialog.return_value = mock_progress
 
         # Mock extract_dicom_info to return valid data for .dcm files only
-        def extract_side_effect(file_path, skip_single):
+        def extract_side_effect(file_path, input_folder, skip_single_frame):
             if file_path.endswith('.dcm'):
                 return ["mock", "data"]
             return None
@@ -539,7 +653,7 @@ class TestDicomFileManager:
         test_file = os.path.join(temp_dir, "test.dcm")
         Path(test_file).touch()
 
-        result = manager._extract_dicom_info(test_file, False)
+        result = manager._extract_dicom_info(test_file, self.INPUT_FOLDER, False)
         assert result is None
 
     @patch('shutil.rmtree')
@@ -774,9 +888,6 @@ class TestDicomFileManager:
         manager_with_data._set_conformance_attributes(ds, source_ds)
 
         # Check Type 2 elements
-        assert hasattr(ds, 'PatientBirthDate')
-        assert hasattr(ds, 'ReferringPhysicianName')
-        assert hasattr(ds, 'AccessionNumber')
         assert hasattr(ds, 'Laterality')
         assert hasattr(ds, 'InstanceNumber')
         assert hasattr(ds, 'PatientOrientation')
@@ -868,6 +979,9 @@ class TestDicomFileManager:
         # Should be blank strings
         assert ds.PatientName == ""
         assert ds.PatientID == ""
+        assert ds.PatientBirthDate == ""
+        assert ds.ReferringPhysicianName == ""
+        assert ds.AccessionNumber == ""
 
     def test_apply_anonymization_uses_provided_patient_info(self, manager_with_data):
         """Test that _apply_anonymization uses provided patient info when given"""
@@ -882,22 +996,28 @@ class TestDicomFileManager:
 
         assert ds.PatientName == "Anonymous^Patient"
         assert ds.PatientID == "ANON123"
+        assert ds.PatientBirthDate == ""
+        assert ds.ReferringPhysicianName == ""
+        assert ds.AccessionNumber == ""
 
-    def test_set_conformance_attributes_forces_empty_type2_elements(self, manager_with_data):
+    def test_apply_anonymization_forces_empty_type2_elements(self, manager_with_data):
         """Test that Type 2 elements are forced to empty strings regardless of source"""
         ds = pydicom.Dataset()
         source_ds = pydicom.Dataset()
 
+        # Add patient info to source
+        source_ds.PatientName = "Test^Patient"
+        source_ds.PatientID = "TEST123"
         source_ds.PatientBirthDate = "19900101"
         source_ds.ReferringPhysicianName = "Dr. Smith"
         source_ds.AccessionNumber = "ACC123"
 
-        manager_with_data._set_conformance_attributes(ds, source_ds)
+        manager_with_data._apply_anonymization(ds, source_ds)
 
         # Should be empty strings, not copied from source
-        assert ds.PatientBirthDate == ''
-        assert ds.ReferringPhysicianName == ''
-        assert ds.AccessionNumber == ''
+        assert ds.PatientBirthDate == ""
+        assert ds.ReferringPhysicianName == ""
+        assert ds.AccessionNumber == ""
 
     def test_set_conformance_attributes_conditional_elements_only_when_missing(self, manager_with_data):
         """Test that conditional elements are only set when missing from dataset"""
@@ -1149,6 +1269,290 @@ class TestDicomFileManager:
         mock_set_conformance.assert_called_once()
         mock_set_pixel_data.assert_called_once()
         mock_save_file.assert_called_once_with(mock_ds, output_path)
+
+    def test_generate_output_filepath_preserve_structure(self, manager):
+        """Test generate_output_filepath with preserve_directory_structure=True"""
+        output_directory = "/output"
+        relative_path = "patient1/study1/series1/file.dcm"
+
+        result = manager.generate_output_filepath(output_directory, relative_path, True)
+
+        assert result == "/output/patient1/study1/series1/file.dcm"
+
+    def test_generate_output_filepath_flatten_structure(self, manager):
+        """Test generate_output_filepath with preserve_directory_structure=False"""
+        output_directory = "/output"
+        relative_path = "patient1/study1/series1/file.dcm"
+
+        result = manager.generate_output_filepath(output_directory, relative_path, False)
+
+        assert result == "/output/file.dcm"
+
+    def test_generate_output_filepath_simple_filename(self, manager):
+        """Test generate_output_filepath with simple filename"""
+        output_directory = "/output"
+        relative_path = "file.dcm"
+
+        result_preserve = manager.generate_output_filepath(output_directory, relative_path, True)
+        result_flatten = manager.generate_output_filepath(output_directory, relative_path, False)
+
+        assert result_preserve == "/output/file.dcm"
+        assert result_flatten == "/output/file.dcm"
+
+    def test_load_sequence_success_with_sequence_browser(self, manager_with_data):
+        """Test successful load_sequence with sequence browser found"""
+        parameter_node = Mock()
+        mock_sequence_browser = Mock()
+        mock_sequence_browser.IsA.return_value = True
+        temp_dir = "/tmp/test_dir"
+
+        with patch.object(manager_with_data, '_setup_temp_directory', return_value=temp_dir) as mock_setup, \
+            patch.object(manager_with_data, '_load_dicom_from_temp', return_value=['node1', 'node2']) as mock_load, \
+            patch.object(manager_with_data, '_find_sequence_browser', return_value=mock_sequence_browser) as mock_find, \
+            patch.object(manager_with_data, '_increment_dicom_index', return_value=True) as mock_increment, \
+            patch.object(manager_with_data, '_cleanup_temp_directory') as mock_cleanup, \
+            patch('shutil.copy') as mock_copy:
+
+            result = manager_with_data.load_sequence(parameter_node)
+
+            # Verify calls
+            mock_setup.assert_called_once()
+            mock_copy.assert_called_once_with(manager_with_data.dicom_df.iloc[0]['FilePath'], temp_dir)
+            mock_load.assert_called_once_with(temp_dir)
+            mock_find.assert_called_once_with(['node1', 'node2'])
+            mock_increment.assert_called_once_with(None, False, True)
+            mock_cleanup.assert_called_once_with(temp_dir)
+
+            # Verify parameter node is updated
+            assert parameter_node.ultrasoundSequenceBrowser == mock_sequence_browser
+
+            # Verify return value
+            assert result == (0, mock_sequence_browser)
+            assert manager_with_data.current_dicom_index == 0
+
+    def test_load_sequence_no_dataframe(self, manager):
+        """Test load_sequence with no dataframe returns None, None"""
+        parameter_node = Mock()
+
+        result = manager.load_sequence(parameter_node)
+
+        assert result == (None, None)
+
+    def test_load_sequence_none_next_index(self, manager_with_data):
+        """Test load_sequence with None next_dicom_index returns None, None"""
+        parameter_node = Mock()
+        manager_with_data.next_dicom_index = None
+
+        result = manager_with_data.load_sequence(parameter_node)
+
+        assert result == (None, None)
+
+    def test_load_sequence_index_out_of_bounds(self, manager_with_data):
+        """Test load_sequence with next_dicom_index >= dataframe length"""
+        parameter_node = Mock()
+        manager_with_data.next_dicom_index = len(manager_with_data.dicom_df)
+
+        result = manager_with_data.load_sequence(parameter_node)
+
+        assert result == (None, None)
+
+    def test_load_sequence_no_sequence_browser_found(self, manager_with_data):
+        parameter_node = Mock()
+        temp_dir = "/tmp/test_dir"
+
+        with patch.object(manager_with_data, '_setup_temp_directory', return_value=temp_dir), \
+            patch.object(manager_with_data, '_load_dicom_from_temp', return_value=['node1', 'node2']), \
+            patch.object(manager_with_data, '_find_sequence_browser', return_value=None), \
+            patch.object(manager_with_data, '_cleanup_temp_directory'), \
+            patch('shutil.copy'):
+
+            result = manager_with_data.load_sequence(parameter_node)
+
+            assert result == (None, None)
+
+    def test_save_anonymized_dicom_creates_nested_directories(self, manager_with_data, sample_image_array_single_frame, temp_dir):
+        nested_output_path = os.path.join(temp_dir, "patient", "study", "series", "output.dcm")
+
+        manager_with_data.save_anonymized_dicom(sample_image_array_single_frame, nested_output_path)
+
+        # Directory should be created
+        assert os.path.exists(os.path.dirname(nested_output_path))
+        # File should be created
+        assert os.path.exists(nested_output_path)
+
+    def test_create_and_save_dicom_file_creates_directories(self, manager_with_data, temp_dir):
+        ds = pydicom.Dataset()
+        ds.SOPClassUID = self.SOP_CLASS_UID
+        ds.SOPInstanceUID = self.SOP_INSTANCE_UID
+
+        nested_output_path = os.path.join(temp_dir, "deep", "nested", "path", "test.dcm")
+
+        manager_with_data._create_and_save_dicom_file(ds, nested_output_path)
+
+        # Directory should be created
+        assert os.path.exists(os.path.dirname(nested_output_path))
+
+    def test_save_anonymized_dicom_header_creates_json_file(self, manager_with_data, temp_dir):
+        headers_directory = os.path.join(temp_dir, "headers")
+        current_record = manager_with_data.dicom_df.iloc[0]
+        output_filename = "test_output.dcm"
+
+        result = manager_with_data.save_anonymized_dicom_header(
+            current_record,
+            output_filename,
+            headers_directory
+        )
+
+        assert result is not None
+        assert result.endswith("_DICOMHeader.json")
+        assert os.path.exists(result)
+
+    def test_save_anonymized_dicom_header_anonymizes_patient_name(self, manager_with_data, temp_dir):
+        headers_directory = os.path.join(temp_dir, "headers")
+        current_record = manager_with_data.dicom_df.iloc[0]
+        output_filename = "anonymized_patient.dcm"
+
+        # Add patient name to source dataset
+        current_record.DICOMDataset.PatientName = "Original^Patient^Name"
+
+        result_path = manager_with_data.save_anonymized_dicom_header(
+            current_record,
+            output_filename,
+            headers_directory
+        )
+
+        # Read the JSON file and verify anonymization
+        with open(result_path, 'r') as f:
+            header_data = json.load(f)
+
+        assert header_data["Patient's Name"] == "anonymized_patient"
+
+    def test_save_anonymized_dicom_header_anonymizes_birth_date(self, manager_with_data, temp_dir):
+        headers_directory = os.path.join(temp_dir, "headers")
+        current_record = manager_with_data.dicom_df.iloc[0]
+        output_filename = "test.dcm"
+
+        # Add birth date to source dataset
+        current_record.DICOMDataset.PatientBirthDate = "19901215"
+
+        result_path = manager_with_data.save_anonymized_dicom_header(
+            current_record,
+            output_filename,
+            headers_directory
+        )
+
+        # Read the JSON file and verify anonymization
+        with open(result_path, 'r') as f:
+            header_data = json.load(f)
+
+        assert header_data["Patient's Birth Date"] == "19900101"
+
+    def test_save_anonymized_dicom_header_returns_none_when_no_directory(self, manager_with_data):
+        current_record = manager_with_data.dicom_df.iloc[0]
+
+        result = manager_with_data.save_anonymized_dicom_header(
+            current_record,
+            "test.dcm",
+            None
+        )
+
+        assert result is None
+
+    def test_save_anonymized_dicom_header_raises_error_when_no_filename(self, manager_with_data, temp_dir):
+        headers_directory = os.path.join(temp_dir, "headers")
+        current_record = manager_with_data.dicom_df.iloc[0]
+
+        with pytest.raises(ValueError, match="Output filename is required"):
+            manager_with_data.save_anonymized_dicom_header(
+                current_record,
+                "",
+                headers_directory
+            )
+
+        with pytest.raises(ValueError, match="Output filename is required"):
+            manager_with_data.save_anonymized_dicom_header(
+                current_record,
+                "",
+                headers_directory
+            )
+
+    def test_save_anonymized_dicom_header_raises_error_when_no_record(self, manager_with_data, temp_dir):
+        headers_directory = os.path.join(temp_dir, "headers")
+        current_record = None
+
+        with pytest.raises(ValueError, match="Current DICOM record is required"):
+            manager_with_data.save_anonymized_dicom_header(
+                current_record,
+                "test.dcm",
+                headers_directory
+            )
+
+    def test_save_anonymized_dicom_header_flatten_directory_structure(self, manager_with_data, temp_dir):
+        headers_directory = os.path.join(temp_dir, "headers")
+
+        # Create a record with nested relative path
+        current_record = manager_with_data.dicom_df.iloc[0].copy()
+
+        result_path = manager_with_data.save_anonymized_dicom_header(
+            current_record,
+            "test.dcm",
+            headers_directory
+        )
+
+        expected_path = os.path.join(headers_directory, "test_DICOMHeader.json")
+        assert result_path == expected_path
+        assert os.path.exists(result_path)
+
+    def test_convert_to_json_compatible_multival(self, manager):
+        multival = pydicom.multival.MultiValue(str, ['value1', 'value2', 'value3'])
+
+        result = manager._convert_to_json_compatible(multival)
+
+        assert result == ['value1', 'value2', 'value3']
+
+    def test_convert_to_json_compatible_person_name(self, manager):
+        person_name = pydicom.valuerep.PersonName("Last^First^Middle")
+
+        result = manager._convert_to_json_compatible(person_name)
+
+        assert result == "Last^First^Middle"
+
+    def test_convert_to_json_compatible_bytes(self, manager):
+        byte_data = b'test_data'
+
+        result = manager._convert_to_json_compatible(byte_data)
+
+        assert result == 'test_data'
+
+    def test_convert_to_json_compatible_unsupported_type(self, manager):
+        unsupported_obj = object()
+
+        with pytest.raises(TypeError, match="Object of type object is not JSON serializable"):
+            manager._convert_to_json_compatible(unsupported_obj)
+
+    def test_save_anonymized_dicom_with_empty_patient_info_defaults(self, manager_with_data, sample_image_array_single_frame, temp_dir):
+        output_path = os.path.join(temp_dir, "output.dcm")
+
+        # Test with default empty strings
+        manager_with_data.save_anonymized_dicom(sample_image_array_single_frame, output_path)
+
+        # File should be created
+        assert os.path.exists(output_path)
+
+        # Verify the DICOM file has empty patient info
+        saved_ds = pydicom.dcmread(output_path)
+        assert saved_ds.PatientName == ""
+        assert saved_ds.PatientID == ""
+
+    def test_apply_anonymization_with_empty_string_defaults(self, manager_with_data):
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+
+        # Test with default empty strings
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientName == ""
+        assert ds.PatientID == ""
 
 if __name__ == "__main__":
     pytest.main([__file__])

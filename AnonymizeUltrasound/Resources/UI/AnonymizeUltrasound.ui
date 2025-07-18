@@ -294,6 +294,16 @@
       <bool>false</bool>
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_2">
+     <item>
+      <widget class="QCheckBox" name="preserveDirectoryStructureCheckBox">
+        <property name="text">
+        <string>Preserve input directory structure</string>
+        </property>
+        <property name="toolTip">
+        <string>When enabled, output files will maintain the same directory structure as input files. When disabled, all files are saved to the root of the output directory.</string>
+        </property>
+      </widget>
+    </item>
       <item>
        <widget class="QCheckBox" name="enableMaskCacheCheckBox">
         <property name="toolTip">

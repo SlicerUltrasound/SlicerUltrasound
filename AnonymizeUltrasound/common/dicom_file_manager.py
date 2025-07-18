@@ -13,6 +13,8 @@ from PIL import Image
 import io
 import random
 import datetime
+import json
+from pydicom.dataset import FileMetaDataset
 
 class DicomFileManager:
     """
@@ -62,9 +64,20 @@ class DicomFileManager:
 
     # Expected columns in the DICOM files dataframe
     DICOM_DATAFRAME_COLUMNS = [
-        'Filepath', 'AnonFilename', 'PatientUID', 'StudyUID', 'SeriesUID',
-        'InstanceUID', 'PhysicalDeltaX', 'PhysicalDeltaY', 'ContentDate',
-        'ContentTime', 'Patch', 'TransducerModel', 'DICOMDataset'
+        'FilePath',
+        'RelativePath',
+        'AnonFilename',
+        'PatientUID',
+        'StudyUID',
+        'SeriesUID',
+        'InstanceUID',
+        'PhysicalDeltaX',
+        'PhysicalDeltaY',
+        'ContentDate',
+        'ContentTime',
+        'Patch',
+        'TransducerModel',
+        'DICOMDataset',
     ]
 
     PATIENT_ID_HASH_LENGTH = 10
@@ -74,6 +87,7 @@ class DicomFileManager:
 
     def __init__(self):
         self.dicom_df = None
+        self.input_folder = None
         self.next_dicom_index = 0
         self.current_dicom_index = 0
         self._temp_directories = []
@@ -121,7 +135,7 @@ class DicomFileManager:
                         logging.info(f"Skipping non-DICOM file: {file_path}")
                         continue
 
-                    dicom_info = self._extract_dicom_info(file_path, skip_single_frame)
+                    dicom_info = self._extract_dicom_info(file_path, input_folder, skip_single_frame)
                     if dicom_info:
                         dicom_data.append(dicom_info)
 
@@ -133,7 +147,7 @@ class DicomFileManager:
             progress_dialog.close()
 
     def load_sequence(self, parameter_node, output_directory: Optional[str] = None,
-                     continue_progress: bool = False):
+                     continue_progress: bool = False, preserve_directory_structure: bool = True):
         """
         Load next DICOM sequence from the dataframe.
 
@@ -145,7 +159,7 @@ class DicomFileManager:
             parameter_node: Parameter node to store the loaded sequence browser
             output_directory: Optional output directory to check for existing files
             continue_progress: If True, skip files that already exist in output directory
-
+            preserve_directory_structure: If True, the output filepath will be the same as the relative path.
         Returns:
             tuple: (current_dicom_df_index, sequence_browser) where:
                 - current_dicom_df_index: The index of the current DICOM file in the dataframe
@@ -159,7 +173,7 @@ class DicomFileManager:
         temp_dicom_dir = self._setup_temp_directory()
 
         # Copy DICOM file to temporary folder
-        shutil.copy(next_row['Filepath'], temp_dicom_dir)
+        shutil.copy(next_row['FilePath'], temp_dicom_dir)
 
         # Load DICOM using Slicer's DICOM utilities
         loaded_node_ids = self._load_dicom_from_temp(temp_dicom_dir)
@@ -174,7 +188,7 @@ class DicomFileManager:
             return None, None
 
         # Increment index
-        next_index_val = self._increment_dicom_index(output_directory, continue_progress)
+        next_index_val = self._increment_dicom_index(output_directory, continue_progress, preserve_directory_structure)
 
         # Cleanup
         self._cleanup_temp_directory(temp_dicom_dir)
@@ -191,7 +205,7 @@ class DicomFileManager:
         """Get number of instances in dataframe"""
         return len(self.dicom_df) if self.dicom_df is not None else 0
 
-    def _extract_dicom_info(self, file_path: str, skip_single_frame: bool) -> Optional[dict]:
+    def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool) -> Optional[dict]:
         """Extract DICOM information from file
 
         Reads a DICOM file and extracts relevant metadata for ultrasound processing.
@@ -200,6 +214,7 @@ class DicomFileManager:
 
         Args:
             file_path: Path to the DICOM file to process
+            input_folder: Path to the input folder
             skip_single_frame: If True, skip files with less than 2 frames
 
         Returns:
@@ -236,8 +251,12 @@ class DicomFileManager:
             to_patch = physical_delta_x is None or physical_delta_y is None
             transducer_model = self.get_transducer_model(dicom_ds.get('TransducerType', ''))
 
+            # Calculate relative path from input folder
+            relative_path = os.path.relpath(file_path, input_folder)
+
             return {
-                'Filepath': file_path,
+                'FilePath': file_path,
+                'RelativePath': relative_path,
                 'AnonFilename': exp_filename,
                 'PatientUID': patient_uid,
                 'StudyUID': study_uid,
@@ -255,6 +274,18 @@ class DicomFileManager:
         except Exception as e:
             logging.error(f"Failed to read DICOM file {file_path}: {e}")
             return None
+
+    def generate_output_filepath(
+        self, output_directory: str, relative_path: str, preserve_directory_structure: bool) -> str:
+        """
+        Generate output filepath from relative path and output directory.
+        If preserve_directory_structure is True, the output filepath will be the same as the relative path.
+        """
+        if preserve_directory_structure:
+            return os.path.join(output_directory, relative_path)
+        else:
+            filename = os.path.basename(relative_path)
+            return os.path.join(output_directory, filename)
 
     def _extract_spacing_info(self, dicom_ds):
         """Extract physical spacing information from DICOM dataset"""
@@ -332,7 +363,7 @@ class DicomFileManager:
 
         # Sort and reset index
         self.dicom_df = (self.dicom_df
-                         .sort_values(['Filepath', 'ContentDate', 'ContentTime'])
+                         .sort_values(['FilePath', 'ContentDate', 'ContentTime'])
                          .reset_index(drop=True))
 
         # Add series numbers
@@ -348,7 +379,7 @@ class DicomFileManager:
 
         self.next_dicom_index = 0
 
-    def update_progress_from_output(self, output_directory: str) -> Optional[int]:
+    def update_progress_from_output(self, output_directory: str, preserve_directory_structure: bool) -> Optional[int]:
         """Update progress based on existing output files
 
         This method checks which anonymized DICOM files already exist in the output
@@ -358,7 +389,7 @@ class DicomFileManager:
 
         Args:
             output_directory: Directory path where anonymized DICOM files are saved
-
+            preserve_directory_structure: If True, the output filepath will be the same as the relative path.
         Returns:
             int: Number of files already processed (0 if none processed)
             None: If all files have been processed or no dataframe exists
@@ -367,22 +398,23 @@ class DicomFileManager:
             return None
 
         # Create full paths vectorized
-        output_paths = self.dicom_df['AnonFilename'].apply(
-            lambda x: os.path.join(output_directory, x)
+        output_paths = self.dicom_df['RelativePath'].apply(
+            lambda x: self.generate_output_filepath(output_directory, x, preserve_directory_structure)
         )
 
         # Check existence vectorized
         exists_mask = output_paths.apply(os.path.exists)
 
-        # Find first False (first non-existing file)
+        # If all files exist, return None indicating all files have been processed
         if exists_mask.all():
-            return None  # All files processed
+            return None
 
-        first_missing = exists_mask.idxmin() if not exists_mask.all() else len(exists_mask)
+        # Find first False (first non-existing file)
+        first_missing = exists_mask.idxmin()
         num_done = exists_mask[:first_missing].sum()
 
         self.next_dicom_index = num_done
-        return num_done if num_done > 0 else 0
+        return num_done
 
     def _create_progress_dialog(self, message: str, maximum: int) -> qt.QProgressDialog:
         """Create progress dialog"""
@@ -444,7 +476,7 @@ class DicomFileManager:
 
         matching_rows = self.dicom_df[self.dicom_df['InstanceUID'] == instance_uid]
         if not matching_rows.empty:
-            return matching_rows.iloc[0]['Filepath']
+            return matching_rows.iloc[0]['FilePath']
 
         return None
 
@@ -482,19 +514,41 @@ class DicomFileManager:
         return parent
 
     def _increment_dicom_index(self, output_directory: Optional[str] = None,
-                              continue_progress: bool = False) -> bool:
-        """Increment DICOM index, optionally checking for existing output files"""
+                              continue_progress: bool = False, preserve_directory_structure: bool = True) -> bool:
+        """
+        Increment the DICOM index to the next file to be processed.
+
+        This method advances the internal index counter and optionally skips files that already
+        exist in the output directory when continuing from a previous processing session.
+
+        Args:
+            output_directory (Optional[str]): The output directory path where processed files
+                are stored. Required when continue_progress is True.
+            continue_progress (bool): If True, skip files that already exist in the output
+                directory to continue from where processing left off. Defaults to False.
+            preserve_directory_structure (bool): Whether to preserve the original directory
+                structure when generating output file paths. Defaults to True.
+
+        Returns:
+            bool: True if there are more files to process (index is within bounds),
+                    False if all files have been processed or if dicom_df is None.
+
+        Note:
+            This method modifies the internal next_dicom_index counter. When continue_progress
+            is True, it will skip over files that already exist in the output directory.
+        """
         if self.dicom_df is None:
             return False
 
+        # Increment the index to the next file to be processed.
         self.next_dicom_index += 1
 
+        # If continue_progress is True, skip files that already exist in output.
         if continue_progress and output_directory:
-            # Skip files that already exist in output
             while self.next_dicom_index < len(self.dicom_df):
                 row = self.dicom_df.iloc[self.next_dicom_index]
-                expected_filename = row['AnonFilename']
-                output_path = os.path.join(output_directory, expected_filename)
+                output_path = self.generate_output_filepath(
+                    output_directory, row['RelativePath'], preserve_directory_structure)
 
                 if not os.path.exists(output_path):
                     break
@@ -514,15 +568,15 @@ class DicomFileManager:
             logging.warning(f"Failed to cleanup temporary directory {temp_dir}: {e}")
 
     def save_anonymized_dicom(self, image_array: np.ndarray, output_path: str,
-                            new_patient_name: str = None, new_patient_id: str = None) -> None:
+                            new_patient_name: str = '', new_patient_id: str = '') -> None:
         """
         Save image array as anonymized DICOM file.
 
         Args:
             image_array: Numpy array containing image data (frames, height, width, channels)
             output_path: Full path where DICOM file should be saved
-            new_patient_name: Optional new patient name for anonymization
-            new_patient_id: Optional new patient ID for anonymization
+            new_patient_name: New patient name for anonymization
+            new_patient_id: New patient ID for anonymization
         """
         if self.dicom_df is None:
             logging.error("No DICOM dataframe available")
@@ -648,11 +702,14 @@ class DicomFileManager:
             ds.StudyInstanceUID = pydicom.uid.generate_uid()
 
     def _apply_anonymization(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
-                            new_patient_name: str = None, new_patient_id: str = None) -> None:
+                            new_patient_name: str = "", new_patient_id: str = "") -> None:
         """Apply anonymization including patient info and date shifting."""
-        # Set anonymized patient information
+        # Anonymize patient information
         ds.PatientName = new_patient_name if new_patient_name else ""
         ds.PatientID = new_patient_id if new_patient_id else ""
+        ds.PatientBirthDate = ""
+        ds.ReferringPhysicianName = ""
+        ds.AccessionNumber = ""
 
         # Apply date shifting for anonymization
         self._apply_date_shifting(ds, source_ds)
@@ -689,13 +746,6 @@ class DicomFileManager:
 
     def _set_conformance_attributes(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset) -> None:
         """Set required DICOM conformance attributes."""
-        # Add missing required attributes to satisfy DICOM conformance.
-        # Type 2 elements must be present (they can be empty).
-        # https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.2.html
-        ds.PatientBirthDate = ''
-        ds.ReferringPhysicianName = ''
-        ds.AccessionNumber = ''
-
         # Conditional elements: provide empty defaults if unknown.
         if not hasattr(ds, 'Laterality'):
             ds.Laterality = ''
@@ -749,16 +799,16 @@ class DicomFileManager:
             image.save(output, format="JPEG", quality=quality)
             return output.getvalue()
 
-    def _create_and_save_dicom_file(self, ds: pydicom.Dataset, output_path: str) -> None:
+    def _create_and_save_dicom_file(self, ds: pydicom.Dataset, output_filepath: str) -> None:
         """Create file metadata and save DICOM file."""
         # Create file meta information
-        meta = pydicom.Dataset()
+        meta = FileMetaDataset()
         meta.FileMetaInformationGroupLength = 0
         meta.FileMetaInformationVersion = b'\x00\x01'
         meta.MediaStorageSOPClassUID = ds.SOPClassUID
         meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
         meta.ImplementationClassUID = pydicom.uid.generate_uid(None)
-        meta.TransferSyntaxUID = pydicom.uid.JPEGBaseline
+        meta.TransferSyntaxUID = pydicom.uid.JPEGBaseline8Bit
 
         # Create file dataset
         file_ds = pydicom.dataset.FileDataset(None, {}, file_meta=meta, preamble=b"\0" * 128)
@@ -769,9 +819,11 @@ class DicomFileManager:
         file_ds.is_implicit_VR = False
         file_ds.is_little_endian = True
 
-        # Save file
-        file_ds.save_as(output_path)
-        logging.info(f"DICOM generated successfully: {output_path}")
+        # Save file to output path. Create the directories if they don't exist.
+        directory = os.path.dirname(output_filepath)
+        os.makedirs(directory, exist_ok=True)
+        file_ds.save_as(output_filepath)
+        logging.info(f"DICOM generated successfully: {output_filepath}")
 
     def _get_series_number_for_current_instance(self) -> str:
         """Get series number for current instance from dataframe."""
@@ -827,3 +879,93 @@ class DicomFileManager:
         instance_id = str(instance_id).zfill(self.INSTANCE_ID_HASH_LENGTH)
 
         return f"{patient_id}_{instance_id}.dcm", patient_id, instance_id
+
+    def save_anonymized_dicom_header(self, current_dicom_record, output_filename: str, headers_directory: Optional[str] = None) -> Optional[str]:
+        """
+        Save anonymized DICOM header information as a JSON file.
+
+        This method extracts DICOM header information from the current record,
+        applies partial anonymization to sensitive fields, and saves the result
+        as a JSON file alongside the anonymized DICOM file.
+
+        Args:
+            current_dicom_record: Current DICOM record from the dataframe containing
+                                the DICOM dataset and metadata
+            headers_directory: Directory path where header JSON files will be saved.
+                            If None, no header file is created
+            output_filename: Base filename for the output (used for patient name anonymization)
+
+        Returns:
+            str: Full path to the saved JSON header file
+            None: If headers_directory is None or saving fails
+
+        Note:
+            - Creates necessary output directories if they don't exist
+            - Applies partial anonymization to patient name and birth date
+            - Patient name is replaced with the output filename (without extension)
+            - Birth date is truncated to year only with "0101" appended
+            - Uses convertToJsonCompatible for handling DICOM-specific data types
+        """
+        if current_dicom_record is None:
+            raise ValueError("Current DICOM record is required")
+
+        if output_filename is None or output_filename == "":
+            raise ValueError("Output filename is required")
+
+        if headers_directory is None:
+            return None
+
+        if not os.path.exists(headers_directory):
+            os.makedirs(headers_directory)
+
+        dicom_header_filename = output_filename.replace(".dcm", "_DICOMHeader.json")
+        dicom_header_filepath = os.path.join(headers_directory, dicom_header_filename)
+        os.makedirs(os.path.dirname(dicom_header_filepath), exist_ok=True)
+
+        with open(dicom_header_filepath, 'w') as outfile:
+            if self.dicom_df is not None:
+                anonymized_header = self.dicom_header_to_dict(current_dicom_record.DICOMDataset)
+
+                # Anonymize patient name
+                if "Patient's Name" in anonymized_header:
+                    anonymized_header["Patient's Name"] = output_filename.split(".")[0]
+
+                # Partially anonymize birth date
+                if "Patient's Birth Date" in anonymized_header:
+                    anonymized_header["Patient's Birth Date"] = anonymized_header["Patient's Birth Date"][:4] + "0101"
+
+                json.dump(anonymized_header, outfile, default=self._convert_to_json_compatible)
+
+        return dicom_header_filepath
+
+    def _convert_to_json_compatible(self, obj):
+        """
+        Convert DICOM-specific data types to JSON-serializable formats.
+
+        This method handles the conversion of pydicom data types that are not
+        natively JSON-serializable, ensuring that DICOM header information
+        can be properly saved as JSON files.
+
+        Args:
+            obj: Object to convert to JSON-compatible format
+
+        Returns:
+            Converted object in JSON-compatible format:
+            - MultiValue objects are converted to lists
+            - PersonName objects are converted to strings
+            - Bytes objects are decoded using latin-1 encoding
+
+        Raises:
+            TypeError: If the object type is not supported for JSON serialization
+
+        Note:
+            This method is used as the 'default' parameter in json.dump() calls
+            to handle DICOM-specific data types during JSON serialization.
+        """
+        if isinstance(obj, pydicom.multival.MultiValue):
+            return list(obj)
+        if isinstance(obj, pydicom.valuerep.PersonName):
+            return str(obj)
+        if isinstance(obj, bytes):
+            return obj.decode('latin-1')
+        raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
