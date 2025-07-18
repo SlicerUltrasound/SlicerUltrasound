@@ -3505,10 +3505,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             for node in self.bLines:
                 node.GetDisplayNode().SetVisibility(False)
 
-            if frame is None:
-                return
-
-            self._updateMarkupNodesForFrame(frame)
+            if frame is not None:
+                self._updateMarkupNodesForFrame(frame)
         finally:
             slicer.mrmlScene.EndState(slicer.mrmlScene.BatchProcessState)
             # Reset programmatic update flag

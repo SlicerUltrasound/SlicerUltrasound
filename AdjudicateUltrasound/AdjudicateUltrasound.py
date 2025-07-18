@@ -701,20 +701,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
     def selectPreviousVisibleLine(self):
         self._selectLineByFilter(lambda node: True, "previous", "No visible lines in this frame.", "Selected visible line")
 
-    def onShowHideLines(self, checked=None):
-        """Toggle visibility of all lines and overlays."""
-        if checked is None:
-            # Toggle button state
-            self.ui.showHideLinesButton.setChecked(not self.ui.showHideLinesButton.isChecked())
-            checked = self.ui.showHideLinesButton.isChecked()
-        # Set visibility of all lines
-        for node in self.logic.pleuraLines + self.logic.bLines:
-            displayNode = node.GetDisplayNode()
-            if displayNode:
-                displayNode.SetVisibility(checked)
-        # Also toggle overlay visibility
-        self.ui.overlayVisibilityButton.setChecked(checked)
-
     def onResetAllAdjudication(self):
         """Reset all lines in the current frame to unadjudicated status."""
 
@@ -1310,6 +1296,11 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         return markupNode
 
     def _updateMarkupNode(self, node, entry, selectedNodeID):
+        """
+        Override: Update a markup node with the given entry.
+        This is used to update the markup node for the selected rater.
+        """
+
         # Check if node is still valid
         if not node or not slicer.mrmlScene.IsNodePresent(node):
             return
@@ -1372,15 +1363,15 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         displayNode.SetLineThickness(0.25)
         if status == "invalidated":
             showInvalidAndDuplicate = self.parameterNode.showInvalidAndDuplicate if self.parameterNode else True
-            displayNode.SetVisibility(showInvalidAndDuplicate)
+            displayNode.SetVisibility(showInvalidAndDuplicate and self.showHideLines)
             displayNode.SetGlyphTypeFromString("Cross2D")
             displayNode.SetOpacity(0.40)
         elif status == "unadjudicated":
-            displayNode.SetVisibility(True)
+            displayNode.SetVisibility(self.showHideLines)
             if not isSelected:
                 displayNode.SetOpacity(0.65)
         else:  # validated
-            displayNode.SetVisibility(True)
+            displayNode.SetVisibility(self.showHideLines)
             if isSelected:
                 # selected and validated lines are diamonds to differentiate from selected unadjudicated and invalidated lines
                 displayNode.SetGlyphTypeFromString("Diamond2D")
@@ -1393,18 +1384,22 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             displayNode.SetOpacity(1.0)
 
         # Update control points
+        hasPointModifiedObserver = self.hasObserver(node, node.PointModifiedEvent, self.onPointModified)
+        hasPointPositionDefinedObserver = self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        if hasPointModifiedObserver:
+            self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+        if hasPointPositionDefinedObserver:
+            self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+
         node.RemoveAllControlPoints()
         for pt in coordinates:
-            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
             node.AddControlPointWorld(*pt)
             node.Modified()
-            if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+
+        if not hasPointModifiedObserver:
+            self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
+        if not hasPointPositionDefinedObserver:
+            self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
 
     def _updateMarkupNodesForFrame(self, frame):
         """
@@ -1526,6 +1521,9 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
                 coord2 = [0, 0, 0]
                 markupNode.GetNthControlPointPosition(i, coord1)
                 markupNode.GetNthControlPointPosition(i + 1, coord2)
+                # Skip if the two control points are the same, this sometimes happens when we start placing a line
+                if coord1 == coord2:
+                    continue
                 coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
                 coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
                 coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
@@ -1559,6 +1557,9 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
                 coord2 = [0, 0, 0]
                 markupNode.GetNthControlPointPosition(i, coord1)
                 markupNode.GetNthControlPointPosition(i + 1, coord2)
+                # Skip if the two control points are the same, this sometimes happens when we start placing a line
+                if coord1 == coord2:
+                    continue
                 coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
                 coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
                 coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
@@ -1625,42 +1626,6 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
-
-    def extractAndSetupRaters(self):
-        """
-        Extract all unique raters from the loaded annotations and set up selectedRaters.
-        This centralizes the rater extraction logic to avoid duplication.
-        """
-        # Extract all unique raters from the loaded annotations
-        seenRaters = []
-        if self.annotations and 'frame_annotations' in self.annotations:
-            for frame in self.annotations['frame_annotations']:
-                for line_type in ['pleura_lines', 'b_lines']:
-                    for line in frame.get(line_type, []):
-                        rater = line.get('rater')
-                        if rater and rater not in seenRaters:
-                            seenRaters.append(rater)
-
-        parameterNode = self.getParameterNode()
-        current_rater = parameterNode.rater.strip().lower()
-        if current_rater in seenRaters:
-            seenRaters.remove(current_rater)
-        # Remove __selected_node__ if it exists (to avoid duplicates)
-        if "__selected_node__" in seenRaters:
-            seenRaters.remove("__selected_node__")
-        # Remove __adjudicated_node__ if it exists (to avoid duplicates)
-        if "__adjudicated_node__" in seenRaters:
-            seenRaters.remove("__adjudicated_node__")
-        # Remove current_rater if it exists (to avoid duplicates)
-        if current_rater in seenRaters:
-            seenRaters.remove(current_rater)
-        # Now build the list: current_rater, __selected_node__, __adjudicated_node__ then sorted rest
-        # we need to add __selected_node__, __adjudicated_node__ to the list to ensure that the selected line is always visible and
-        # uses a different color than the other lines
-        self.seenRaters = [current_rater, "__selected_node__", "__adjudicated_node__"] + sorted(seenRaters)
-        # Select all real raters by default (exclude __selected_node__)
-        self.realRaters = [r for r in self.seenRaters if r != "__selected_node__" and r != "__adjudicated_node__"]
-        self.setSelectedRaters(set(self.realRaters))
 
     def syncMarkupsToAnnotations(self):
         """
@@ -1765,7 +1730,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         if not slicer.mrmlScene:
             return
 
-        if self.annotations is None:
+        if self.annotations is None  or 'frame_annotations' not in self.annotations:
             logging.debug("syncAnnotationsToMarkups (adjudicate): No annotations loaded")
             # Hide all markups
             for node in self.pleuraLines:
@@ -1784,19 +1749,6 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
         currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())
 
-        if 'frame_annotations' not in self.annotations:
-            logging.debug("No frame annotations found")
-            # Hide all markups
-            for node in self.pleuraLines:
-                displayNode = node.GetDisplayNode()
-                if displayNode:
-                    displayNode.SetVisibility(False)
-            for node in self.bLines:
-                displayNode = node.GetDisplayNode()
-                if displayNode:
-                    displayNode.SetVisibility(False)
-            return
-
         frame = next((item for item in self.annotations['frame_annotations']
                      if str(item.get("frame_number")) == str(currentFrameIndex)), None)
 
@@ -1806,19 +1758,18 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         # Batch scene updates using StartState/EndState
         slicer.mrmlScene.StartState(slicer.mrmlScene.BatchProcessState)
         try:
-            if frame is None:
-                # Hide all markups if no frame data
-                for node in self.pleuraLines:
-                    displayNode = node.GetDisplayNode()
-                    if displayNode:
-                        displayNode.SetVisibility(False)
-                for node in self.bLines:
-                    displayNode = node.GetDisplayNode()
-                    if displayNode:
-                        displayNode.SetVisibility(False)
-                return
+            # Hide all markups if no frame data
+            for node in self.pleuraLines:
+                displayNode = node.GetDisplayNode()
+                if displayNode:
+                    displayNode.SetVisibility(False)
+            for node in self.bLines:
+                displayNode = node.GetDisplayNode()
+                if displayNode:
+                    displayNode.SetVisibility(False)
 
-            self._updateMarkupNodesForFrame(frame)
+            if frame is not None:
+                self._updateMarkupNodesForFrame(frame)
         finally:
             slicer.mrmlScene.EndState(slicer.mrmlScene.BatchProcessState)
             # Reset programmatic update flag
@@ -1826,7 +1777,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
     def refreshDisplay(self, updateOverlay=True, updateGui=True):
         """
-        Central method to refresh the display after any changes.
+        Override: Central method to refresh the display after any changes.
         This ensures consistent updates across all UI elements.
         """
         parameterNode = self.getParameterNode()
@@ -1848,18 +1799,6 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             except RuntimeError:
                 # Widget not initialized yet, skip GUI update
                 pass
-
-    def updateDisplayForRaterChange(self):
-        """
-        Specialized method for when rater selection changes.
-        This ensures the display is updated to show/hide the correct lines.
-        Overridden to handle adjudication-specific logic.
-        """
-        # Sync annotations to markups (this respects selectedRaters)
-        self.syncAnnotationsToMarkups()
-
-        # Refresh display
-        self.refreshDisplay(updateOverlay=True, updateGui=True)
 
 #
 # Register the module
