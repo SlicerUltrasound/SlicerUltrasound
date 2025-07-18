@@ -53,11 +53,13 @@ class AdjudicateUltrasound(annotate.AnnotateUltrasound):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent.title = "Adjudicate Ultrasound"
+        icon_path = os.path.join(os.path.dirname(__file__), 'Resources', 'Icons', 'AdjudicateUltrasound.png')
+        self.parent.icon = qt.QIcon(icon_path)
         self.parent.categories = ["Ultrasound"]
         self.parent.dependencies = []
         self.parent.contributors = ["Tamas Ungi (Queen's University)"]
         self.parent.helpText = f"""
-This module facilitates the process of creating segmentations of B-lines and the pleura in series of B-mode lung ultrasound videos.<br><br>
+This module facilitates the process of adjudicating segmentations of B-lines and the pleura in series of B-mode lung ultrasound videos.<br><br>
 
 See more information in <a href="https://github.com/SlicerUltrasound/SlicerUltrasound/blob/main/README.md">README</a> <a href="https://github.com/SlicerUltrasound/SlicerUltrasound/tree/main/AdjudicateUltrasound">Source Code</a>.
 """

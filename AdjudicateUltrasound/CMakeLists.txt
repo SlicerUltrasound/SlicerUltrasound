@@ -9,7 +9,6 @@ set(MODULE_PYTHON_SCRIPTS
 
 set(MODULE_ICON_PNGS
   Resources/Icons/AdjudicateUltrasound.png
-  "${CMAKE_CURRENT_SOURCE_DIR}/../AnnotateUltrasound/Resources/Icons/AnnotateUltrasound.png"
   "${CMAKE_CURRENT_SOURCE_DIR}/../AnnotateUltrasound/Resources/Icons/blueAdd.png"
   "${CMAKE_CURRENT_SOURCE_DIR}/../AnnotateUltrasound/Resources/Icons/blueEye.png"
   "${CMAKE_CURRENT_SOURCE_DIR}/../AnnotateUltrasound/Resources/Icons/blueFastForward.png"
