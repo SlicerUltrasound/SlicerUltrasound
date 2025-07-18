@@ -229,9 +229,11 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
                 else:
                     btn.clicked.connect(method)
 
-        # Move adjudication-related widgets out of raterColorsCollapsibleButton and into their own layout
-        # Find the parent layout containing raterColorsCollapsibleButton
-        parentLayout = self.ui.raterColorsCollapsibleButton.parent().layout()
+        # Move adjudication-related widgets out of workflowCollapsibleButton and into their own layout
+        # Find the parent layout containing workflowCollapsibleButton
+        raterNameLabel = self.ui.raterNameLabel
+        raterNameLabel.setText("Adjudicator:")
+        parentLayout = self.ui.workflowCollapsibleButton.parent().layout()
         # Only create if not already present
         if not hasattr(self, "_adjudicationToolsWidget") or self._adjudicationToolsWidget is None:
             self._adjudicationShortcuts = []
@@ -278,9 +280,10 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             adjudicationToolsLayout.addWidget(self.showInvalidatedCheckBox)
 
             self._adjudicationToolsWidget.setLayout(adjudicationToolsLayout)
-            # Insert below raterColorsCollapsibleButton
-            index = parentLayout.indexOf(self.ui.raterColorsCollapsibleButton)
+            # Insert below workflowCollapsibleButton
+            index = parentLayout.indexOf(self.ui.workflowCollapsibleButton)
             parentLayout.insertWidget(index + 1, self._adjudicationToolsWidget)
+
 
         # After UI and logic setup, create adjudication shortcuts
         self.connectKeyboardShortcuts()
@@ -303,6 +306,11 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
 
         super().cleanup()
 
+    def onRaterNameChanged(self):
+        if self._parameterNode:
+            self._parameterNode.rater = self.ui.raterName.text.strip().lower()
+            statusText = f"Adjudicator name changed to {self._parameterNode.rater}"
+            slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
 
     # These functions are used to handle clicks on the red view when selecting lines by clicking on the red view
     # near the line to be selected.
@@ -423,6 +431,37 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self.logic.syncAnnotationsToMarkups()
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
 
+    def findNextUnlabeledScan(self):
+        """
+        Find the index of the next unadjudicated scan in the DICOM dataframe.
+        :return: Index of the next unadjudicated scan or None if no such scan is found.
+        """
+        if self.logic.dicomDf is None:
+            return None
+
+        for idx in range(self.logic.nextDicomDfIndex, len(self.logic.dicomDf)):
+            inputDirectory = self.logic.dicomDf.iloc[idx]['InputDirectory']
+            dcm_filepath = self.logic.dicomDf.iloc[idx]['Filepath']
+            base_name = os.path.splitext(os.path.basename(dcm_filepath))[0]
+            adjudication_file = os.path.join(inputDirectory, f"{base_name}.adjudication.json")
+
+            # Check if the annotation file exists
+            if not os.path.exists(adjudication_file):
+                # File doesn't exist, so this scan is unlabeled
+                return idx
+
+            try:
+                with open(adjudication_file, 'r') as f:
+                    annotations = json.load(f)
+                    # Check if frame annotations exist and are empty
+                    if 'frame_annotations' not in annotations or not annotations['frame_annotations']:
+                        return idx
+            except Exception as e:
+                logging.error(f"Error reading annotations file {adjudication_file}: {e}")
+                # If there's an error reading the file, treat it as unlabeled
+                return idx
+
+        return None
 
     def saveUserSettings(self):
         settings = qt.QSettings()

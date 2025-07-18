@@ -163,11 +163,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Shortcuts will be initialized in initializeShortcuts()
 
-        self.raterNameDebounceTimer = qt.QTimer()
-        self.raterNameDebounceTimer.setSingleShot(True)
-        self.raterNameDebounceTimer.setInterval(300)  # ms of idle time before triggering
-        self.raterNameDebounceTimer.timeout.connect(self.onRaterNameChanged)
-
     def initializeShortcuts(self):
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutW.setKey(qt.QKeySequence('W'))
@@ -374,6 +369,12 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.showPleuraPercentageCheckBox.setChecked(showPleuraPercentage.lower() == 'true')
         self.ui.raterName.setText(slicer.app.settings().value("AnnotateUltrasound/Rater", ""))
         self.ui.raterName.returnPressed.connect(self.onRaterNameChanged)
+        self.raterNameDebounceTimer = qt.QTimer()
+        self.raterNameDebounceTimer.setSingleShot(True)
+        self.raterNameDebounceTimer.setInterval(300)  # ms of idle time before triggering
+        self.raterNameDebounceTimer.timeout.connect(self.onRaterNameChanged)
+        self.ui.raterName.textChanged.connect(lambda: self.raterNameDebounceTimer.start())
+
         self.ui.showPleuraPercentageCheckBox.connect('toggled(bool)', self.saveUserSettings)
         self.ui.depthGuideCheckBox.toggled.connect(self.onDepthGuideToggled)
 
@@ -1291,7 +1292,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
     def onRaterNameChanged(self):
         if self._parameterNode:
-            self._parameterNode.rater = self.ui.raterName.text.strip()
+            self._parameterNode.rater = self.ui.raterName.text.strip().lower()
+            statusText = f"Rater name changed to {self._parameterNode.rater}"
+            slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
 
     def cleanup(self) -> None:
         """
