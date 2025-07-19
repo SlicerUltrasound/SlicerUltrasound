@@ -20,6 +20,7 @@ include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
 # Extension modules
+add_subdirectory(AdjudicateUltrasound)
 add_subdirectory(AnonymizeUltrasound)
 add_subdirectory(AnnotateUltrasound)
 add_subdirectory(MmodeAnalysis)
