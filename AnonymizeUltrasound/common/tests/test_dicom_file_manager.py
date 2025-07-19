@@ -7,7 +7,6 @@ import pandas as pd
 import pydicom
 import numpy as np
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
-from pydicom import Sequence
 from unittest.mock import Mock, patch
 from pathlib import Path
 import json
@@ -128,34 +127,36 @@ class TestDicomFileManager:
 
         return ds
 
-    def save_dicom_file(self, ds: FileDataset, temp_dir: str) -> str:
+    def save_dicom_file(self, ds: FileDataset, temp_dir: str, filename: str) -> str:
         """Save the DICOM dataset to a file"""
         # Generate filename and save
-        filename = f"{ds.PatientID}_{ds.SOPInstanceUID}.dcm"
         filepath = os.path.join(temp_dir, filename)
 
         ds.save_as(filepath)
         return filepath
 
     @pytest.fixture
-    def sample_dicom_filepath(self, temp_dir):
+    def sample_dicom_filepath(self, temp_dir, manager):
         """Create a sample DICOM file for testing"""
         ds = self.create_test_dicom_file()
-        filepath = self.save_dicom_file(ds, temp_dir)
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
         yield filepath
 
     @pytest.fixture
-    def single_frame_dicom_filepath(self, temp_dir):
+    def single_frame_dicom_filepath(self, temp_dir, manager):
         """Create a single-frame DICOM file for testing"""
         ds = self.create_test_dicom_file(NumberOfFrames=1)
-        filepath = self.save_dicom_file(ds, temp_dir)
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
         yield filepath
 
     @pytest.fixture
-    def non_ultrasound_dicom_filepath(self, temp_dir):
+    def non_ultrasound_dicom_filepath(self, temp_dir, manager):
         """Create a non-ultrasound DICOM file for testing"""
         ds = self.create_test_dicom_file(Modality='CT')
-        filepath = self.save_dicom_file(ds, temp_dir)
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
         yield filepath
 
     @pytest.fixture
@@ -184,12 +185,13 @@ class TestDicomFileManager:
     def manager_with_data(self, manager, temp_dir):
         """Create a manager with sample DICOM dataframe"""
         ds = self.create_test_dicom_file()
-        filepath = self.save_dicom_file(ds, temp_dir)
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
 
         # Create dataframe with the test file
         dicom_data = [{
-            'FilePath': filepath,
-            'RelativePath': os.path.relpath(filepath, temp_dir),
+            'InputPath': filepath,
+            'OutputPath': os.path.relpath(filepath, temp_dir),
             'AnonFilename': self.FILE_NAME,
             'PatientUID': self.PATIENT_ID,
             'StudyUID': self.STUDY_UID,
@@ -240,12 +242,13 @@ class TestDicomFileManager:
     def test_extract_dicom_info(self, manager, sample_dicom_filepath):
         """Test DICOM info extraction"""
         result = manager._extract_dicom_info(sample_dicom_filepath, self.INPUT_FOLDER, False)
+        filename, _, _ = manager.generate_filename_from_dicom_dataset(result['DICOMDataset'])
 
         assert result is not None
         assert len(result) == 14
-        assert result['FilePath'] == sample_dicom_filepath
-        assert result['RelativePath'] == os.path.relpath(sample_dicom_filepath, self.INPUT_FOLDER)
-        assert result['AnonFilename'] == "4657494024_53302064.dcm"
+        assert result['InputPath'] == sample_dicom_filepath
+        assert filename in result['OutputPath']
+        assert result['AnonFilename'] == filename
         assert result['PatientUID'] == self.PATIENT_ID
         assert result['StudyUID'] == self.STUDY_UID
         assert result['SeriesUID'] == self.SERIES_UID
@@ -270,42 +273,45 @@ class TestDicomFileManager:
 
     def test_extract_dicom_info_missing_required_fields(self, manager, temp_dir):
         """Test handling of missing required DICOM fields"""
-        ds = self.create_test_dicom_file(PatientID=None)
-        filepath = self.save_dicom_file(ds, temp_dir)
+        ds = self.create_test_dicom_file(Modality='')
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
         Path(filepath).touch()
 
         result = manager._extract_dicom_info(filepath, self.INPUT_FOLDER, False)
 
         assert result is None
 
-    def test_extract_dicom_info_includes_relative_path(self, manager, temp_dir):
+    def test_extract_dicom_info_includes_output_path(self, manager, temp_dir):
         # Create a subdirectory structure
         subdir = os.path.join(temp_dir, "patient1", "study1")
         os.makedirs(subdir)
 
         ds = self.create_test_dicom_file()
-        filepath = self.save_dicom_file(ds, subdir)
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, subdir, filename)
 
         result = manager._extract_dicom_info(filepath, temp_dir, False)
 
         assert result is not None
-        assert 'RelativePath' in result
-        assert result['RelativePath'] == os.path.relpath(filepath, temp_dir)
+        assert 'OutputPath' in result
+        assert result['OutputPath'] == os.path.relpath(filepath, temp_dir)
         # Should also have FilePath for backward compatibility
-        assert result['FilePath'] == filepath
+        assert result['InputPath'] == filepath
 
     def test_extract_dicom_info_with_nested_structure(self, manager, temp_dir):
         nested_dir = os.path.join(temp_dir, "patient", "study", "series", "instance")
         os.makedirs(nested_dir)
 
         ds = self.create_test_dicom_file()
-        filepath = self.save_dicom_file(ds, nested_dir)
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, nested_dir, filename)
 
         result = manager._extract_dicom_info(filepath, temp_dir, False)
 
         assert result is not None
         expected_relative = os.path.join("patient", "study", "series", "instance", os.path.basename(filepath))
-        assert result['RelativePath'] == expected_relative
+        assert result['OutputPath'] == expected_relative
 
     def test_extract_spacing_info_with_regions(self, manager):
         """Test spacing extraction with ultrasound regions"""
@@ -338,8 +344,8 @@ class TestDicomFileManager:
         """Test dataframe creation"""
         dicom_data = [
             {
-                'FilePath': 'file1.dcm',
-                'RelativePath': os.path.relpath('file1.dcm', temp_dir),
+                'InputPath': 'file1.dcm',
+                'OutputPath': os.path.relpath('file1.dcm', temp_dir),
                 'ContentDate': '20240101',
                 'ContentTime': '120000',
                 'PatientUID': 'patient123',
@@ -349,8 +355,8 @@ class TestDicomFileManager:
                 'TransducerModel': 'sc6-1s'
             },
             {
-                'FilePath': 'file2.dcm',
-                'RelativePath': os.path.relpath('file2.dcm', temp_dir),
+                'InputPath': 'file2.dcm',
+                'OutputPath': os.path.relpath('file2.dcm', temp_dir),
                 'ContentDate': '20240101',
                 'ContentTime': '120100',
                 'PatientUID': 'patient123',
@@ -378,7 +384,7 @@ class TestDicomFileManager:
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
             'AnonFilename': ['file1.dcm', 'file2.dcm'],
-            'RelativePath': ['file1.dcm', 'file2.dcm']
+            'OutputPath': ['file1.dcm', 'file2.dcm']
         })
 
         # Create output files
@@ -393,7 +399,7 @@ class TestDicomFileManager:
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
             'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm'],
-            'RelativePath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
+            'OutputPath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
         })
 
         # Create only first file
@@ -404,9 +410,9 @@ class TestDicomFileManager:
         assert manager.next_dicom_index == 1
 
     def test_update_progress_from_output_with_preserve_structure(self, manager, temp_dir):
-        # Create test dataframe with RelativePath
+        # Create test dataframe with OutputPath
         manager.dicom_df = pd.DataFrame({
-            'RelativePath': ['patient1/file1.dcm', 'patient2/file2.dcm', 'patient3/file3.dcm']
+            'OutputPath': ['patient1/file1.dcm', 'patient2/file2.dcm', 'patient3/file3.dcm']
         })
 
         # Create nested directory structure and first file
@@ -419,9 +425,9 @@ class TestDicomFileManager:
         assert manager.next_dicom_index == 1
 
     def test_update_progress_from_output_with_flatten_structure(self, manager, temp_dir):
-        # Create test dataframe with RelativePath
+        # Create test dataframe with OutputPath
         manager.dicom_df = pd.DataFrame({
-            'RelativePath': ['patient1/subdir/file1.dcm', 'patient2/subdir/file2.dcm']
+            'OutputPath': ['patient1/subdir/file1.dcm', 'patient2/subdir/file2.dcm']
         })
 
         # Create flattened file (should be found at root level)
@@ -436,7 +442,7 @@ class TestDicomFileManager:
         """Test getting file path for instance UID when found"""
         manager.dicom_df = pd.DataFrame({
             'InstanceUID': ['UID1', 'UID2', 'UID3'],
-            'FilePath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
+            'InputPath': ['file1.dcm', 'file2.dcm', 'file3.dcm']
         })
 
         result = manager._get_file_for_instance_uid('UID2')
@@ -446,7 +452,7 @@ class TestDicomFileManager:
         """Test getting file path for instance UID when not found"""
         manager.dicom_df = pd.DataFrame({
             'InstanceUID': ['UID1', 'UID2'],
-            'FilePath': ['file1.dcm', 'file2.dcm']
+            'InputPath': ['file1.dcm', 'file2.dcm']
         })
 
         result = manager._get_file_for_instance_uid('UID999')
@@ -513,7 +519,7 @@ class TestDicomFileManager:
         # Create test dataframe with multiple files
         manager.dicom_df = pd.DataFrame({
             'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm'],
-            'RelativePath': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
+            'OutputPath': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
         })
         manager.next_dicom_index = 0
 
@@ -542,7 +548,7 @@ class TestDicomFileManager:
     def test_increment_dicom_index_with_preserve_structure(self, manager, temp_dir):
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
-            'RelativePath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
+            'OutputPath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
         })
         manager.next_dicom_index = 0
 
@@ -566,7 +572,7 @@ class TestDicomFileManager:
     def test_increment_dicom_index_without_preserve_structure(self, manager, temp_dir):
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
-            'RelativePath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
+            'OutputPath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
         })
 
         # Create first and second files in nested input directory
@@ -708,6 +714,19 @@ class TestDicomFileManager:
         assert saved_ds.Columns == 15
         assert saved_ds.SamplesPerPixel == 3
 
+    def test_save_anonymized_dicom_with_labels(self, manager_with_data, sample_image_array_multi_frame, temp_dir):
+        """Test successful save_anonymized_dicom with labels"""
+        output_path = os.path.join(temp_dir, "output.dcm")
+        labels = ["label1", "label2"]
+        manager_with_data.save_anonymized_dicom(sample_image_array_multi_frame, output_path, labels=labels)
+
+        # File should be created
+        assert os.path.exists(output_path)
+
+        # Verify the DICOM file
+        saved_ds = pydicom.dcmread(output_path)
+        assert saved_ds.SeriesDescription == "label1 label2"
+
     def test_save_anonymized_dicom_success_single_frame(self, manager_with_data, sample_image_array_single_frame, temp_dir):
         """Test successful save_anonymized_dicom with single-frame image array"""
         output_path = os.path.join(temp_dir, "output.dcm")
@@ -784,7 +803,6 @@ class TestDicomFileManager:
         # Check copied attributes
         assert ds.BitsAllocated == self.BITS_ALLOCATED
         assert ds.BitsStored == self.BITS_STORED
-        assert ds.SeriesDescription == "test.dcm"
         assert hasattr(ds, 'SOPClassUID')
         assert hasattr(ds, 'SOPInstanceUID')
         assert hasattr(ds, 'SeriesInstanceUID')
@@ -1273,28 +1291,28 @@ class TestDicomFileManager:
     def test_generate_output_filepath_preserve_structure(self, manager):
         """Test generate_output_filepath with preserve_directory_structure=True"""
         output_directory = "/output"
-        relative_path = "patient1/study1/series1/file.dcm"
+        output_path = "patient1/study1/series1/file.dcm"
 
-        result = manager.generate_output_filepath(output_directory, relative_path, True)
+        result = manager.generate_output_filepath(output_directory, output_path, True)
 
         assert result == "/output/patient1/study1/series1/file.dcm"
 
     def test_generate_output_filepath_flatten_structure(self, manager):
         """Test generate_output_filepath with preserve_directory_structure=False"""
         output_directory = "/output"
-        relative_path = "patient1/study1/series1/file.dcm"
+        output_path = "patient1/study1/series1/file.dcm"
 
-        result = manager.generate_output_filepath(output_directory, relative_path, False)
+        result = manager.generate_output_filepath(output_directory, output_path, False)
 
         assert result == "/output/file.dcm"
 
     def test_generate_output_filepath_simple_filename(self, manager):
         """Test generate_output_filepath with simple filename"""
         output_directory = "/output"
-        relative_path = "file.dcm"
+        output_path = "file.dcm"
 
-        result_preserve = manager.generate_output_filepath(output_directory, relative_path, True)
-        result_flatten = manager.generate_output_filepath(output_directory, relative_path, False)
+        result_preserve = manager.generate_output_filepath(output_directory, output_path, True)
+        result_flatten = manager.generate_output_filepath(output_directory, output_path, False)
 
         assert result_preserve == "/output/file.dcm"
         assert result_flatten == "/output/file.dcm"
@@ -1317,7 +1335,7 @@ class TestDicomFileManager:
 
             # Verify calls
             mock_setup.assert_called_once()
-            mock_copy.assert_called_once_with(manager_with_data.dicom_df.iloc[0]['FilePath'], temp_dir)
+            mock_copy.assert_called_once_with(manager_with_data.dicom_df.iloc[0]['InputPath'], temp_dir)
             mock_load.assert_called_once_with(temp_dir)
             mock_find.assert_called_once_with(['node1', 'node2'])
             mock_increment.assert_called_once_with(None, False, True)

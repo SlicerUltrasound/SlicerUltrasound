@@ -64,8 +64,8 @@ class DicomFileManager:
 
     # Expected columns in the DICOM files dataframe
     DICOM_DATAFRAME_COLUMNS = [
-        'FilePath',
-        'RelativePath',
+        'InputPath',
+        'OutputPath',
         'AnonFilename',
         'PatientUID',
         'StudyUID',
@@ -173,7 +173,7 @@ class DicomFileManager:
         temp_dicom_dir = self._setup_temp_directory()
 
         # Copy DICOM file to temporary folder
-        shutil.copy(next_row['FilePath'], temp_dicom_dir)
+        shutil.copy(next_row['InputPath'], temp_dicom_dir)
 
         # Load DICOM using Slicer's DICOM utilities
         loaded_node_ids = self._load_dicom_from_temp(temp_dicom_dir)
@@ -245,19 +245,19 @@ class DicomFileManager:
                 return None
 
             physical_delta_x, physical_delta_y = self._extract_spacing_info(dicom_ds)
-            exp_filename = self._generate_filename_from_dicom(dicom_ds)
+            anon_filename = self._generate_filename_from_dicom(dicom_ds)
             content_date = getattr(dicom_ds, 'ContentDate', '19000101')
             content_time = getattr(dicom_ds, 'ContentTime', '000000')
             to_patch = physical_delta_x is None or physical_delta_y is None
             transducer_model = self.get_transducer_model(dicom_ds.get('TransducerType', ''))
 
-            # Calculate relative path from input folder
-            relative_path = os.path.relpath(file_path, input_folder)
+            # Calculate relative path from input folder. Replace the filename with the anonymized filename.
+            output_path = os.path.relpath(file_path, input_folder).replace(os.path.basename(file_path), anon_filename)
 
             return {
-                'FilePath': file_path,
-                'RelativePath': relative_path,
-                'AnonFilename': exp_filename,
+                'InputPath': file_path,
+                'OutputPath': output_path,
+                'AnonFilename': anon_filename,
                 'PatientUID': patient_uid,
                 'StudyUID': study_uid,
                 'SeriesUID': series_uid,
@@ -276,15 +276,15 @@ class DicomFileManager:
             return None
 
     def generate_output_filepath(
-        self, output_directory: str, relative_path: str, preserve_directory_structure: bool) -> str:
+        self, output_directory: str, output_path: str, preserve_directory_structure: bool) -> str:
         """
         Generate output filepath from relative path and output directory.
         If preserve_directory_structure is True, the output filepath will be the same as the relative path.
         """
         if preserve_directory_structure:
-            return os.path.join(output_directory, relative_path)
+            return os.path.join(output_directory, output_path)
         else:
-            filename = os.path.basename(relative_path)
+            filename = os.path.basename(output_path)
             return os.path.join(output_directory, filename)
 
     def _extract_spacing_info(self, dicom_ds):
@@ -363,7 +363,7 @@ class DicomFileManager:
 
         # Sort and reset index
         self.dicom_df = (self.dicom_df
-                         .sort_values(['FilePath', 'ContentDate', 'ContentTime'])
+                         .sort_values(['InputPath', 'ContentDate', 'ContentTime'])
                          .reset_index(drop=True))
 
         # Add series numbers
@@ -398,7 +398,7 @@ class DicomFileManager:
             return None
 
         # Create full paths vectorized
-        output_paths = self.dicom_df['RelativePath'].apply(
+        output_paths = self.dicom_df['OutputPath'].apply(
             lambda x: self.generate_output_filepath(output_directory, x, preserve_directory_structure)
         )
 
@@ -476,7 +476,7 @@ class DicomFileManager:
 
         matching_rows = self.dicom_df[self.dicom_df['InstanceUID'] == instance_uid]
         if not matching_rows.empty:
-            return matching_rows.iloc[0]['FilePath']
+            return matching_rows.iloc[0]['InputPath']
 
         return None
 
@@ -548,7 +548,7 @@ class DicomFileManager:
             while self.next_dicom_index < len(self.dicom_df):
                 row = self.dicom_df.iloc[self.next_dicom_index]
                 output_path = self.generate_output_filepath(
-                    output_directory, row['RelativePath'], preserve_directory_structure)
+                    output_directory, row['OutputPath'], preserve_directory_structure)
 
                 if not os.path.exists(output_path):
                     break
@@ -568,7 +568,7 @@ class DicomFileManager:
             logging.warning(f"Failed to cleanup temporary directory {temp_dir}: {e}")
 
     def save_anonymized_dicom(self, image_array: np.ndarray, output_path: str,
-                            new_patient_name: str = '', new_patient_id: str = '') -> None:
+                            new_patient_name: str = '', new_patient_id: str = '', labels: List[str] = None) -> None:
         """
         Save image array as anonymized DICOM file.
 
@@ -577,6 +577,7 @@ class DicomFileManager:
             output_path: Full path where DICOM file should be saved
             new_patient_name: New patient name for anonymization
             new_patient_id: New patient ID for anonymization
+            labels: List of labels to add to the DICOM file
         """
         if self.dicom_df is None:
             logging.error("No DICOM dataframe available")
@@ -595,6 +596,10 @@ class DicomFileManager:
 
         # Create new anonymized dataset
         anonymized_ds = self._create_base_dicom_dataset(image_array, current_record)
+
+        # Set annotation labels as the series description
+        if labels:
+            anonymized_ds.SeriesDescription = " ".join(labels)
 
         # Copy essential metadata
         self._copy_source_metadata(anonymized_ds, source_dataset, output_path)
@@ -668,9 +673,6 @@ class DicomFileManager:
 
         # Handle UIDs
         self._copy_and_generate_uids(ds, source_ds, output_path)
-
-        # Make the series desciption the filename, so we can easily identify the file later in the viewer.
-        ds.SeriesDescription = os.path.basename(output_path)
 
         # Get series number from dataframe
         ds.SeriesNumber = self._get_series_number_for_current_instance()
