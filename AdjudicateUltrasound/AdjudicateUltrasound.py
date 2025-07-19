@@ -561,8 +561,8 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             displayNode.SetOpacity(0.3)
         # Also update the corresponding annotation line
         self._updateAnnotationLineValidation(markupNode, validation)
-        self.logic.syncMarkupsToAnnotations() # write the validation status to annotations
-        self.logic.syncAnnotationsToMarkups() # sync the annotations back to markup nodes to change any display properties for the line
+        # sync the annotations back to markup nodes to change any display properties for the line
+        self.logic.syncAnnotationsToMarkups()
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
         slicer.util.showStatusMessage(f"Line {status_description}.", 3000)
 
@@ -614,11 +614,8 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
 
                     count += 1
 
-            # Update the visual appearance of all lines
+            # Update the visual appearance of all lines since annotations are already updated above
             self.logic.syncAnnotationsToMarkups()
-
-            # Update the current frame to save the changes to annotations
-            self.logic.syncMarkupsToAnnotations()
 
             # Refresh display
             self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
@@ -718,7 +715,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         newNode = nodes[new_idx]
         selectionNode.SetActivePlaceNodeID(newNode.GetID())
         slicer.util.showStatusMessage(f"{status_message_prefix} {new_idx+1} of {len(nodes)}.", 2000)
-        self.logic.syncAnnotationsToMarkups()
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
         rater = newNode.GetAttribute("rater") or "unknown"
         line_type = "pleura" if newNode in self.logic.pleuraLines else "b-line"
