@@ -130,14 +130,14 @@
       <item row="2" column="0">
        <widget class="QLabel" name="label_5">
         <property name="text">
-         <string>Prefix for patient name: </string>
+         <string>Patient Name Prefix (required): </string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
        <widget class="QLineEdit" name="namePrefixLineEdit">
         <property name="toolTip">
-         <string>All patient names will start with this text if Patient ID hashing is selected</string>
+         <string>All patient names will start with this text if Patient ID hashing is selected. Required.</string>
         </property>
        </widget>
       </item>
@@ -166,7 +166,7 @@
            </size>
           </property>
           <property name="text">
-           <string>Load next [N]</string>
+           <string>Next [N]</string>
           </property>
          </widget>
         </item>
@@ -179,7 +179,7 @@
            </size>
           </property>
           <property name="text">
-           <string>Define mask [M]</string>
+           <string>Mask [M]</string>
           </property>
           <property name="checkable">
            <bool>true</bool>
@@ -214,7 +214,7 @@
            <string>Export and load next scan</string>
           </property>
           <property name="text">
-           <string>Export and Load Next [A]</string>
+           <string>Export &amp; Next [A]</string>
           </property>
          </widget>
         </item>

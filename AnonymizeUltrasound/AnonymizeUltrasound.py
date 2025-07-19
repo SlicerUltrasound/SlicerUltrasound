@@ -604,6 +604,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 statusText += '\n' + str(numDone) + ' files already processed in output folder. Continue at next.'
         self.ui.statusLabel.text = statusText
 
+        # Set the patient name prefix to the input directory name
+        self.ui.namePrefixLineEdit.text = inputDirectory.split('/')[-1]
+
     def set_processing_mode(self, mode: bool):
         self.processing_mode = mode
 
@@ -683,7 +686,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
             # Get the file path from the dataframe
 
-            filepath = current_dicom_record['FilePath']
+            filepath = current_dicom_record['InputPath']
             statusText += filepath
             self.ui.statusLabel.text = statusText
 
@@ -908,7 +911,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         dialog = self.createWaitDialog("Exporting scan", "Please wait until the scan is exported...")
 
         if hashPatientId:
-            new_patient_name = f"{self.ui.namePrefixLineEdit.text}_{patient_uid}"
+            patient_name_prefix = self.ui.namePrefixLineEdit.text
+
+            # if patient_name_prefix is empty, alert the user
+            if not patient_name_prefix:
+                slicer.util.errorDisplay("A patient name prefix is required when Patient ID hashing is enabled. For example, 'STUDY_001'")
+                return
+
+            new_patient_name = f"{patient_name_prefix}_{patient_uid}"
             new_patient_id = patient_uid
         else:
             new_patient_name = None
@@ -932,9 +942,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
 
         # Display file paths in the status label
-        statusText = f"DICOM saved to: {dicomFilePath}\nAnnotations saved to: {jsonFilePath}"
+        statusText = f"Export successful!\nDICOM: {dicomFilePath}\nLabels: {jsonFilePath}"
         if dicomHeaderFilePath:
-            statusText += f"\nDICOM header saved to: {dicomHeaderFilePath}"
+            statusText += f"\nHeader: {dicomHeaderFilePath}"
 
         self.ui.statusLabel.text = statusText
 
@@ -1815,7 +1825,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return 'N/A'
 
-    def saveDicomFile(self, dicomFilePath, new_patient_name='', new_patient_id=''):
+    def saveDicomFile(self, dicomFilePath, new_patient_name='', new_patient_id='', labels=None):
         """
         Save the current ultrasound sequence as an anonymized DICOM file.
         """
@@ -1828,7 +1838,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             image_array=image_array,
             output_path=dicomFilePath,
             new_patient_name=new_patient_name,
-            new_patient_id=new_patient_id
+            new_patient_id=new_patient_id,
+            labels=labels
         )
 
     def _collect_image_data_from_sequence(self, parameterNode) -> np.ndarray:
@@ -1915,9 +1926,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Generate complete output path with directory structure consideration
         dicom_file_path = self.dicom_file_manager.generate_output_filepath(
-            output_directory, current_dicom_record.RelativePath, preserve_directory_structure)
+            output_directory, current_dicom_record.OutputPath, preserve_directory_structure)
 
-        self.saveDicomFile(dicom_file_path, new_patient_name, new_patient_id)
+        self.saveDicomFile(dicom_file_path, new_patient_name, new_patient_id, labels)
 
         # Save original DICOM header to a json file. This may not be completely anonymized.
         dicom_header_file_path = self.dicom_file_manager.save_anonymized_dicom_header(current_dicom_record, output_filename, headers_directory)
