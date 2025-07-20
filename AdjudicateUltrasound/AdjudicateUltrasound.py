@@ -286,10 +286,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             index = parentLayout.indexOf(self.ui.workflowCollapsibleButton)
             parentLayout.insertWidget(index + 1, self._adjudicationToolsWidget)
 
-
-        # After UI and logic setup, create adjudication shortcuts
-        self.connectKeyboardShortcuts()
-
         # Add observer to selection node to enforce only visible nodes can be selected
         selectionNode = slicer.app.applicationLogic().GetSelectionNode()
         if not hasattr(self, 'selectionObserverTag') or self.selectionObserverTag is None:
