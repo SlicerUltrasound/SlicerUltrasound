@@ -1804,8 +1804,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Toggle visibility of all lines from the logic class
         self.logic.onShowHideLines(checked)
 
-        # Also toggle overlay visibility
-        self.ui.overlayVisibilityButton.setChecked(checked)
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
 
 #
