@@ -102,6 +102,7 @@ class AnnotateUltrasoundParameterNode:
     invertedVolume - The output volume that will contain the inverted thresholded volume.
     """
     inputVolume: vtkMRMLScalarVolumeNode
+    depthGuideVolume: vtkMRMLScalarVolumeNode
     overlayVolume: vtkMRMLVectorVolumeNode
     imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
     invertThreshold: bool = False
@@ -1281,14 +1282,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             redSliceCompositeNode.SetForegroundVolumeID(None)
 
     def onDepthGuideToggled(self, toggled):
-        # Save new state in application settings and update overlay volume to show/hide the depth guide
+        # Save new state in application settings and update depth guide volume to show/hide the depth guide
         settings = slicer.app.settings()
         settings.setValue('AnnotateUltrasound/DepthGuide', toggled)
         if toggled:
             self.logic.parameterNode.depthGuideVisible = True
         else:
             self.logic.parameterNode.depthGuideVisible = False
-        self.logic.updateOverlayVolume()
+        self.logic.updateDepthGuideVolume()
 
     def onRaterNameChanged(self):
         if self._parameterNode:
@@ -2063,6 +2064,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Reset overlay volume reference in parameter node
         if self.parameterNode:
             self.parameterNode.overlayVolume = None
+            self.parameterNode.depthGuideVolume = None
         slicer.mrmlScene.Clear(0)
 
     def convert_lps_to_ras(self, annotations: list):
@@ -2799,6 +2801,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         Main function to handle different visualization modes for the depth guide.
         """
         # Extract fan parameters from annotations
+        if self.annotations is None:
+            return np.zeros((image_size_rows, image_size_cols, 3), dtype=np.uint8)
+
         if "mask_type" not in self.annotations or self.annotations["mask_type"] != "fan":
             logging.error("No fan mask information available in annotations.")
             return np.zeros((image_size_rows, image_size_cols, 3), dtype=np.uint8)
@@ -2959,6 +2964,75 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         return maskArray
 
+    def updateDepthGuideVolume(self):
+        """
+        Update the depth guide volume based on the current visibility setting.
+        This is separate from the overlay volume and can be toggled independently.
+        """
+        parameterNode = self.getParameterNode()
+
+        if parameterNode is None or parameterNode.depthGuideVolume is None:
+            return
+
+        if parameterNode.inputVolume is None:
+            return
+
+        ultrasoundArray = slicer.util.arrayFromVolume(parameterNode.inputVolume)
+        image_size_rows = ultrasoundArray.shape[1]
+        image_size_cols = ultrasoundArray.shape[2]
+
+        if parameterNode.depthGuideVisible:
+            # Create depth guide and update the volume
+            depth_guide = self.drawDepthGuideLine(image_size_rows, image_size_cols)
+
+            # For scalar volume, use the maximum value across all channels (depth_guide is already 3D: rows, cols, channels)
+            # This ensures we capture the depth guide regardless of which color channel it's drawn in
+            depth_guide_scalar = np.max(depth_guide, axis=2)  # Take maximum across channels
+            slicer.util.updateVolumeFromArray(parameterNode.depthGuideVolume, depth_guide_scalar)
+
+            # Make sure the depth guide is visible in the slice viewer as a separate layer
+            redSliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceCompositeNode()
+            # Set depth guide as label volume (appears below foreground, no blending)
+            redSliceCompositeNode.SetLabelVolumeID(parameterNode.depthGuideVolume.GetID())
+            redSliceCompositeNode.SetLabelOpacity(0.3)
+
+            # Set up display properties for the depth guide
+            displayNode = parameterNode.depthGuideVolume.GetDisplayNode()
+            if displayNode:
+                displayNode.SetWindow(255)
+                displayNode.SetLevel(127)
+                                # For label volumes, use a simple color map that shows cyan for non-zero values
+                # Create a custom color table that maps non-zero values to cyan
+                colorNode = slicer.vtkMRMLColorTableNode()
+                colorNode.SetTypeToUser()
+                colorNode.SetNumberOfColors(256)
+                colorNode.SetNamesInitialised(True)
+
+                # Set all colors to transparent except for non-zero values which will be cyan
+                for i in range(256):
+                    if i == 0:
+                        colorNode.SetColor(i, 0, 0, 0, 0)  # Transparent for background
+                    else:
+                        colorNode.SetColor(i, 0, 1, 1, 1)  # Cyan for depth guide
+
+                slicer.mrmlScene.AddNode(colorNode)
+                displayNode.SetAndObserveColorNodeID(colorNode.GetID())
+                displayNode.SetAutoWindowLevel(False)
+            else:
+                logging.warning("updateDepthGuideVolume: No display node found for depth guide volume")
+
+            # Force slice viewer to refresh
+            slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceNode().Modified()
+        else:
+            # Clear the depth guide volume
+            depthGuideArray = slicer.util.arrayFromVolume(parameterNode.depthGuideVolume)
+            depthGuideArray[:] = 0
+            slicer.util.updateVolumeFromArray(parameterNode.depthGuideVolume, depthGuideArray)
+
+            # Remove depth guide from slice viewer
+            redSliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceCompositeNode()
+            redSliceCompositeNode.SetLabelVolumeID(None)
+
     def updateOverlayVolume(self):
         """
         Update the overlay volume based on the annotations.
@@ -2987,7 +3061,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if hasattr(self, "selectedRaters") and not self.selectedRaters:
             overlayArray = slicer.util.arrayFromVolume(parameterNode.overlayVolume)
             overlayArray[:] = 0
-            overlayArray = self._applyDepthGuideToMask(overlayArray, parameterNode)
             slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, overlayArray)
             slicer.util.showStatusMessage("Overlay hidden: no raters selected", 3000)
             return None
@@ -3063,11 +3136,25 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         bluePixels = np.count_nonzero(maskArray[0, :, :, 2])
         greenPixels = np.count_nonzero(maskArray[0, :, :, 1])
 
-        # apply depthGuide if enabled
-        maskArray = self._applyDepthGuideToMask(maskArray, parameterNode)
-
-        # Update the overlay volume
+        # Update the overlay volume (depth guide is handled separately)
         slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, maskArray)
+
+        # Initialize the depth guide volume to be the same size as the ultrasound volume
+        # Create depth guide as scalar volume (same as input volume)
+        depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
+        depthGuideImageData = vtk.vtkImageData()
+        depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+        depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
+
+        depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
+        depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
+        depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
+        depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
+        depthGuideVolume.CreateDefaultDisplayNodes()
+        parameterNode.depthGuideVolume = depthGuideVolume
+
+        # Update depth guide visibility
+        self.updateDepthGuideVolume()
 
         # Return the ratio of green pixels to blue pixels
         if bluePixels == 0:
