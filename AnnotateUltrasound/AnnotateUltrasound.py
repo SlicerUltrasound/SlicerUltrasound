@@ -2455,12 +2455,11 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         Remove all pleura lines and B-lines from the scene and from the list of lines.
         """
         # Remove all pleura lines
-        while len(self.pleuraLines) > 0:
-            self.removeLastPleuraLine(sync=sync)
-
+        while self.removeLastPleuraLine(sync=sync):
+            pass
         # Remove all B-lines
-        while len(self.bLines) > 0:
-            self.removeLastBline(sync=sync)
+        while self.removeLastBline(sync=sync):
+            pass
 
     def clearAllLines(self):
         """
@@ -2491,7 +2490,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if currentLine is None:
                 statusText = f"No pleura line found for rater {current_rater}"
                 slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
-                return
+                return False
             if self.hasObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified):
                 self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
@@ -2501,6 +2500,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if sync:
                 self.syncMarkupsToAnnotations()
                 self.refreshDisplay(updateOverlay=True, updateGui=True)
+
+            return True
+        return False
 
     def removeLastBline(self, sync=True):
         """
@@ -2518,7 +2520,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if currentLine is None:
                 statusText = f"No B-line found for rater {current_rater}"
                 slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
-                return
+                return False
             if self.hasObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified):
                 self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
             if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
@@ -2528,6 +2530,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             if sync:
                 self.syncMarkupsToAnnotations()
                 self.refreshDisplay(updateOverlay=True, updateGui=True)
+            return True
+        return False
 
     def onPointModified(self, caller, event):
         numControlPoints = caller.GetNumberOfControlPoints()
