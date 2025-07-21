@@ -375,7 +375,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.raterNameDebounceTimer.setInterval(300)  # ms of idle time before triggering
         self.raterNameDebounceTimer.timeout.connect(self.onRaterNameChanged)
         self.ui.raterName.textChanged.connect(lambda: self.raterNameDebounceTimer.start())
-
         self.ui.showPleuraPercentageCheckBox.connect('toggled(bool)', self.saveUserSettings)
         self.ui.depthGuideCheckBox.toggled.connect(self.onDepthGuideToggled)
 
@@ -407,6 +406,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.ui.raterColorTable.setMaximumHeight(vh.defaultSectionSize * 4 + 2)
             self.ui.raterColorTable.cellClicked.connect(self.onRaterColorTableClicked)
             self.ui.raterColorTable.itemChanged.connect(self.onRaterColorSelectionChangedFromUser)
+            if self.logic is not None:
+                self.logic.extractAndSetupRaters()
+                self.selectedRaters = self.logic.getSelectedRaters()
+                self.populateRaterColorTable()
 
         # Connect rater table collapsed signal to detect user manual changes
         if hasattr(self.ui, 'raterColorsCollapsibleButton'):
@@ -950,8 +953,13 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
                 # Save annotations to file (use rater-specific filename from dicomDf)
                 annotationsFilepath = self.logic.dicomDf.iloc[self.logic.nextDicomDfIndex - 1]['AnnotationsFilepath']
-                base_path, ext = os.path.splitext(annotationsFilepath)
-                if not base_path.endswith(f".{rater}"):
+                # Check if the filepath already ends with .{rater}.json
+                if not annotationsFilepath.endswith(f".{rater}.json"):
+                    # Get base path (everything before the first dot)
+                    if '.' in annotationsFilepath:
+                        base_path = annotationsFilepath.split('.', 1)[0]
+                    else:
+                        base_path = annotationsFilepath
                     annotationsFilepath = f"{base_path}.{rater}.json"
                     self.logic.dicomDf.at[self.logic.nextDicomDfIndex - 1, 'AnnotationsFilepath'] = annotationsFilepath
 
@@ -1296,6 +1304,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self._parameterNode.rater = self.ui.raterName.text.strip().lower()
             statusText = f"Rater name changed to {self._parameterNode.rater}"
             slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+            self.logic.extractAndSetupRaters()
+            self.selectedRaters = self.logic.getSelectedRaters()
+            self.populateRaterColorTable()
+            self.logic.syncAnnotationsToMarkups()
 
     def cleanup(self) -> None:
         """
