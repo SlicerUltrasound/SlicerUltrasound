@@ -98,6 +98,7 @@ class AdjudicateUltrasoundParameterNode:
     invertedVolume - The output volume that will contain the inverted thresholded volume.
     """
     inputVolume: vtkMRMLScalarVolumeNode
+    depthGuideVolume: vtkMRMLScalarVolumeNode
     overlayVolume: vtkMRMLVectorVolumeNode
     imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
     invertThreshold: bool = False
@@ -176,6 +177,9 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
 
     def connectKeyboardShortcuts(self):
         super().connectKeyboardShortcuts()
+        # disconnect the shortcut for add line, remove line, clear all lines etc as we don't want
+        # to allow modifying the annotations
+        self.disconnectDrawingShortcuts()
         self._createAdjudicationShortcuts()
 
     def disconnectKeyboardShortcuts(self):
@@ -230,6 +234,16 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
                     btn.directoryChanged.connect(method)
                 else:
                     btn.clicked.connect(method)
+
+        # Hide drawing buttons for Add, Remove and Clear All Lines
+        self.ui.addPleuraButton.setVisible(False)
+        self.ui.addBlineButton.setVisible(False)
+        self.ui.removePleuraButton.setVisible(False)
+        self.ui.removeBlineButton.setVisible(False)
+        self.ui.clearAllLinesButton.setVisible(False)
+        # Also hide the Add and Remove Current Frame buttons
+        self.ui.addCurrentFrameButton.setVisible(False)
+        self.ui.removeCurrentFrameButton.setVisible(False)
 
         # Move adjudication-related widgets out of workflowCollapsibleButton and into their own layout
         # Find the parent layout containing workflowCollapsibleButton
@@ -303,6 +317,16 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self.removeClickObserverFromRedView()
 
         super().cleanup()
+
+    def onDepthGuideToggled(self, toggled):
+        # Save new state in application settings and update depth guide volume to show/hide the depth guide
+        settings = slicer.app.settings()
+        settings.setValue('AdjudicateUltrasound/DepthGuide', toggled)
+        if toggled:
+            self.logic.parameterNode.depthGuideVisible = True
+        else:
+            self.logic.parameterNode.depthGuideVisible = False
+        self.logic.updateDepthGuideVolume()
 
     def onRaterNameChanged(self):
         if self._parameterNode:
@@ -1614,6 +1638,23 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
         # Update the overlay volume
         slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, maskArray)
+
+        # Initialize the depth guide volume to be the same size as the ultrasound volume
+        # Create depth guide as scalar volume (same as input volume)
+        depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
+        depthGuideImageData = vtk.vtkImageData()
+        depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+        depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
+
+        depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
+        depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
+        depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
+        depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
+        depthGuideVolume.CreateDefaultDisplayNodes()
+        parameterNode.depthGuideVolume = depthGuideVolume
+
+        # Update depth guide visibility
+        self.updateDepthGuideVolume()
 
         # Return the ratio of green pixels to blue pixels
         if bluePixels == 0:

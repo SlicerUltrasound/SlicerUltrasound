@@ -214,15 +214,19 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutL.setKey(qt.QKeySequence('L'))
         self.shortcutL.setContext(qt.Qt.ApplicationShortcut)
 
-    def connectKeyboardShortcuts(self):
-        # Connect shortcuts to respective actions
+    def connectDrawingShortcuts(self):
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
         self.shortcutS.connect('activated()', lambda: self.onAddLine("Bline", not self.ui.addBlineButton.isChecked()))
-        self.shortcutSpace.connect('activated()', lambda: self.ui.overlayVisibilityButton.toggle())
-
-        # New shortcuts for removing lines
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura", not self.ui.removePleuraButton.isChecked()))  # "E" removes the last pleura line
         self.shortcutD.connect('activated()', lambda: self.onRemoveLine("Bline", not self.ui.removeBlineButton.isChecked()))   # "D" removes the last B-line
+
+    def connectKeyboardShortcuts(self):
+        # Disconnect any existing connections first to avoid duplicates
+        self.disconnectKeyboardShortcuts()
+
+        # Connect shortcuts to respective actions
+        self.connectDrawingShortcuts()
+        self.shortcutSpace.connect('activated()', lambda: self.ui.overlayVisibilityButton.toggle())
 
         self.shortcutA.connect('activated()', self.onSaveAndLoadNextButton)  # "A" to save and load next scan
 
@@ -244,24 +248,75 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         self.shortcutL.connect('activated()', lambda: self.onShowHideLines(None))  # "L" to show/hide lines
 
+    def disconnectDrawingShortcuts(self):
+        try:
+            self.shortcutW.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutS.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutE.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutD.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+
     def disconnectKeyboardShortcuts(self):
         # Disconnect shortcuts to avoid issues when the user leaves the module
-        self.shortcutW.activated.disconnect()
-        self.shortcutS.activated.disconnect()
-        self.shortcutSpace.activated.disconnect()
-        self.shortcutE.activated.disconnect()
-        self.shortcutD.activated.disconnect()
-        self.shortcutA.activated.disconnect()
-        self.shortcutRightArrow.activated.disconnect()
-        self.shortcutLeftArrow.activated.disconnect()
-        self.shortcutHome.activated.disconnect()
-        self.shortcutEnd.activated.disconnect()
-        self.shortcutC.activated.disconnect()
-        self.shortcutPageUp.activated.disconnect()
-        self.shortcutPageDown.activated.disconnect()
-        self.shortcutShiftUp.activated.disconnect()
-        self.shortcutShiftDown.activated.disconnect()
-        self.shortcutL.activated.disconnect()
+        self.disconnectDrawingShortcuts()
+        try:
+            self.shortcutSpace.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutA.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutRightArrow.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutLeftArrow.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutHome.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutEnd.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutC.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutPageUp.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutPageDown.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutShiftUp.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutShiftDown.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutL.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
 
     def setup(self) -> None:
         """
