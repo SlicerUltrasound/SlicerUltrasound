@@ -43,7 +43,9 @@ test-gui: find-slicer-python
 	echo "Running DICOM loading test..."; \
 	"$$SLICER_EXE" --python-script AnnotateUltrasound/Testing/Python/test_dicom_loading.py; \
 	echo "Running Update Current Frame test..."; \
-	"$$SLICER_EXE" --python-script AnnotateUltrasound/Testing/Python/test_update_current_frame_bug.py
+	"$$SLICER_EXE" --python-script AnnotateUltrasound/Testing/Python/test_update_current_frame_bug.py; \
+	echo "Running freeMarkupNodes test..."; \
+	"$$SLICER_EXE" --python-script AnnotateUltrasound/Testing/Python/test_free_markup_nodes.py
 
 # Run tests for CI (pure Python tests only)
 test-ci: test-py-system
@@ -82,6 +84,27 @@ test-update-current-frame-bug: find-slicer-python
 		$$SLICER_HOME/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_update_current_frame_bug.py; \
 	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/Slicer" ]; then \
 		$$SLICER_HOME/Slicer --python-script AnnotateUltrasound/Testing/Python/test_update_current_frame_bug.py; \
+	else \
+		echo "❌ Slicer not found. Please install Slicer first."; \
+		echo "Checked paths:"; \
+		echo "  /Applications/Slicer.app/Contents/MacOS/Slicer"; \
+		echo "  /usr/local/bin/Slicer"; \
+		echo "  $$SLICER_HOME/bin/Slicer"; \
+		echo "  $$SLICER_HOME/Slicer"; \
+		exit 1; \
+	fi
+
+# Run freeMarkupNodes tests (requires display)
+test-free-markup-nodes: find-slicer-python
+	@echo "Running freeMarkupNodes tests (requires display)..."
+	@if [ -f "/Applications/Slicer.app/Contents/MacOS/Slicer" ]; then \
+		/Applications/Slicer.app/Contents/MacOS/Slicer --python-script AnnotateUltrasound/Testing/Python/test_free_markup_nodes.py; \
+	elif [ -f "/usr/local/bin/Slicer" ]; then \
+		/usr/local/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_free_markup_nodes.py; \
+	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/bin/Slicer" ]; then \
+		$$SLICER_HOME/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_free_markup_nodes.py; \
+	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/Slicer" ]; then \
+		$$SLICER_HOME/Slicer --python-script AnnotateUltrasound/Testing/Python/test_free_markup_nodes.py; \
 	else \
 		echo "❌ Slicer not found. Please install Slicer first."; \
 		echo "Checked paths:"; \
@@ -169,6 +192,7 @@ help:
 	@echo "  test-slicer-modules - Run Slicer-dependent tests in Testing/Python/ and submodule Testing/Python/ directories (requires Slicer modules to be loaded)"
 	@echo "  test-gui          - Run GUI tests (requires display, simulates user interactions)"
 	@echo "  test-dicom        - Run DICOM loading tests (requires display, uses real DICOM data)"
+	@echo "  test-free-markup-nodes - Run freeMarkupNodes tests (requires display)"
 	@echo "  test              - Run pytest tests (alias for test-py-system)"
 	@echo "  test-pattern      - Run tests matching pattern (e.g., make test-pattern PATTERN=AnnotateUltrasound)"
 	@echo "  test-coverage     - Run pytest tests with coverage (Python-only)"

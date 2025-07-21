@@ -168,6 +168,13 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("\n--- Step 3: Adding pleura line at frame 1 ---")
         pleura_coords_2 = [[150, 120, 0], [250, 180, 0]]
         pleura_line_2 = logic.createMarkupLine("Pleura", "test_rater", pleura_coords_2)
+        point1 = [0, 0, 0]
+        point2 = [0, 0, 0]
+        pleura_line_2.GetNthControlPointPosition(0, point1)
+        pleura_line_2.GetNthControlPointPosition(1, point2)
+        print("SUCCESS: Created second pleura line with coordinates: {}".format(pleura_coords_2))
+        print("SUCCESS: Second pleura line point 1: {}".format(point1))
+        print("SUCCESS: Second pleura line point 2: {}".format(point2))
         logic.pleuraLines.append(pleura_line_2)
         print("SUCCESS: Created second pleura line")
 
@@ -259,7 +266,7 @@ def test_updateCurrentFrame_bug(test_data_dir=None):
         print("\n--- Step 7: Modifying points of frame 1 line ---")
 
         # Get the frame 1 line (should be the second line we added)
-        frame1_line = pleura_line_2
+        frame1_line = logic.pleuraLines[0]
 
         # Record original positions
         original_point1 = [100, 100, 0]
