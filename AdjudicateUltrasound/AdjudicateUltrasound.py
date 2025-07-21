@@ -241,6 +241,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self.ui.removePleuraButton.setVisible(False)
         self.ui.removeBlineButton.setVisible(False)
         self.ui.clearAllLinesButton.setVisible(False)
+        self._adjustOverlayButtonLayout()
         # Also hide the Add and Remove Current Frame buttons
         self.ui.addCurrentFrameButton.setVisible(False)
         self.ui.removeCurrentFrameButton.setVisible(False)

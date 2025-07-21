@@ -397,6 +397,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.addBlineButton.toggled.connect(lambda checked: self.onAddLine("Bline", checked))
         self.ui.removeBlineButton.clicked.connect(lambda checked:  self.onRemoveLine("Bline", checked))
         self.ui.overlayVisibilityButton.toggled.connect(self.overlayVisibilityToggled)
+
+        # Set up dynamic layout adjustment for overlay button
+        self._setupOverlayButtonLayout()
         self.ui.clearAllLinesButton.clicked.connect(self.onClearAllLines)
         self.ui.addCurrentFrameButton.clicked.connect(self.onAddCurrentFrame)
         self.ui.removeCurrentFrameButton.clicked.connect(self.onRemoveCurrentFrame)
@@ -1327,6 +1330,48 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 return idx
 
         return None
+
+    def _setupOverlayButtonLayout(self):
+        """Set up dynamic layout adjustment for the overlay button based on clearAllLinesButton visibility"""
+        # Initial adjustment
+        self._adjustOverlayButtonLayout()
+
+        # Connect to the sector annotations collapsible button state changes
+        self.ui.sectorAnnotationsCollapsibleButton.toggled.connect(self._adjustOverlayButtonLayout)
+
+    def _adjustOverlayButtonLayout(self):
+        """Adjust the overlay button layout based on visibility of clearAllLinesButton"""
+        # Check if clearAllLinesButton is visible
+        clearButtonVisible = self.ui.clearAllLinesButton.isVisible()
+
+        # Get the grid layout
+        gridLayout = self.ui.overlayVisibilityButton.parent().layout()
+
+        if not isinstance(gridLayout, qt.QGridLayout):
+            return  # Not a grid layout, can't adjust
+
+        # Find and remove the overlay button item from the layout
+        overlayItem = None
+        for i in range(gridLayout.count()):
+            item = gridLayout.itemAt(i)
+            if item.widget() == self.ui.overlayVisibilityButton:
+                overlayItem = item
+                break
+
+        if overlayItem is None:
+            return  # Overlay button not found in layout
+
+        # Remove the item from the layout
+        gridLayout.removeItem(overlayItem)
+
+        # Add it back with the appropriate column span
+        # We know the overlay button is in row 3, column 0 based on the UI file
+        if not clearButtonVisible:
+            # Clear button not visible, make overlay button span full width (colspan=2)
+            gridLayout.addWidget(self.ui.overlayVisibilityButton, 3, 0, 1, 2)
+        else:
+            # Clear button visible, keep overlay button in normal position (colspan=1)
+            gridLayout.addWidget(self.ui.overlayVisibilityButton, 3, 0, 1, 1)
 
     def overlayVisibilityToggled(self, checked):
         logging.debug(f"overlayVisibilityToggled -- checked: {checked}")
