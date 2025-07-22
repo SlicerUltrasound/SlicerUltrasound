@@ -220,8 +220,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.nextButton.clicked.connect(self.onNextButton)
         self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
         self.ui.exportButton.clicked.connect(self.onExportScanButton)
-        if hasattr(self.ui, 'exportAndNextButton'):
-            self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextShortcut)
+        self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
 
         # Settings widgets
 
@@ -854,7 +853,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     # Export scan
     #
 
-    def onExportScanButton(self):
+    def onExportScanButton(self) -> bool:
         """
         Callback function for the export scan button.
         """
@@ -865,7 +864,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if currentSequenceBrowser is None:
             self.ui.statusLabel.text = "Load a DICOM sequence before trying to export"
             logging.info("No sequence browser found, nothing exported.")
-            return
+            return False
 
         selectedItemNumber = currentSequenceBrowser.GetSelectedItemNumber()  # Save current frame index for sequence so we can restore it after exporting the scan
 
@@ -887,7 +886,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         count = self._parameterNode.maskMarkups.GetNumberOfControlPoints()
         if count < required:
             if not slicer.util.confirmOkCancelDisplay("No mask defined. Do you want to proceed without masking?"):
-                return
+                return False
 
         # Mask images to erase the unwanted parts
         self.logic.maskSequence(three_point=threePointFanModeEnabled)
@@ -900,7 +899,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         if not hashPatientId:
             if not slicer.util.confirmOkCancelDisplay("Patient name will not be masked. Do you want to proceed?"):
-                return
+                return False
 
         outputDirectory = self.ui.outputDirectoryButton.directory
         headersDirectory = self.ui.headersDirectoryButton.directory
@@ -915,8 +914,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
             # if patient_name_prefix is empty, alert the user
             if not patient_name_prefix:
-                slicer.util.errorDisplay("A patient name prefix is required when Patient ID hashing is enabled. For example, 'STUDY_001'")
-                return
+                if not slicer.util.confirmOkCancelDisplay("A `Patient Name Prefix` is required when Patient ID hashing is enabled. Do you want to proceed without a prefix?"):
+                    dialog.close()
+                    return False
 
             new_patient_name = f"{patient_name_prefix}_{patient_uid}"
             new_patient_id = patient_uid
@@ -949,8 +949,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.statusLabel.text = statusText
 
         # Close the modal dialog
-
         dialog.close()
+
+        return True
 
     #
     # Dialog helpers
@@ -978,7 +979,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.shortcutN.connect('activated()', self.onNextButton)
         self.shortcutC.connect('activated()', lambda: self.ui.threePointFanCheckBox.toggle())
         self.shortcutE.connect('activated()', self.onExportScanButton)
-        self.shortcutA.connect('activated()', self.onExportAndNextShortcut)
+        self.shortcutA.connect('activated()', self.onExportAndNextButton)
 
     def disconnectKeyboardShortcuts(self):
         """Disconnect shortcut keys when leaving the module to avoid unwanted interactions."""
@@ -992,12 +993,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             # If shortcuts were not connected yet, ignore
             pass
 
-    def onExportAndNextShortcut(self):
+    def onExportAndNextButton(self):
         """Helper slot to export the current scan and immediately load the next one (shortcut 'A')."""
-        self.onExportScanButton()
-        # Load next only if export did not show blocking dialogs (user may have canceled)
-        # We simply attempt; internal checks will guard.
-        self.onNextButton()
+        if self.onExportScanButton():
+            self.onNextButton()
 
 #
 # AnonymizeUltrasoundLogic

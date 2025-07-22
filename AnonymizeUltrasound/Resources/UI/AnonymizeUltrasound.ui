@@ -214,7 +214,7 @@
            <string>Export and load next scan</string>
           </property>
           <property name="text">
-           <string>Export &amp; Next [A]</string>
+           <string>Export and Next [A]</string>
           </property>
          </widget>
         </item>
