@@ -145,10 +145,11 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self._userManuallySetRaterTableState = False
         self._lastUserManualCollapsedState = None  # Track the last state the user manually set
 
-    def resourcePath(self, *args):
-        import os
-        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'AnnotateUltrasound', 'Resources'))
-        return os.path.join(base_path, *args)
+    def resourcePath(self, filename):
+        """Return the absolute path of the module ``Resources`` directory."""
+        # since we inherit from AnnotateUltrasound and use its AnnotateUltrasound.ui, we use its resource path
+        annotatePath = os.path.dirname(slicer.util.modulePath("AnnotateUltrasound"))
+        return os.path.join(annotatePath, "Resources", filename)
 
     def initializeShortcuts(self):
         super().initializeShortcuts()
