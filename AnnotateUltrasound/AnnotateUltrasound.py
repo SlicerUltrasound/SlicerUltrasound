@@ -1416,6 +1416,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.removeObservers()
 
         self.disconnectKeyboardShortcuts()
+        self.logic.clearScene()
         global annotateUltrasoundWidgetInstance
         annotateUltrasoundWidgetInstance = None
 
@@ -2157,26 +2158,24 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.annotations = None
         for node in self.pleuraLines:
             self.pleuraLines.remove(node)
-            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-            slicer.mrmlScene.RemoveNode(node)
+            self._freeMarkupNode(node)
         self.pleuraLines = []
         for node in self.bLines:
             self.bLines.remove(node)
-            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
-                self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-            slicer.mrmlScene.RemoveNode(node)
+            self._freeMarkupNode(node)
         self.bLines = []
         self._freeAllMarkupNodes()
-        self.sequenceBrowserNode = None
-        # Reset overlay volume reference in parameter node
-        if self.parameterNode:
-            self.parameterNode.overlayVolume = None
-            self.parameterNode.depthGuideVolume = None
+        parameterNode = self.getParameterNode()
+
+        if self.sequenceBrowserNode:
+            slicer.mrmlScene.RemoveNode(self.sequenceBrowserNode)
+            self.sequenceBrowserNode = None
+        if parameterNode and parameterNode.overlayVolume:
+            slicer.mrmlScene.RemoveNode(parameterNode.overlayVolume)
+            parameterNode.overlayVolume = None
+        if parameterNode and parameterNode.depthGuideVolume:
+            slicer.mrmlScene.RemoveNode(parameterNode.depthGuideVolume)
+            parameterNode.depthGuideVolume = None
         slicer.mrmlScene.Clear(0)
 
     def convert_lps_to_ras(self, annotations: list):
@@ -2308,19 +2307,20 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         maskArray = np.zeros([1, ultrasoundArray.shape[1], ultrasoundArray.shape[2], 3], dtype=np.uint8)
 
         # Initialize the mask volume to be the same size as the ultrasound volume but with all voxels set to 0
-        overlayVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", "Overlay")
-        overlayVolume.SetSpacing(inputUltrasoundNode.GetSpacing())
-        overlayVolume.SetOrigin(inputUltrasoundNode.GetOrigin())
-        ijkToRas = vtk.vtkMatrix4x4()
-        inputUltrasoundNode.GetIJKToRASMatrix(ijkToRas)
-        overlayVolume.SetIJKToRASMatrix(ijkToRas)
-        overlayImageData = vtk.vtkImageData()
-        overlayImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
-        overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
-        overlayVolume.SetAndObserveImageData(overlayImageData)
-        # overlayVolume.CreateDefaultDisplayNodes()
-        slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
-        parameterNode.overlayVolume = overlayVolume
+        if parameterNode.overlayVolume is None:
+            overlayVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", "Overlay")
+            overlayVolume.SetSpacing(inputUltrasoundNode.GetSpacing())
+            overlayVolume.SetOrigin(inputUltrasoundNode.GetOrigin())
+            ijkToRas = vtk.vtkMatrix4x4()
+            inputUltrasoundNode.GetIJKToRASMatrix(ijkToRas)
+            overlayVolume.SetIJKToRASMatrix(ijkToRas)
+            overlayImageData = vtk.vtkImageData()
+            overlayImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+            overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
+            overlayVolume.SetAndObserveImageData(overlayImageData)
+            # overlayVolume.CreateDefaultDisplayNodes()
+            slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
+            parameterNode.overlayVolume = overlayVolume
 
         # Load all annotations with the same base prefix and deeply merge frame_annotations by frame_number
         self.seenRaters = []
@@ -2534,6 +2534,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 logging.error(f"Exception creating display node for {node.GetName()}: {e}")
                 return
 
+        displayNode.SetGlyphTypeFromString("Circle2D")
+        displayNode.SetGlyphScale(2.0)
+        displayNode.SetLineThickness(0.25)
         if node in self.pleuraLines:
             color_pleura, _ = self.getColorsForRater(rater)
             displayNode.SetSelectedColor(color_pleura)
@@ -3257,17 +3260,18 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         # Initialize the depth guide volume to be the same size as the ultrasound volume
         # Create depth guide as scalar volume (same as input volume)
-        depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
-        depthGuideImageData = vtk.vtkImageData()
-        depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
-        depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
+        if parameterNode.depthGuideVolume is None:
+            depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
+            depthGuideImageData = vtk.vtkImageData()
+            depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+            depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
 
-        depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
-        depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
-        depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
-        depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
-        depthGuideVolume.CreateDefaultDisplayNodes()
-        parameterNode.depthGuideVolume = depthGuideVolume
+            depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
+            depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
+            depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
+            depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
+            depthGuideVolume.CreateDefaultDisplayNodes()
+            parameterNode.depthGuideVolume = depthGuideVolume
 
         # Update depth guide visibility
         self.updateDepthGuideVolume()

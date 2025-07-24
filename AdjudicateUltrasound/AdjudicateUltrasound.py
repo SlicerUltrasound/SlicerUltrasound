@@ -1238,19 +1238,20 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         maskArray = np.zeros([1, ultrasoundArray.shape[1], ultrasoundArray.shape[2], 3], dtype=np.uint8)
 
         # Initialize the mask volume to be the same size as the ultrasound volume but with all voxels set to 0
-        overlayVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", "Overlay")
-        overlayVolume.SetSpacing(inputUltrasoundNode.GetSpacing())
-        overlayVolume.SetOrigin(inputUltrasoundNode.GetOrigin())
-        ijkToRas = vtk.vtkMatrix4x4()
-        inputUltrasoundNode.GetIJKToRASMatrix(ijkToRas)
-        overlayVolume.SetIJKToRASMatrix(ijkToRas)
-        overlayImageData = vtk.vtkImageData()
-        overlayImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
-        overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
-        overlayVolume.SetAndObserveImageData(overlayImageData)
-        # overlayVolume.CreateDefaultDisplayNodes()
-        slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
-        parameterNode.overlayVolume = overlayVolume
+        if parameterNode.overlayVolume is None:
+            overlayVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", "Overlay")
+            overlayVolume.SetSpacing(inputUltrasoundNode.GetSpacing())
+            overlayVolume.SetOrigin(inputUltrasoundNode.GetOrigin())
+            ijkToRas = vtk.vtkMatrix4x4()
+            inputUltrasoundNode.GetIJKToRASMatrix(ijkToRas)
+            overlayVolume.SetIJKToRASMatrix(ijkToRas)
+            overlayImageData = vtk.vtkImageData()
+            overlayImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+            overlayImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 3)
+            overlayVolume.SetAndObserveImageData(overlayImageData)
+            # overlayVolume.CreateDefaultDisplayNodes()
+            slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
+            parameterNode.overlayVolume = overlayVolume
 
         # Load all annotations with the same base prefix and deeply merge frame_annotations by frame_number
         self.seenRaters = []
@@ -1643,17 +1644,18 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
         # Initialize the depth guide volume to be the same size as the ultrasound volume
         # Create depth guide as scalar volume (same as input volume)
-        depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
-        depthGuideImageData = vtk.vtkImageData()
-        depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
-        depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
+        if parameterNode.depthGuideVolume is None:
+            depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
+            depthGuideImageData = vtk.vtkImageData()
+            depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+            depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
 
-        depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
-        depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
-        depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
-        depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
-        depthGuideVolume.CreateDefaultDisplayNodes()
-        parameterNode.depthGuideVolume = depthGuideVolume
+            depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
+            depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
+            depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
+            depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
+            depthGuideVolume.CreateDefaultDisplayNodes()
+            parameterNode.depthGuideVolume = depthGuideVolume
 
         # Update depth guide visibility
         self.updateDepthGuideVolume()
