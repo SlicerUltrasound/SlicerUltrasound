@@ -1372,6 +1372,8 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             validation = {"status": "unadjudicated"}
         node.SetAttribute("rater", rater)
         node.SetAttribute("validation", json.dumps(validation))
+        node.SetLocked(True)
+
         status = validation.get("status", "unadjudicated")
 
         # Ensure display node exists
