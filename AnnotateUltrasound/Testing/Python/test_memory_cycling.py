@@ -101,14 +101,23 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
             try:
                 process = psutil.Process()
                 memory_mb = process.memory_info().rss / 1024 / 1024
-                self.memory_log.append({
-                    'timestamp': timestamp,
-                    'memory_mb': memory_mb,
-                    'action': action,
-                    'frame': self.current_frame,
-                    'cycle': self.cycle_count
-                })
-                print(f"Memory: {memory_mb:.1f}MB | Frame: {self.current_frame} | Cycle: {self.cycle_count} | Action: {action}")
+                if not action.startswith("playback"):
+                    self.memory_log.append({
+                        'timestamp': timestamp,
+                        'memory_mb': memory_mb,
+                        'action': action,
+                        'frame': self.current_frame,
+                        'cycle': self.cycle_count
+                    })
+                    print(f"Memory: {memory_mb:.1f}MB | Frame: {self.current_frame} | Cycle: {self.cycle_count} | Action: {action}")
+                else:
+                    self.memory_log.append({
+                        'timestamp': timestamp,
+                        'memory_mb': memory_mb,
+                        'action': action,
+                        'cycle': self.cycle_count
+                    })
+                    print(f"Memory: {memory_mb:.1f}MB | Cycle: {self.cycle_count} | Action: {action}")
             except Exception as e:
                 print(f"Could not log memory usage: {e}")
         else:
@@ -256,14 +265,16 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
             self.logic.showHideLines = True
 
             # Create markup nodes similar to JSON annotations
+            color_pleura, _ = self.logic.getColorsForRater(rater)
             pleura_line1 = self.logic.createMarkupLine(f"Pleura",
-                                                      rater, [pleura1_start, pleura1_end], [1, 0, 0])
+                                                      rater, [pleura1_start, pleura1_end], color_pleura)
             pleura_line2 = self.logic.createMarkupLine(f"Pleura",
-                                                      rater, [pleura2_start, pleura2_end], [1, 0, 0])
+                                                      rater, [pleura2_start, pleura2_end], color_pleura)
+            _, color_blines = self.logic.getColorsForRater(rater)
             bline1 = self.logic.createMarkupLine(f"B-line",
-                                                rater, [bline1_start, bline1_end], [0, 1, 0])
+                                                rater, [bline1_start, bline1_end], color_blines)
             bline2 = self.logic.createMarkupLine(f"B-line",
-                                                rater, [bline2_start, bline2_end], [0, 1, 0])
+                                                rater, [bline2_start, bline2_end], color_blines)
 
             # Add to logic lists
             self.logic.pleuraLines.append(pleura_line1)
@@ -314,11 +325,39 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                 print("Failed to draw test lines")
                 return
 
-            # Move to next frame
-            next_frame = (self.current_frame + 1) % self.total_frames
-            if not self.navigate_to_frame(next_frame):
-                print("Failed to navigate to next frame")
-                return
+            # If not on first frame, go to previous frame, then back to current frame, then to next frame
+            if self.current_frame > 0:
+                # Go to previous frame
+                prev_frame = self.current_frame - 1
+                if not self.navigate_to_frame(prev_frame):
+                    print("Failed to navigate to previous frame")
+                    return
+
+                # Refresh and wait a moment
+                slicer.app.processEvents()
+                time.sleep(0.5)
+
+                # Go back to the frame we just drew on
+                current_frame = self.current_frame + 1  # This is the frame we drew on
+                if not self.navigate_to_frame(current_frame):
+                    print("Failed to navigate back to current frame")
+                    return
+
+                # Refresh and wait a moment
+                slicer.app.processEvents()
+                time.sleep(0.5)
+
+                # Go to next frame
+                next_frame = (current_frame + 1) % self.total_frames
+                if not self.navigate_to_frame(next_frame):
+                    print("Failed to navigate to next frame")
+                    return
+            else:
+                # If on first frame, just go to next frame
+                next_frame = (self.current_frame + 1) % self.total_frames
+                if not self.navigate_to_frame(next_frame):
+                    print("Failed to navigate to next frame")
+                    return
 
             # Increment cycle count
             self.cycle_count += 1
@@ -332,6 +371,38 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
         except Exception as e:
             print(f"Error in cycle_frame: {e}")
 
+    def play_sequence(self):
+        """Play the sequence from start to end using Slicer's playback."""
+        try:
+            print("Starting sequence playback using Slicer's player...")
+
+            if not self.logic.sequenceBrowserNode:
+                print("No sequence browser node available")
+                return False
+
+            # Start playback
+            self.logic.sequenceBrowserNode.SetPlaybackActive(True)
+            self.log_memory_usage("playback_started")
+
+            # Wait for playback to complete by monitoring the sequence browser
+            print(f"Playing {self.total_frames} frames...")
+
+            # Wait until playback is no longer active
+            while self.logic.sequenceBrowserNode.GetPlaybackActive():
+                time.sleep(0.1)  # Small check interval
+                slicer.app.processEvents()  # Keep UI responsive
+
+            # Stop playback (in case it's still running)
+            self.logic.sequenceBrowserNode.SetPlaybackActive(False)
+            self.log_memory_usage("playback_completed")
+
+            print(f"Completed playback of {self.total_frames} frames")
+            return True
+
+        except Exception as e:
+            print(f"Error during sequence playback: {e}")
+            return False
+
     def runTest(self):
         """Run the memory cycling test."""
         print("Starting memory cycling test...")
@@ -339,27 +410,41 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
         print("1. Load the AnnotateUltrasound module")
         print("2. Load test DICOM data")
         print("3. Cycle through frames while drawing lines")
-        print("4. Monitor memory usage throughout the process")
-        print("5. Save memory logs to a JSON file")
+        print("4. Play the sequence from start to end multiple times")
+        print("5. Monitor memory usage throughout the process")
+        print("6. Save memory logs to a JSON file")
 
         # Load test data
         if not self.load_test_data():
             print("Failed to load test data")
             return
 
-        # Run cycles
+        # Run drawing cycles
+        print(f"\n=== PHASE 1: Drawing Cycles ({self.max_cycles} cycles) ===")
         for cycle in range(self.max_cycles):
             self.cycle_count = cycle
             self.cycle_frame()
             time.sleep(1)  # Small delay between cycles
+
+        # Run playback cycles
+        self.cycle_count = 0
+        print(f"\n=== PHASE 2: Playback Cycles ({self.max_cycles} cycles) ===")
+        for cycle in range(self.max_cycles):
+            print(f"Playback cycle {cycle + 1}/{self.max_cycles}")
+            if not self.play_sequence():
+                print("Failed to complete playback cycle")
+                break
+            time.sleep(0.5)  # Small delay between playback cycles
+            self.cycle_count = cycle
 
         # Save memory log
         log_file = os.path.join(tempfile.gettempdir(), f"memory_cycling_test_{int(time.time())}.json")
         with open(log_file, 'w') as f:
             json.dump(self.memory_log, f, indent=2)
 
-        print(f"Memory cycling test completed. Log saved to: {log_file}")
-        print(f"Total cycles completed: {self.cycle_count}")
+        print(f"\nMemory cycling test completed. Log saved to: {log_file}")
+        print(f"Total drawing cycles completed: {self.cycle_count}")
+        print(f"Total playback cycles completed: {self.max_cycles}")
 
         # Print summary
         if PSUTIL_AVAILABLE and self.memory_log:

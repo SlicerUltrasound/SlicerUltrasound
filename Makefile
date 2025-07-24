@@ -115,17 +115,20 @@ test-free-markup-nodes: find-slicer-python
 		exit 1; \
 	fi
 
+# Default number of cycles for memory cycling test
+MAX_CYCLES ?= 5
+
 # Run memory cycling test (requires display)
 test-memory-cycling: find-slicer-python
-	@echo "Running memory cycling test (requires display)..."
+	@echo "Running memory cycling test (requires display) with $(MAX_CYCLES) cycles..."
 	@if [ -f "/Applications/Slicer.app/Contents/MacOS/Slicer" ]; then \
-		/Applications/Slicer.app/Contents/MacOS/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+		/Applications/Slicer.app/Contents/MacOS/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles $(MAX_CYCLES); \
 	elif [ -f "/usr/local/bin/Slicer" ]; then \
-		/usr/local/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+		/usr/local/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles $(MAX_CYCLES); \
 	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/bin/Slicer" ]; then \
-		$$SLICER_HOME/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+		$$SLICER_HOME/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles $(MAX_CYCLES); \
 	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/Slicer" ]; then \
-		$$SLICER_HOME/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+		$$SLICER_HOME/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles $(MAX_CYCLES); \
 	else \
 		echo "❌ Slicer not found. Please install Slicer first."; \
 		echo "Checked paths:"; \
