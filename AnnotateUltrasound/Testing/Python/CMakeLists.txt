@@ -25,3 +25,12 @@ slicer_add_python_unittest(
     LABELS "unit;slicer;ultrasound;markup"
     TIMEOUT 300
 )
+
+slicer_add_python_unittest(
+  NAME MemoryCyclingTest
+  SCRIPT test_memory_cycling.py
+  SLICER_ARGS --no-splash --no-main-window
+  PROPERTIES
+    LABELS "performance;memory;slicer;ultrasound"
+    TIMEOUT 3600
+)

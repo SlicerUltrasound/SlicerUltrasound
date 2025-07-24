@@ -114,6 +114,27 @@ test-free-markup-nodes: find-slicer-python
 		echo "  $$SLICER_HOME/Slicer"; \
 		exit 1; \
 	fi
+
+# Run memory cycling test (requires display)
+test-memory-cycling: find-slicer-python
+	@echo "Running memory cycling test (requires display)..."
+	@if [ -f "/Applications/Slicer.app/Contents/MacOS/Slicer" ]; then \
+		/Applications/Slicer.app/Contents/MacOS/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+	elif [ -f "/usr/local/bin/Slicer" ]; then \
+		/usr/local/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/bin/Slicer" ]; then \
+		$$SLICER_HOME/bin/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+	elif [ -n "$$SLICER_HOME" ] && [ -f "$$SLICER_HOME/Slicer" ]; then \
+		$$SLICER_HOME/Slicer --python-script AnnotateUltrasound/Testing/Python/test_memory_cycling.py -- --max-cycles 100; \
+	else \
+		echo "❌ Slicer not found. Please install Slicer first."; \
+		echo "Checked paths:"; \
+		echo "  /Applications/Slicer.app/Contents/MacOS/Slicer"; \
+		echo "  /usr/local/bin/Slicer"; \
+		echo "  $$SLICER_HOME/bin/Slicer"; \
+		echo "  $$SLICER_HOME/Slicer"; \
+		exit 1; \
+	fi
 # Build and install the module into Slicer
 install-module: find-slicer-python
 	@echo "Building and installing SlicerUltrasound module..."
@@ -193,6 +214,7 @@ help:
 	@echo "  test-gui          - Run GUI tests (requires display, simulates user interactions)"
 	@echo "  test-dicom        - Run DICOM loading tests (requires display, uses real DICOM data)"
 	@echo "  test-free-markup-nodes - Run freeMarkupNodes tests (requires display)"
+	@echo "  test-memory-cycling - Run memory cycling test (requires display, monitors memory usage)"
 	@echo "  test              - Run pytest tests (alias for test-py-system)"
 	@echo "  test-pattern      - Run tests matching pattern (e.g., make test-pattern PATTERN=AnnotateUltrasound)"
 	@echo "  test-coverage     - Run pytest tests with coverage (Python-only)"
