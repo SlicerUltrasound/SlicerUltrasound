@@ -221,7 +221,6 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                                     # Get volume bounds to ensure lines are visible
             bounds = [0, 0, 0, 0, 0, 0]
             volumeNode.GetBounds(bounds)
-            print(f"Volume bounds: {bounds}")
 
             # Calculate offset based on current frame to move lines each frame
             # Move lines by a few pixels each frame, cycling back after 5 frames
@@ -250,16 +249,9 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
             bline2_start = [-144.0 + offset_x, -85.0 + offset_y, 0.0]  # LPS to RAS: flip X and Y
             bline2_end = [-149.0 + offset_x, -84.0 + offset_y, 0.0]
 
-            print(f"Drawing lines with coordinates:")
-            print(f"  Pleura 1: {pleura1_start} to {pleura1_end}")
-            print(f"  Pleura 2: {pleura2_start} to {pleura2_end}")
-            print(f"  B-line 1: {bline1_start} to {bline1_end}")
-            print(f"  B-line 2: {bline2_start} to {bline2_end}")
-
             # Use the current rater from the logic
             parameterNode = self.logic.getParameterNode()
             rater = parameterNode.rater if parameterNode and parameterNode.rater else "test_rater"
-            print(f"Using rater: {rater}")
 
             # Ensure lines are visible
             self.logic.showHideLines = True

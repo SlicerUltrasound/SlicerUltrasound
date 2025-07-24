@@ -2716,7 +2716,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
     def onPointRemoved(self, caller, event):
         # Called when a markup node point is removed
         logging.debug(f"onPointRemoved: {caller.GetName()} was removed")
-        removedNodeID = caller.GetID()
         numControlPoints = caller.GetNumberOfControlPoints()
         if numControlPoints < 2:
             # Remove the line from the scene
@@ -2741,17 +2740,21 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if not removedNodes:
             return
 
+        didRemove = False
         for node in removedNodes:
-            if node in self.pleuraLines:
-                self.pleuraLines.remove(node)
-            elif node in self.bLines:
-                self.bLines.remove(node)
-            logging.debug(f"onMarkupNodeRemoved: {node.GetName()} was removed")
-            # we do not call _freeMarkupNode as this node is already Removed from the scene and is gone
-        parameterNode = self.getParameterNode()
-        parameterNode.unsavedChanges = True
-        self.syncMarkupsToAnnotations()
-        self.refreshDisplay(updateOverlay=True, updateGui=True)
+            if isinstance(node, slicer.vtkMRMLMarkupsLineNode):
+                if node in self.pleuraLines:
+                    self.pleuraLines.remove(node)
+                elif node in self.bLines:
+                    self.bLines.remove(node)
+                logging.debug(f"onMarkupNodeRemoved: {node.GetName()} was removed")
+                # we do not call _freeMarkupNode as this node is already Removed from the scene and is gone
+                didRemove = True
+        if didRemove:
+            parameterNode = self.getParameterNode()
+            parameterNode.unsavedChanges = True
+            self.syncMarkupsToAnnotations()
+            self.refreshDisplay(updateOverlay=True, updateGui=True)
 
     def fanCornersFromSectorLine(self, p1, p2, center, r1, r2):
         op1 = np.array(p1) - np.array(center)
