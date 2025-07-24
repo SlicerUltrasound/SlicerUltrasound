@@ -380,6 +380,9 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                 print("No sequence browser node available")
                 return False
 
+            # Set playback speed to 2.0 fps
+            self.logic.sequenceBrowserNode.SetPlaybackRateFPS(2.0)
+
             # Start playback
             self.logic.sequenceBrowserNode.SetPlaybackActive(True)
             self.log_memory_usage("playback_started")
