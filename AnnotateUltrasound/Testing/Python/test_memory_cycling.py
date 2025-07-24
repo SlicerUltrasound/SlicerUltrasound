@@ -62,7 +62,8 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
         # Initialize test parameters
         self.current_frame = 0
         self.total_frames = 0
-        self.cycle_count = 0
+        self.draw_cycle_count = 0
+        self.play_cycle_count = 0
         self.max_cycles = 5  # Default number of cycles to run
         self.test_data_path = testDataPath
         self.dicom_file = "3038953328_70622118.dcm"
@@ -107,29 +108,38 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                         'memory_mb': memory_mb,
                         'action': action,
                         'frame': self.current_frame,
-                        'cycle': self.cycle_count
+                        'cycle': self.draw_cycle_count
                     })
-                    print(f"Memory: {memory_mb:.1f}MB | Frame: {self.current_frame} | Cycle: {self.cycle_count} | Action: {action}")
+                    print(f"Memory: {memory_mb:.1f}MB | Frame: {self.current_frame} | Cycle: {self.draw_cycle_count} | Action: {action}")
                 else:
                     self.memory_log.append({
                         'timestamp': timestamp,
                         'memory_mb': memory_mb,
                         'action': action,
-                        'cycle': self.cycle_count
+                        'cycle': self.play_cycle_count
                     })
-                    print(f"Memory: {memory_mb:.1f}MB | Cycle: {self.cycle_count} | Action: {action}")
+                    print(f"Memory: {memory_mb:.1f}MB | Cycle: {self.play_cycle_count} | Action: {action}")
             except Exception as e:
                 print(f"Could not log memory usage: {e}")
         else:
             # Log without memory info
-            self.memory_log.append({
-                'timestamp': timestamp,
-                'memory_mb': 0,  # Placeholder
-                'action': action,
-                'frame': self.current_frame,
-                'cycle': self.cycle_count
-            })
-            print(f"Frame: {self.current_frame} | Cycle: {self.cycle_count} | Action: {action}")
+            if not action.startswith("playback"):
+                self.memory_log.append({
+                    'timestamp': timestamp,
+                    'memory_mb': 0,  # Placeholder
+                    'action': action,
+                    'frame': self.current_frame,
+                    'cycle': self.draw_cycle_count
+                })
+                print(f"Frame: {self.current_frame} | Cycle: {self.draw_cycle_count} | Action: {action}")
+            else:
+                self.memory_log.append({
+                    'timestamp': timestamp,
+                    'memory_mb': 0,  # Placeholder
+                    'action': action,
+                    'cycle': self.play_cycle_count
+                })
+                print(f"Cycle: {self.play_cycle_count} | Action: {action}")
 
     def load_test_data(self):
         """Load the test DICOM and annotation data."""
@@ -352,13 +362,13 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                     return
 
             # Increment cycle count
-            self.cycle_count += 1
+            self.draw_cycle_count += 1
 
             # Force garbage collection
             gc.collect()
 
             # Log progress
-            print(f"Completed cycle {self.cycle_count}/{self.max_cycles}")
+            print(f"Completed cycle {self.draw_cycle_count}/{self.max_cycles}")
 
         except Exception as e:
             print(f"Error in cycle_frame: {e}")
@@ -373,7 +383,7 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                 return False
 
             # Set playback speed to 2.0 fps
-            self.logic.sequenceBrowserNode.SetPlaybackRateFPS(2.0)
+            self.logic.sequenceBrowserNode.SetPlaybackRateFps(2.0)
 
             # Start playback
             self.logic.sequenceBrowserNode.SetPlaybackActive(True)
@@ -390,7 +400,7 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
             # Stop playback (in case it's still running)
             self.logic.sequenceBrowserNode.SetPlaybackActive(False)
             self.log_memory_usage("playback_completed")
-
+            self.play_cycle_count += 1
             print(f"Completed playback of {self.total_frames} frames")
             return True
 
@@ -417,12 +427,10 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
         # Run drawing cycles
         print(f"\n=== PHASE 1: Drawing Cycles ({self.max_cycles} cycles) ===")
         for cycle in range(self.max_cycles):
-            self.cycle_count = cycle
             self.cycle_frame()
             time.sleep(1)  # Small delay between cycles
 
         # Run playback cycles
-        self.cycle_count = 0
         print(f"\n=== PHASE 2: Playback Cycles ({self.max_cycles} cycles) ===")
         for cycle in range(self.max_cycles):
             print(f"Playback cycle {cycle + 1}/{self.max_cycles}")
@@ -430,7 +438,6 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
                 print("Failed to complete playback cycle")
                 break
             time.sleep(0.5)  # Small delay between playback cycles
-            self.cycle_count = cycle
 
         # Save memory log
         log_file = os.path.join(tempfile.gettempdir(), f"memory_cycling_test_{int(time.time())}.json")
@@ -438,8 +445,8 @@ class MemoryCyclingTest(ScriptedLoadableModuleTest):
             json.dump(self.memory_log, f, indent=2)
 
         print(f"\nMemory cycling test completed. Log saved to: {log_file}")
-        print(f"Total drawing cycles completed: {self.cycle_count}")
-        print(f"Total playback cycles completed: {self.max_cycles}")
+        print(f"Total drawing cycles completed: {self.draw_cycle_count}")
+        print(f"Total playback cycles completed: {self.play_cycle_count}")
 
         # Print summary
         if PSUTIL_AVAILABLE and self.memory_log:
