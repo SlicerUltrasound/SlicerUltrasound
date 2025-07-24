@@ -2489,6 +2489,9 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             displayNode = markupNode.GetDisplayNode()
             displayNode.SetPropertiesLabelVisibility(False)
         displayNode.SetSelectedColor(color)
+        displayNode.SetGlyphTypeFromString("Circle2D")
+        displayNode.SetGlyphScale(2.0)
+        displayNode.SetLineThickness(0.25)
         for coord in coordinates:
             markupNode.AddControlPointWorld(coord[0], coord[1], coord[2])
 
