@@ -2723,7 +2723,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 self.pleuraLines.remove(caller)
             elif caller in self.bLines:
                 self.bLines.remove(caller)
-            self._freeMarkupNode(caller)
+            qt.QTimer.singleShot(0, lambda: self._freeMarkupNode(caller))
 
         parameterNode = self.getParameterNode()
         parameterNode.unsavedChanges = True
