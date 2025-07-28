@@ -351,19 +351,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             renderWindowInteractor.RemoveObserver(self._clickObserverTag)
             self._clickObserverTag = None
 
-    # --- Distance point to segment ---
-    def distancePointToSegment(self, p, a, b):
-        p = np.array(p)
-        a = np.array(a)
-        b = np.array(b)
-        ab = b - a
-        if np.allclose(ab, 0):
-            return np.linalg.norm(p - a)
-        t = np.dot(p - a, ab) / np.dot(ab, ab)
-        t = np.clip(t, 0, 1)
-        closest = a + t * ab
-        return np.linalg.norm(p - closest)
-
     # --- On red view click ---
     # This function is called when the user clicks on the red view.
     # It finds the closest visible markup line node (to any segment) and selects it.
@@ -382,7 +369,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         # Find the closest visible markup line node (to any segment)
         minDist = float('inf')
         closestNode = None
-        threshold = 3.0  # mm
+        threshold = 4.0  # distance squared, ~2mm
         for node in slicer.util.getNodesByClass('vtkMRMLMarkupsLineNode'):
             displayNode = node.GetDisplayNode()
             nodeRater = node.GetAttribute('rater')
@@ -394,7 +381,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
                 pt2 = [0, 0, 0]
                 node.GetNthControlPointPosition(i, pt1)
                 node.GetNthControlPointPosition(i + 1, pt2)
-                dist = self.distancePointToSegment(ras, pt1, pt2)
+                dist = self.distanceToLineSegment2D(ras[:2], pt1[:2], pt2[:2])
                 if dist < minDist:
                     minDist = dist
                     closestNode = node

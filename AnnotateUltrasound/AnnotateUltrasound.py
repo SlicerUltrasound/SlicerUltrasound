@@ -114,6 +114,22 @@ class AnnotateUltrasoundParameterNode:
     depthGuideVisible: bool = True
     rater = ''
 
+class SliceViewClickFilter(qt.QObject):
+    def __init__(self, parentWidget):
+        super().__init__()
+        self.parentWidget = parentWidget
+
+    def eventFilter(self, obj, event):
+        if event.type() == qt.QEvent.MouseButtonPress:
+            modifiers = qt.QApplication.keyboardModifiers()
+            if modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
+                interactor = self.parentWidget.sliceView.interactor()
+                x, y = interactor.GetEventPosition()
+                if self.parentWidget.pickClosestLineNodeInSlice(x, y):
+                    return True
+                else:
+                    return False
+        return False
 #
 # AnnotateUltrasoundWidget
 #
@@ -505,6 +521,63 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             # Do not set collapsed state here; let subclass or user decide.
         # Guard flag for programmatic collapse/expand of raterColorsCollapsibleButton
         self._ignoreCollapsedChangedSignal = False
+        self.sliceClickFilter = SliceViewClickFilter(self)
+        sliceView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+        sliceView.installEventFilter(self.sliceClickFilter)
+        self.sliceView = sliceView  # Save reference so it's not GC'ed
+
+    def distanceToLineSegment2D(self, p, a, b):
+        """Squared distance from point p to segment ab in 2D (XY only)."""
+        px, py = p[0], p[1]
+        ax, ay = a[0], a[1]
+        bx, by = b[0], b[1]
+
+        dx = bx - ax
+        dy = by - ay
+        if dx == 0 and dy == 0:
+            # a and b are the same point
+            return (px - ax)**2 + (py - ay)**2
+
+        t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+        t = max(0, min(1, t))
+
+        closest_x = ax + t * dx
+        closest_y = ay + t * dy
+
+        return (px - closest_x)**2 + (py - closest_y)**2
+
+    def pickClosestLineNodeInSlice(self, x, y):
+        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+        sliceNode = sliceWidget.mrmlSliceNode()
+        xyToRas = sliceNode.GetXYToRAS()
+        xy = [x, y, 0, 1]
+        ras = [0, 0, 0, 1]
+        xyToRas.MultiplyPoint(xy, ras)
+        ras = ras[:3]
+
+        minDist2 = float("inf")
+        closestNode = None
+
+        for node in self.logic.pleuraLines + self.logic.bLines:
+            if node.GetNumberOfControlPoints() < 2:
+                continue
+            a = [0, 0, 0]
+            b = [0, 0, 0]
+            node.GetNthControlPointPosition(0, a)
+            node.GetNthControlPointPosition(1, b)
+
+            # Use only XY for 2D slice
+            dist2 = self.distanceToLineSegment2D(ras[:2], a[:2], b[:2])
+            if dist2 < minDist2:
+                minDist2 = dist2
+                closestNode = node
+
+        if closestNode and minDist2 < 4.0:  # ~2mm threshold
+            self.toggleLineSelection(closestNode)
+            return True
+        else:
+            return False
 
     def saveUserSettings(self):
         settings = qt.QSettings()
@@ -1265,6 +1338,19 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         for node in self.logic.pleuraLines + self.logic.bLines:
             if slicer.mrmlScene.IsNodePresent(node):
                 self.logic.updateMarkupNodeAppearance(node)
+
+    def toggleLineSelection(self, lineNode):
+        if not lineNode or not slicer.mrmlScene.IsNodePresent(lineNode):
+            return
+
+        nodeID = lineNode.GetID()
+
+        if nodeID in self.logic.selectedLineIDs:
+            self.logic.selectedLineIDs.remove(nodeID)
+        else:
+            self.logic.selectedLineIDs.append(nodeID)
+
+        self.logic.updateMarkupNodeAppearance(lineNode)
 
     def onCopyLines(self):
         logging.debug('onCopyLines')

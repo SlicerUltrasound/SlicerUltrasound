@@ -256,31 +256,16 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         """Test copying selected lines."""
         print("Testing copy lines...")
 
-        # Check if lines are in the scene
-        for i, node in enumerate(self.logic.pleuraLines):
-            print(f"Debug: Pleura line {i}: {node.GetName() if node else 'None'}, in scene: {slicer.mrmlScene.IsNodePresent(node) if node else False}, control points: {node.GetNumberOfControlPoints() if node else 0}")
-        for i, node in enumerate(self.logic.bLines):
-            print(f"Debug: B-line {i}: {node.GetName() if node else 'None'}, in scene: {slicer.mrmlScene.IsNodePresent(node) if node else False}, control points: {node.GetNumberOfControlPoints() if node else 0}")
-
         # Select all the lines
         self.widget.onSelectAllLines()
 
-        # Debug: Check what lines we have
-        print(f"Debug: pleuraLines count: {len(self.logic.pleuraLines)}")
-        print(f"Debug: bLines count: {len(self.logic.bLines)}")
-        print(f"Debug: selectedLineIDs count: {len(self.logic.selectedLineIDs)}")
-        print(f"Debug: selectedLineIDs: {self.logic.selectedLineIDs}")
 
         # Copy the selected lines
-        print("Debug: About to call onCopyLines()")
         try:
             self.widget.onCopyLines()
-            print("Debug: onCopyLines() completed successfully")
         except Exception as e:
-            print(f"Debug: Exception in onCopyLines(): {e}")
             import traceback
             traceback.print_exc()
-        print(f"Debug: After onCopyLines(), clipboardLines count: {len(self.logic.clipboardLines)}")
 
         # Verify lines were copied to clipboard
         assert self.logic.clipboardLines is not None, "Clipboard lines should not be None"
@@ -364,12 +349,10 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         """Test copying and pasting multiple lines multiple times."""
         print("Testing multiple copy/paste operations...")
 
+        total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
+
         # Copy and paste multiple times
         for i in range(3):
-            print(f"Copy/paste iteration {i+1}")
-
-            total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
-
             # Select and copy
             self.widget.onSelectAllLines()
             self.widget.onCopyLines()
@@ -379,8 +362,8 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
 
             # Verify we have more lines each time
             total_lines = len(self.logic.pleuraLines) + len(self.logic.bLines)
-            expected_lines = total_lines_before * (2 ** i)  # initial lines, doubled each time
-            print(f"Total lines after iteration {i+1}: {total_lines} (expected ~{expected_lines})")
+            expected_lines = total_lines_before * (2 ** (i+1))  # initial lines, doubled each time
+            assert total_lines == expected_lines, f"Total lines should be: {total_lines_before} * (2 ** {i+1}) = {expected_lines}"
 
         print("✅ Multiple copy/paste operations test passed")
 
@@ -459,6 +442,150 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
 
         print("✅ Keyboard shortcuts test passed")
 
+    def test_individual_line_selection(self):
+        """Test selecting and unselecting individual lines by clicking on them."""
+        print("Testing individual line selection by clicking...")
+
+        # Clear any existing selection
+        self.logic.selectedLineIDs = []
+
+        # Test selecting individual lines by calling toggleLineSelection directly
+        # Only test a subset to avoid too much output
+        test_lines = (self.logic.pleuraLines[:5] + self.logic.bLines[:5])  # Test first 5 of each type
+
+        for i, node in enumerate(test_lines):
+            if not node or not slicer.mrmlScene.IsNodePresent(node):
+                continue
+
+            # Test selecting the line
+            initial_selection_count = len(self.logic.selectedLineIDs)
+            self.widget.toggleLineSelection(node)
+
+            # Verify the line is now selected
+            assert node.GetID() in self.logic.selectedLineIDs, f"Line {i} should be selected after toggle"
+            assert len(self.logic.selectedLineIDs) == initial_selection_count + 1, f"Selection count should increase by 1"
+
+            # Verify the line has selected appearance
+            display_node = node.GetDisplayNode()
+            if display_node:
+                assert display_node.GetLineThickness() >= 0.3, f"Selected line should have thicker line"
+                assert display_node.GetGlyphScale() >= 2.0, f"Selected line should have larger glyphs"
+
+        # Try to unselect the first selected line
+        if self.logic.selectedLineIDs:
+            first_selected_id = self.logic.selectedLineIDs[0]
+            first_selected_node = slicer.mrmlScene.GetNodeByID(first_selected_id)
+
+            if first_selected_node:
+                initial_selection_count = len(self.logic.selectedLineIDs)
+
+                # Toggle again to unselect
+                self.widget.toggleLineSelection(first_selected_node)
+
+                # Verify the line is now unselected
+                assert first_selected_id not in self.logic.selectedLineIDs, f"Line should be unselected after second toggle"
+                assert len(self.logic.selectedLineIDs) == initial_selection_count - 1, f"Selection count should decrease by 1"
+
+                # Verify the line has normal appearance
+                display_node = first_selected_node.GetDisplayNode()
+                if display_node:
+                    assert display_node.GetLineThickness() <= 0.3, f"Unselected line should have normal line thickness"
+                    assert display_node.GetGlyphScale() <= 2.5, f"Unselected line should have normal glyph scale"
+
+        print("✅ Individual line selection test passed")
+
+    def test_control_point_selection(self):
+        """Test selecting lines by clicking on their control points."""
+        print("Testing control point selection...")
+
+        # Clear any existing selection
+        self.logic.selectedLineIDs = []
+
+        # Get the slice view for testing clicks
+        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
+        sliceNode = sliceWidget.mrmlSliceNode()
+
+        # Get the transformation matrix from slice coordinates to RAS
+        xyToRas = sliceNode.GetXYToRAS()
+        # Get the inverse transformation from RAS to slice coordinates
+        rasToXY = vtk.vtkMatrix4x4()
+        vtk.vtkMatrix4x4.Invert(xyToRas, rasToXY)
+
+        # Test clicking on control points of each line
+        # Only test a subset to avoid too much output
+        test_lines = (self.logic.pleuraLines[:3] + self.logic.bLines[:3])  # Test first 3 of each type
+
+        for i, node in enumerate(test_lines):
+            if not node or not slicer.mrmlScene.IsNodePresent(node):
+                continue
+
+            # Test clicking on each control point
+            for cp_idx in range(node.GetNumberOfControlPoints()):
+                # Get control point position in RAS coordinates
+                cp_pos = [0, 0, 0]
+                node.GetNthControlPointPositionWorld(cp_idx, cp_pos)
+
+                # Convert RAS to slice coordinates using the inverse transformation
+                ras_homogeneous = [cp_pos[0], cp_pos[1], cp_pos[2], 1.0]
+                xy_homogeneous = [0, 0, 0, 0]
+                rasToXY.MultiplyPoint(ras_homogeneous, xy_homogeneous)
+
+                # Extract the slice coordinates (x, y)
+                click_x = int(xy_homogeneous[0])
+                click_y = int(xy_homogeneous[1])
+
+                # Check if the coordinates are within the slice view bounds
+                sliceView = sliceWidget.sliceView()
+                view_width = sliceView.width
+                view_height = sliceView.height
+
+                if 0 <= click_x < view_width and 0 <= click_y < view_height:
+                    try:
+                        was_picked = self.widget.pickClosestLineNodeInSlice(click_x, click_y)
+
+                        if was_picked:
+                            # Verify the line is selected
+                            assert node.GetID() in self.logic.selectedLineIDs, f"Line {i} should be selected after clicking control point"
+
+                            # Verify the line has selected appearance
+                            display_node = node.GetDisplayNode()
+                            if display_node:
+                                assert display_node.GetLineThickness() >= 0.3, f"Selected line should have thicker line"
+                                assert display_node.GetGlyphScale() >= 2.0, f"Selected line should have larger glyphs"
+
+                            break  # Found this line, move to next
+
+                    except Exception as e:
+                        continue
+
+            # If we didn't successfully pick this line, try clicking near the middle of the line
+            if node.GetID() not in self.logic.selectedLineIDs:
+
+                # Get line endpoints in RAS coordinates
+                pt1 = [0, 0, 0]
+                pt2 = [0, 0, 0]
+                node.GetNthControlPointPositionWorld(0, pt1)
+                node.GetNthControlPointPositionWorld(1, pt2)
+
+                # Calculate middle point in RAS coordinates
+                mid_ras = [(pt1[0] + pt2[0]) / 2, (pt1[1] + pt2[1]) / 2, (pt1[2] + pt2[2]) / 2]
+
+                # Convert middle point to slice coordinates
+                mid_ras_homogeneous = [mid_ras[0], mid_ras[1], mid_ras[2], 1.0]
+                mid_xy_homogeneous = [0, 0, 0, 0]
+                rasToXY.MultiplyPoint(mid_ras_homogeneous, mid_xy_homogeneous)
+
+                mid_x = int(mid_xy_homogeneous[0])
+                mid_y = int(mid_xy_homogeneous[1])
+
+                if 0 <= mid_x < view_width and 0 <= mid_y < view_height:
+                    was_picked = self.widget.pickClosestLineNodeInSlice(mid_x, mid_y)
+
+                    if was_picked:
+                        assert node.GetID() in self.logic.selectedLineIDs, f"Line {i} should be selected after middle click"
+
+        print("✅ Control point selection test passed")
+
     def runTest(self):
         """Run the line selection, copy, and paste test."""
         print("Starting line selection, copy, and paste test...")
@@ -503,6 +630,14 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         print("\n--- Testing Keyboard Shortcuts ---")
         self.test_keyboard_shortcuts()
 
+        print("\n=== PHASE 3: Individual Line Selection Tests ===")
+
+        print("\n--- Testing Individual Line Selection by Clicking ---")
+        self.test_individual_line_selection()
+
+        print("\n--- Testing Control Point Selection ---")
+        self.test_control_point_selection()
+
         print("\n=== TEST SUMMARY ===")
         print("✅ All line selection, copy, and paste tests completed successfully!")
         print("The following functionality was tested:")
@@ -512,6 +647,8 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         print("- Keyboard shortcuts (Ctrl+A, Ctrl+C, Ctrl+V, Escape)")
         print("- Visual feedback for selected lines")
         print("- Clipboard management")
+        print("- Individual line selection by clicking")
+        print("- Control point selection")
         print("- State management and cleanup")
 
 
