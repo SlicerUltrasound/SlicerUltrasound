@@ -34,3 +34,13 @@ slicer_add_python_unittest(
     LABELS "performance;memory;slicer;ultrasound"
     TIMEOUT 3600
 )
+
+slicer_add_python_unittest(
+  NAME LineSelectionCopyPasteTest
+  SCRIPT test_line_selection_copy_paste.py
+  SLICER_ARGS --no-splash --no-main-window
+  PROPERTIES
+    LABELS "integration;gui;slicer;ultrasound;copy-paste"
+    TIMEOUT 600
+    ENVIRONMENT "DISPLAY=:0"
+)
