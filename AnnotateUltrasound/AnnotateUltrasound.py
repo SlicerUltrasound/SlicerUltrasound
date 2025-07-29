@@ -134,6 +134,10 @@ class GlobalShortcutFilter(qt.QObject):
                 self.parentWidget.onDeselectAllLines()
                 return True
 
+            elif key == qt.Qt.Key_Backspace or key == qt.Qt.Key_Delete:
+                self.parentWidget.onDeleteSelectedLines()
+                return True
+
         return False
 
 class SliceViewClickFilter(qt.QObject):
@@ -1348,6 +1352,20 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             if slicer.mrmlScene.IsNodePresent(node):
                 self.logic.updateMarkupNodeAppearance(node)
 
+    def onDeleteSelectedLines(self):
+        for nodeID in self.logic.selectedLineIDs:
+            node = slicer.mrmlScene.GetNodeByID(nodeID)
+            if node:
+                if node in self.logic.pleuraLines:
+                    self.logic.pleuraLines.remove(node)
+                if node in self.logic.bLines:
+                    self.logic.bLines.remove(node)
+                self.logic._freeMarkupNode(node)
+        self.logic.selectedLineIDs = []
+        self.logic.syncMarkupsToAnnotations()
+        self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
+        self._parameterNode.unsavedChanges = True
+
     def toggleLineSelection(self, lineNode):
         if not lineNode or not slicer.mrmlScene.IsNodePresent(lineNode):
             return
@@ -1437,6 +1455,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             targetList = self.logic.pleuraLines if lineType == "Pleura" else self.logic.bLines
             alreadyExists = False
             for existingNode in targetList:
+                if existingNode.GetDisplayNode() is None or existingNode.GetDisplayNode().GetVisibility() == False:
+                    continue
+
                 e1 = [0, 0, 0]
                 e2 = [0, 0, 0]
                 existingNode.GetNthControlPointPosition(0, e1)
@@ -1486,6 +1507,23 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             slicer.util.mainWindow().statusBar().showMessage(f"Pasted {len(pastedLines)} unique lines, and skipped {len(self.logic.clipboardLines) - len(pastedLines)} duplicate lines", 2000)
         else:
             slicer.util.mainWindow().statusBar().showMessage(f"Skipped {len(self.logic.clipboardLines)} duplicate lines", 2000)
+
+    def onDeleteSelectedLines(self):
+        deletedLines = 0
+        for nodeID in self.logic.selectedLineIDs:
+            node = slicer.mrmlScene.GetNodeByID(nodeID)
+            if node and node.GetAttribute("rater") == self._parameterNode.rater:
+                if node in self.logic.pleuraLines:
+                    self.logic.pleuraLines.remove(node)
+                if node in self.logic.bLines:
+                    self.logic.bLines.remove(node)
+                self.logic._freeMarkupNode(node)
+                deletedLines += 1
+        self.logic.selectedLineIDs = []
+        self.logic.syncMarkupsToAnnotations()
+        self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
+        self._parameterNode.unsavedChanges = True
+        slicer.util.mainWindow().statusBar().showMessage(f"Deleted {deletedLines} line(s) you created", 2000)
 
     def onLabelsFileSelected(self, labelsFilepath=None):
         # Use self.resourcePath to get the correct path to resources (consistent with other resource usage in this module)
