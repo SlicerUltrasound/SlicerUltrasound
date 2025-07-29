@@ -212,6 +212,31 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Shortcuts will be initialized in initializeShortcuts()
 
+    # VTKObservationMixin method overrides to avoid warnings that observer already exists
+    def addObserver(self, obj, event, method, group="none", priority=0.0):
+        from warnings import warn
+
+        events = self._VTKObservationMixin__observations.setdefault(obj, {})
+        methods = events.setdefault(event, {})
+
+        if method in methods:
+            return
+
+        tag = obj.AddObserver(event, method, priority)
+        methods[method] = group, tag, priority
+
+    # VTKObservationMixin method overrides to avoid warnings that observer does not exist
+    def removeObserver(self, obj, event, method):
+        from warnings import warn
+
+        try:
+            events = self._VTKObservationMixin__observations[obj]
+            methods = events[event]
+            group, tag, priority = methods.pop(method)
+            obj.RemoveObserver(tag)
+        except KeyError:
+            raise
+
     def initializeShortcuts(self):
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutW.setKey(qt.QKeySequence('W'))
@@ -1500,8 +1525,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 return
             newNode.SetDisplayVisibility(True)
             # createMarkupLine does not add an observer for point removal, so we need to add it manually
-            if not self.hasObserver(newNode, newNode.PointRemovedEvent, self.logic.onPointRemoved):
+            try:
                 self.addObserver(newNode, newNode.PointRemovedEvent, self.logic.onPointRemoved)
+            except:
+                pass
             pastedLines.append(newNode)
 
         # Sync to internal annotation structure
@@ -2263,6 +2290,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         Called when the logic class is instantiated. Can be used for initializing member variables.
         """
         ScriptedLoadableModuleLogic.__init__(self)
+        VTKObservationMixin.__init__(self)
 
         # These variables keep their values when the scene is cleared
         self.dicomDf = None
@@ -2284,10 +2312,32 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         # Flag to track when we're doing programmatic updates (to avoid setting unsavedChanges)
         self._isProgrammaticUpdate = False
 
-    # Static variable to track seen raters and their order
-    seenRaters = []
-    realRaters = []
-    selectedRaters = []
+        self.seenRaters = []
+        self.realRaters = []
+        self.selectedRaters = []
+
+    # VTKObservationMixin method overrides to avoid warnings that observer already exists
+    def addObserver(self, obj, event, method, group="none", priority=0.0):
+        events = self._VTKObservationMixin__observations.setdefault(obj, {})
+        methods = events.setdefault(event, {})
+
+        if method in methods:
+            return
+
+        tag = obj.AddObserver(event, method, priority)
+        methods[method] = group, tag, priority
+
+    # VTKObservationMixin method overrides to avoid warnings that observer does not exist
+    def removeObserver(self, obj, event, method):
+        from warnings import warn
+
+        try:
+            events = self._VTKObservationMixin__observations[obj]
+            methods = events[event]
+            group, tag, priority = methods.pop(method)
+            obj.RemoveObserver(tag)
+        except KeyError:
+            raise
 
     def _getOrCreateParameterNode(self):
         if not hasattr(self, "parameterNode"):
@@ -2772,12 +2822,18 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
     def _freeAllMarkupNodes(self):
         for node in self.freeMarkupNodes:
             self.freeMarkupNodes.remove(node)
-            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+            try:
                 self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+            except:
+                pass
+            try:
                 self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-            if self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
+            except:
+                pass
+            try:
                 self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+            except:
+                pass
             slicer.mrmlScene.RemoveNode(node)
         self.freeMarkupNodes = []
 
@@ -2793,14 +2849,22 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if markupNode is None or markupNode.GetID() is None:
             return
 
-        if self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+        try:
             self.removeObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
-        if self.hasObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified):
+        except:
+            pass
+        try:
             self.removeObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
-        if self.hasObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined):
+        except:
+            pass
+        try:
             self.removeObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if self.hasObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved):
+        except:
+            pass
+        try:
             self.removeObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
 
         markupNode.SetName("freeMarkupNode")
         markupNode.RemoveAllControlPoints()
@@ -2812,8 +2876,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         else:
             slicer.mrmlScene.RemoveNode(markupNode)
 
-        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+        try:
             self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
+        except:
+            pass
 
     def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0]):
         if self.useFreeList:
@@ -2840,8 +2906,10 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         self.addObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
         self.addObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+        try:
             self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
+        except:
+            pass
 
         return markupNode
 
@@ -2913,26 +2981,35 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         displayNode.SetVisibility(self.showHideLines)
 
         # Update control points
-        hasPointModifiedObserver = self.hasObserver(node, node.PointModifiedEvent, self.onPointModified)
-        hasPointPositionDefinedObserver = self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        hasPointRemovedObserver = self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved)
-        if hasPointModifiedObserver:
+        try:
             self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-        if hasPointPositionDefinedObserver:
+        except:
+            pass
+        try:
             self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
+        except:
+            pass
+        try:
             self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
         node.RemoveAllControlPoints()
         for pt in coordinates:
             node.AddControlPointWorld(*pt)
             node.Modified()
 
-        if hasPointModifiedObserver:
+        try:
             self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-        if hasPointPositionDefinedObserver:
+        except:
+            pass
+        try:
             self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if not self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
+        except:
+            pass
+        try:
             self.addObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
 
     def clearSceneLines(self, sync=False):
         """
@@ -2975,12 +3052,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 statusText = f"No pleura line found for rater {current_rater}"
                 slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
                 return False
-            if self.hasObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified):
-                self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
-            if self.hasObserver(currentLine, currentLine.PointRemovedEvent, self.onPointRemoved):
-                self.removeObserver(currentLine, currentLine.PointRemovedEvent, self.onPointRemoved)
             self.pleuraLines.remove(currentLine)
             self._freeMarkupNode(currentLine)
             if sync:
@@ -3007,12 +3078,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 statusText = f"No B-line found for rater {current_rater}"
                 slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
                 return False
-            if self.hasObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified):
-                self.removeObserver(currentLine, currentLine.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined):
-                self.removeObserver(currentLine, currentLine.PointPositionDefinedEvent, self.onPointPositionDefined)
-            if self.hasObserver(currentLine, currentLine.PointRemovedEvent, self.onPointRemoved):
-                self.removeObserver(currentLine, currentLine.PointRemovedEvent, self.onPointRemoved)
             self.bLines.remove(currentLine)
             self._freeMarkupNode(currentLine)
             if sync:
@@ -3061,10 +3126,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
                 parameterNode.unsavedChanges = True
 
     def onPointRemoved(self, caller, event):
-        # no idea why this is called for freeMarkupNode, but it is even though we removed the observer for
-        # onPointRemoved in _freeMarkupNode so we check for the name here and return if it is freeMarkupNode
-        if caller.GetName() == "freeMarkupNode":
-            return
         numControlPoints = caller.GetNumberOfControlPoints()
         if numControlPoints < 2:
             # Remove the line from the scene
@@ -3837,32 +3898,32 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         This centralizes the rater extraction logic to avoid duplication.
         """
         # Extract all unique raters from the loaded annotations
-        seenRaters = []
+        self.seenRaters = []
         if self.annotations and 'frame_annotations' in self.annotations:
             for frame in self.annotations['frame_annotations']:
                 for line_type in ['pleura_lines', 'b_lines']:
                     for line in frame.get(line_type, []):
                         rater = line.get('rater')
-                        if rater and rater not in seenRaters:
-                            seenRaters.append(rater)
+                        if rater and rater not in self.seenRaters:
+                            self.seenRaters.append(rater)
 
         parameterNode = self.getParameterNode()
         current_rater = parameterNode.rater.strip().lower()
-        if current_rater in seenRaters:
-            seenRaters.remove(current_rater)
+        if current_rater in self.seenRaters:
+            self.seenRaters.remove(current_rater)
         # Remove __selected_node__ if it exists (to avoid duplicates)
-        if "__selected_node__" in seenRaters:
-            seenRaters.remove("__selected_node__")
+        if "__selected_node__" in self.seenRaters:
+            self.seenRaters.remove("__selected_node__")
         # Remove __adjudicated_node__ if it exists (to avoid duplicates)
-        if "__adjudicated_node__" in seenRaters:
-            seenRaters.remove("__adjudicated_node__")
+        if "__adjudicated_node__" in self.seenRaters:
+            self.seenRaters.remove("__adjudicated_node__")
         # Remove current_rater if it exists (to avoid duplicates)
-        if current_rater in seenRaters:
-            seenRaters.remove(current_rater)
+        if current_rater in self.seenRaters:
+            self.seenRaters.remove(current_rater)
         # Now build the list: current_rater, __selected_node__, __adjudicated_node__, then sorted rest
         # we need to add __selected_node__ and __adjudicated_node__ to the list to ensure that the selected line is always visible and
         # uses a different color than the other lines and that the adjudicated_node colors aren't taken by the raters regardless of which module we are in.
-        self.seenRaters = [current_rater, "__selected_node__", "__adjudicated_node__"] + sorted(seenRaters)
+        self.seenRaters = [current_rater, "__selected_node__", "__adjudicated_node__"] + sorted(self.seenRaters)
         # Select all real raters by default (exclude __selected_node__ and __adjudicated_node__)
         self.realRaters = [r for r in self.seenRaters if r != "__selected_node__" and r != "__adjudicated_node__"]
         self.setSelectedRaters(set(self.realRaters))
