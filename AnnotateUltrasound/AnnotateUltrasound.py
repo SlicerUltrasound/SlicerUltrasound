@@ -114,6 +114,28 @@ class AnnotateUltrasoundParameterNode:
     depthGuideVisible: bool = True
     rater = ''
 
+class GlobalShortcutFilter(qt.QObject):
+    def __init__(self, parentWidget):
+        super().__init__()
+        self.parentWidget = parentWidget
+
+    def eventFilter(self, obj, event):
+        if event.type() == qt.QEvent.KeyPress:
+            key = event.key()
+            modifiers = qt.QApplication.keyboardModifiers()
+
+            # Cmd/Ctrl+A → Select All
+            if key == qt.Qt.Key_A and modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
+                self.parentWidget.onSelectAllLines()
+                return True
+
+            # Escape → Clear selection
+            elif key == qt.Qt.Key_Escape:
+                self.parentWidget.onDeselectAllLines()
+                return True
+
+        return False
+
 class SliceViewClickFilter(qt.QObject):
     def __init__(self, parentWidget):
         super().__init__()
@@ -230,11 +252,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutL.setKey(qt.QKeySequence('L'))
         self.shortcutL.setContext(qt.Qt.ApplicationShortcut)
         # Add SelectAll/Copy/Paste shortcuts
-        self.shortcutSelectAll = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.SelectAll), slicer.util.mainWindow())
+        self.globalShortcutFilter = GlobalShortcutFilter(self)
+        qt.QApplication.instance().installEventFilter(self.globalShortcutFilter)
         self.shortcutCopy = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Copy), slicer.util.mainWindow())
         self.shortcutPaste = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Paste), slicer.util.mainWindow())
-        # Add Escape shortcut for deselecting all lines
-        self.shortcutDeselectAll = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Escape), slicer.util.mainWindow())
 
     def connectDrawingShortcuts(self):
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
@@ -242,11 +263,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura", not self.ui.removePleuraButton.isChecked()))  # "E" removes the last pleura line
         self.shortcutD.connect('activated()', lambda: self.onRemoveLine("B-line", not self.ui.removeBlineButton.isChecked()))   # "D" removes the last B-line
         # Add SelectAll/Copy/Paste shortcut connections
-        self.shortcutSelectAll.connect('activated()', self.onSelectAllLines)
-        self.shortcutCopy.connect('activated()', self.onCopyLines)
-        self.shortcutPaste.connect('activated()', self.onPasteLines)
-        self.shortcutDeselectAll.connect('activated()', self.onDeselectAllLines)
-
+        self.shortcutCopy.activated.connect(self.onCopyLines)
+        self.shortcutPaste.activated.connect(self.onPasteLines)
 
     def connectKeyboardShortcuts(self):
         # Disconnect any existing connections first to avoid duplicates
@@ -294,15 +312,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         except RuntimeError:
             pass  # Already disconnected
 
-        # Disconnect SelectAll/Copy/Paste shortcuts if they exist
-        try:
-            self.shortcutSelectAll.activated.disconnect()
-        except RuntimeError:
-            pass
-        try:
-            self.shortcutDeselectAll.activated.disconnect()
-        except RuntimeError:
-            pass
+        # Disconnect Copy/Paste shortcuts if they exist
         try:
             self.shortcutCopy.activated.disconnect()
         except RuntimeError:
@@ -1684,6 +1694,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.removeObservers()
 
         self.disconnectKeyboardShortcuts()
+        qt.QApplication.instance().removeEventFilter(self.globalShortcutFilter)
         self.logic.clearScene()
         self.logic.clearClipboard()
         global annotateUltrasoundWidgetInstance
