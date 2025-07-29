@@ -114,45 +114,55 @@ class AnnotateUltrasoundParameterNode:
     depthGuideVisible: bool = True
     rater = ''
 
-class GlobalShortcutFilter(qt.QObject):
-    def __init__(self, parentWidget):
-        super().__init__()
-        self.parentWidget = parentWidget
+# class GlobalShortcutFilter(qt.QObject):
+#     def __init__(self, parentWidget):
+#         super().__init__()
+#         self.parentWidget = parentWidget
 
-    def eventFilter(self, obj, event):
-        if type(self.parentWidget) is not AnnotateUltrasoundWidget:
-            return False
+#     def eventFilter(self, obj, event):
+#         if type(self.parentWidget) is not AnnotateUltrasoundWidget:
+#             return False
 
-        if event.type() == qt.QEvent.KeyPress:
-            key = event.key()
-            modifiers = qt.QApplication.keyboardModifiers()
+#         if event.type() == qt.QEvent.KeyPress:
+#             focusWidget = qt.QApplication.focusWidget()
+#             print(f"[DEBUG] Focused widget: {focusWidget}, Type: {type(focusWidget)}")
+#             if focusWidget is None:
+#                 self.parentWidget._setRedViewFocus()
+#                 focusWidget = qt.QApplication.focusWidget()
+#                 print(f"[DEBUG] After setting focus: Focused widget: {focusWidget}, Type: {type(focusWidget)}")
 
-            # Cmd/Ctrl+A → Select All
-            if key == qt.Qt.Key_A and modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
-                self.parentWidget.onSelectAllLines()
-                return True
+#             return False
+#             key = event.key()
+#             modifiers = qt.QApplication.keyboardModifiers()
 
-            # Escape → Clear selection
-            elif key == qt.Qt.Key_Escape:
-                self.parentWidget.onDeselectAllLines()
-                return True
+#             # Cmd/Ctrl+A → Select All
+#             if key == qt.Qt.Key_A and modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
+#                 self.parentWidget.onSelectAllLines()
+#                 return True
 
-            elif key == qt.Qt.Key_Backspace or key == qt.Qt.Key_Delete:
-                self.parentWidget.onDeleteSelectedLines()
-                return True
+#             # Escape → Clear selection
+#             elif key == qt.Qt.Key_Escape:
+#                 self.parentWidget.onDeselectAllLines()
+#                 return True
 
-        return False
+#             elif key == qt.Qt.Key_Backspace or key == qt.Qt.Key_Delete:
+#                 self.parentWidget.onDeleteSelectedLines()
+#                 return True
+
+#         return False
 
 class SliceViewClickFilter(qt.QObject):
-    def __init__(self, parentWidget):
+    def __init__(self, parentWidget, sliceView):
         super().__init__()
         self.parentWidget = parentWidget
+        self.sliceView = sliceView
 
     def eventFilter(self, obj, event):
         if type(self.parentWidget) is not AnnotateUltrasoundWidget:
             return False
 
         if event.type() == qt.QEvent.MouseButtonPress:
+            self.sliceView.setFocus()
             modifiers = qt.QApplication.keyboardModifiers()
             if modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
                 interactor = self.parentWidget.sliceView.interactor()
@@ -213,6 +223,24 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Shortcuts will be initialized in initializeShortcuts()
 
+    def enableRedViewFocus(self):
+        layoutManager = slicer.app.layoutManager()
+        redWidget = layoutManager.sliceWidget("Red")
+        redView = redWidget.sliceView()
+
+        # Ensure the slice view can accept focus
+        redView.setFocusPolicy(qt.Qt.StrongFocus)
+
+        # Try to set the same on its child (render widget)
+        renderWidget = redView.findChild(qt.QWidget, "qt_viewport")
+        if renderWidget:
+            renderWidget.setFocusPolicy(qt.Qt.StrongFocus)
+
+        # Now set focus
+        redView.setFocus()
+        redView.activateWindow()
+        print(f"[DEBUG] Red view has focus? {redView.hasFocus()}")
+
     def initializeShortcuts(self):
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutW.setKey(qt.QKeySequence('W'))
@@ -263,10 +291,21 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutL.setKey(qt.QKeySequence('L'))
         self.shortcutL.setContext(qt.Qt.ApplicationShortcut)
         # Add SelectAll/Copy/Paste shortcuts
-        self.globalShortcutFilter = GlobalShortcutFilter(self)
-        qt.QApplication.instance().installEventFilter(self.globalShortcutFilter)
-        self.shortcutCopy = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Copy), slicer.util.mainWindow())
-        self.shortcutPaste = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Paste), slicer.util.mainWindow())
+        #self.globalShortcutFilter = GlobalShortcutFilter(self)
+        #qt.QApplication.instance().installEventFilter(self.globalShortcutFilter)
+
+        # Create the shortcuts and set context
+        redView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+        self.shortcutSelectAll = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.SelectAll), redView)
+        self.shortcutSelectAll.setContext(qt.Qt.WidgetShortcut)
+        self.shortcutEscape = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Escape), redView)
+        self.shortcutEscape.setContext(qt.Qt.WidgetShortcut)
+        self.shortcutDelete = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Delete), redView)
+        self.shortcutDelete.setContext(qt.Qt.WidgetShortcut)
+        self.shortcutCopy = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Copy), redView)
+        self.shortcutCopy.setContext(qt.Qt.WidgetShortcut)
+        self.shortcutPaste = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Paste), redView)
+        self.shortcutPaste.setContext(qt.Qt.WidgetShortcut)
 
     def connectDrawingShortcuts(self):
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
@@ -274,6 +313,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura", not self.ui.removePleuraButton.isChecked()))  # "E" removes the last pleura line
         self.shortcutD.connect('activated()', lambda: self.onRemoveLine("B-line", not self.ui.removeBlineButton.isChecked()))   # "D" removes the last B-line
         # Add SelectAll/Copy/Paste shortcut connections
+        self.shortcutSelectAll.activated.connect(self.onSelectAllLines)
+        self.shortcutEscape.activated.connect(self.onDeselectAllLines)
+        self.shortcutDelete.activated.connect(self.onDeleteSelectedLines)
         self.shortcutCopy.activated.connect(self.onCopyLines)
         self.shortcutPaste.activated.connect(self.onPasteLines)
 
@@ -324,6 +366,18 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             pass  # Already disconnected
 
         # Disconnect Copy/Paste shortcuts if they exist
+        try:
+            self.shortcutSelectAll.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutEscape.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutDelete.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
         try:
             self.shortcutCopy.activated.disconnect()
         except RuntimeError:
@@ -405,6 +459,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # "mrmlSceneChanged(vtkMRMLScene*)" signal in is connected to each MRML widget's.
         # "setMRMLScene(vtkMRMLScene*)" slot.
         uiWidget.setMRMLScene(slicer.mrmlScene)
+
+        self.enableRedViewFocus()
 
         self.initializeShortcuts()
         self.connectKeyboardShortcuts()
@@ -542,9 +598,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             # Do not set collapsed state here; let subclass or user decide.
         # Guard flag for programmatic collapse/expand of raterColorsCollapsibleButton
         self._ignoreCollapsedChangedSignal = False
-        self.sliceClickFilter = SliceViewClickFilter(self)
         sliceView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
-        sliceView.installEventFilter(self.sliceClickFilter)
+        self.sliceViewClickFilter = SliceViewClickFilter(self, sliceView)
+        sliceView.installEventFilter(self.sliceViewClickFilter)
         self.sliceView = sliceView  # Save reference so it's not GC'ed
 
     def distanceToLineSegment2D(self, p, a, b):
@@ -695,7 +751,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.selectedRaters = self.logic.selectedRaters.copy()
 
     def refocusAndRestoreShortcuts(self, delay: int = 300):
-        qt.QTimer.singleShot(delay, self._delayedSetRedViewFocus)
         qt.QTimer.singleShot(delay + 100, self._restoreFocusAndShortcuts)
 
     def onReadInputButton(self):
@@ -1181,6 +1236,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         logging.debug('onSaveButton (save)')
         success = self.saveAnnotations()
+        self._setRedViewFocus()
         if not success:
             # Error message already shown by saveAnnotations
             return
@@ -2123,9 +2179,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 selectionNode = slicer.app.applicationLogic().GetSelectionNode()
                 if selectionNode:
                     selectionNode.SetActivePlaceNodeID("")
-                self._setRedViewFocus()
             else:
                 slicer.util.mainWindow().statusBar().showMessage(already_at_message, 3000)
+        self._setRedViewFocus()
 
     def _nextFrameInSequence(self):
         """Go to next frame in the current sequence using Slicer's built-in sequence browser."""
@@ -2164,26 +2220,20 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self._setRedViewFocus()
 
     def _setRedViewFocus(self):
-        """Set focus to the red view to ensure keyboard shortcuts work immediately."""
-        # Use a timer to delay focus setting to ensure all UI updates are complete
-        qt.QTimer.singleShot(200, self._delayedSetRedViewFocus)
+        """Force focus to the Red slice view after delay."""
+        def forceFocus():
+            mainWin = slicer.util.mainWindow()
+            mainWin.raise_()
+            mainWin.activateWindow()
 
-    def _delayedSetRedViewFocus(self):
-        """Delayed focus setting to ensure all UI updates are complete."""
-        try:
-            # Since shortcuts are connected to main window, focus on that
-            mainWindow = slicer.util.mainWindow()
-            if mainWindow:
-                mainWindow.activateWindow()
-                mainWindow.setFocus()
-                mainWindow.raise_()
+            redSliceView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+            redSliceView.setFocus()
+            redSliceView.raise_()
+            redSliceView.activateWindow()
+            qt.QApplication.setActiveWindow(redSliceView)
+            print(f"[DEBUG] Focus set to: {redSliceView}, hasFocus: {redSliceView.hasFocus()}")
 
-            # Also try setting focus to the module widget itself
-            if hasattr(self, 'parent') and self.parent:
-                self.parent.setFocus()
-
-        except Exception as e:
-            logging.warning(f"Could not set focus: {e}")
+        qt.QTimer.singleShot(100, forceFocus)
 
     def _forceShortcutsActive(self):
         """Force keyboard shortcuts to be active by temporarily disconnecting and reconnecting them."""
@@ -2202,16 +2252,8 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             if interactionNode:
                 interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
 
-            # Set focus back to main window
-            mainWindow = slicer.util.mainWindow()
-            if mainWindow:
-                mainWindow.setFocus()
-                # After setting main window focus, also set focus to Red slice widget if available
-                layoutManager = slicer.app.layoutManager()
-                if layoutManager:
-                    redWidget = layoutManager.sliceWidget("Red")
-                    if redWidget:
-                        redWidget.setFocus()
+            # Set focus back red view
+            self._setRedViewFocus()
 
             # Force shortcuts to be active
             self._forceShortcutsActive()
@@ -2226,6 +2268,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             self.onPreviousButton()
         else:
             self.onNextButton()
+        self._setRedViewFocus()
 
     def _onPageUpPressed(self):
         """Handle Page Up press for next clip."""
@@ -2253,6 +2296,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.logic.onShowHideLines(checked)
 
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
+        self._setRedViewFocus()
 
 #
 # AnnotateUltrasoundLogic
@@ -2820,7 +2864,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
 
         markupNode.Modified()
         qt.QTimer.singleShot(0, lambda: markupNode.RemoveAllControlPoints())
-
+        print(f"[DEBUG] Removing markup node (id: {markupNode.GetID()}, name: {markupNode.GetName()})")
         if self.useFreeList:
             markupNode.SetName("freeMarkupNode")
             markupNode.SetAttribute("rater", "")
