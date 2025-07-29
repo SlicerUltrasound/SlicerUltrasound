@@ -162,6 +162,7 @@ class SliceViewClickFilter(qt.QObject):
                 else:
                     return False
         return False
+
 #
 # AnnotateUltrasoundWidget
 #
@@ -211,31 +212,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
 
         # Shortcuts will be initialized in initializeShortcuts()
-
-    # VTKObservationMixin method overrides to avoid warnings that observer already exists
-    def addObserver(self, obj, event, method, group="none", priority=0.0):
-        from warnings import warn
-
-        events = self._VTKObservationMixin__observations.setdefault(obj, {})
-        methods = events.setdefault(event, {})
-
-        if method in methods:
-            return
-
-        tag = obj.AddObserver(event, method, priority)
-        methods[method] = group, tag, priority
-
-    # VTKObservationMixin method overrides to avoid warnings that observer does not exist
-    def removeObserver(self, obj, event, method):
-        from warnings import warn
-
-        try:
-            events = self._VTKObservationMixin__observations[obj]
-            methods = events[event]
-            group, tag, priority = methods.pop(method)
-            obj.RemoveObserver(tag)
-        except KeyError:
-            raise
 
     def initializeShortcuts(self):
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
@@ -1499,7 +1475,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             color = node.GetDisplayNode().GetSelectedColor()
 
             # Create a new line in the current frame by copying the clipboard line
-            newNode = self.logic.createMarkupLine(lineType, rater, [pt1, pt2], color)
+            newNode = self.logic.createMarkupLine(lineType, rater, [pt1, pt2], color, addPointRemovedObserver=True)
 
             # Append to the appropriate list so syncMarkupsToAnnotations includes it
             if lineType == "Pleura":
@@ -1510,11 +1486,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 logging.error(f"Unknown line type {lineType}")
                 return
             newNode.SetDisplayVisibility(True)
-            # createMarkupLine does not add an observer for point removal, so we need to add it manually
-            try:
-                self.addObserver(newNode, newNode.PointRemovedEvent, self.logic.onPointRemoved)
-            except:
-                pass
             pastedLines.append(newNode)
 
         # Sync to internal annotation structure
@@ -2328,29 +2299,6 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         self.realRaters = []
         self.selectedRaters = []
 
-    # VTKObservationMixin method overrides to avoid warnings that observer already exists
-    def addObserver(self, obj, event, method, group="none", priority=0.0):
-        events = self._VTKObservationMixin__observations.setdefault(obj, {})
-        methods = events.setdefault(event, {})
-
-        if method in methods:
-            return
-
-        tag = obj.AddObserver(event, method, priority)
-        methods[method] = group, tag, priority
-
-    # VTKObservationMixin method overrides to avoid warnings that observer does not exist
-    def removeObserver(self, obj, event, method):
-        from warnings import warn
-
-        try:
-            events = self._VTKObservationMixin__observations[obj]
-            methods = events[event]
-            group, tag, priority = methods.pop(method)
-            obj.RemoveObserver(tag)
-        except KeyError:
-            raise
-
     def _getOrCreateParameterNode(self):
         if not hasattr(self, "parameterNode"):
             self.parameterNode = AnnotateUltrasoundParameterNode(super().getParameterNode())
@@ -2832,22 +2780,22 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return None
 
     def _freeAllMarkupNodes(self):
+        if self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+            self.removeObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
+
         for node in self.freeMarkupNodes:
             self.freeMarkupNodes.remove(node)
-            try:
+            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
                 self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            except:
-                pass
-            try:
+            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
                 self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-            except:
-                pass
-            try:
+            if self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
                 self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
-            except:
-                pass
             slicer.mrmlScene.RemoveNode(node)
         self.freeMarkupNodes = []
+
+        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+            self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
 
     def _allocateNewMarkupNode(self):
         markupNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")
@@ -2861,39 +2809,29 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if markupNode is None or markupNode.GetID() is None:
             return
 
-        try:
+        if self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
             self.removeObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
-        except:
-            pass
-        try:
+        if self.hasObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified):
             self.removeObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
-        except:
-            pass
-        try:
+        if self.hasObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined):
             self.removeObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
-        except:
-            pass
-        try:
+        if self.hasObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved):
             self.removeObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved)
-        except:
-            pass
 
-        markupNode.SetName("freeMarkupNode")
-        markupNode.RemoveAllControlPoints()
+        markupNode.Modified()
+        qt.QTimer.singleShot(0, lambda: markupNode.RemoveAllControlPoints())
 
         if self.useFreeList:
+            markupNode.SetName("freeMarkupNode")
             markupNode.SetAttribute("rater", "")
-            markupNode.Modified()
             self.freeMarkupNodes.append(markupNode)
         else:
-            slicer.mrmlScene.RemoveNode(markupNode)
+            qt.QTimer.singleShot(0, lambda: slicer.mrmlScene.RemoveNode(markupNode))
 
-        try:
+        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
             self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
-        except:
-            pass
 
-    def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0]):
+    def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0], addPointRemovedObserver=False):
         if self.useFreeList:
             markupNode = self._getUnusedMarkupNode()
             if markupNode is None:
@@ -2916,12 +2854,14 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         for coord in coordinates:
             markupNode.AddControlPointWorld(coord[0], coord[1], coord[2])
 
-        self.addObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
-        self.addObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
-        try:
+        if not self.hasObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified):
+            self.addObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
+        if not self.hasObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined):
+            self.addObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
+        if addPointRemovedObserver and not self.hasObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved):
+            self.addObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved)
+        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
             self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
-        except:
-            pass
 
         return markupNode
 
@@ -2993,35 +2933,24 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         displayNode.SetVisibility(self.showHideLines)
 
         # Update control points
-        try:
+        if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
             self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-        except:
-            pass
-        try:
+        if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
             self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        except:
-            pass
-        try:
+        if self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
             self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
-        except:
-            pass
+
         node.RemoveAllControlPoints()
         for pt in coordinates:
             node.AddControlPointWorld(*pt)
             node.Modified()
 
-        try:
+        if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
             self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-        except:
-            pass
-        try:
+        if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
             self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        except:
-            pass
-        try:
+        if not self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
             self.addObserver(node, node.PointRemovedEvent, self.onPointRemoved)
-        except:
-            pass
 
     def clearSceneLines(self, sync=False):
         """
@@ -3131,7 +3060,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             # Update overlay display
             self.refreshDisplay(updateOverlay=True, updateGui=True)
 
-            self.addObserver(caller, caller.PointRemovedEvent, self.onPointRemoved)
+            if not self.hasObserver(caller, caller.PointRemovedEvent, self.onPointRemoved):
+                self.addObserver(caller, caller.PointRemovedEvent, self.onPointRemoved)
 
             # Set unsavedChanges when user finishes placing a line (only if not programmatic)
             if not self._isProgrammaticUpdate:
