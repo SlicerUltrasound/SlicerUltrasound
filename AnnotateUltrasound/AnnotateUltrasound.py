@@ -1383,20 +1383,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             if slicer.mrmlScene.IsNodePresent(node):
                 self.logic.updateMarkupNodeAppearance(node)
 
-    def onDeleteSelectedLines(self):
-        for nodeID in self.logic.selectedLineIDs:
-            node = slicer.mrmlScene.GetNodeByID(nodeID)
-            if node:
-                if node in self.logic.pleuraLines:
-                    self.logic.pleuraLines.remove(node)
-                if node in self.logic.bLines:
-                    self.logic.bLines.remove(node)
-                self.logic._freeMarkupNode(node)
-        self.logic.selectedLineIDs = []
-        self.logic.syncMarkupsToAnnotations()
-        self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
-        self._parameterNode.unsavedChanges = True
-
     def toggleLineSelection(self, lineNode):
         if not lineNode or not slicer.mrmlScene.IsNodePresent(lineNode):
             return
@@ -1542,21 +1528,47 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             slicer.util.mainWindow().statusBar().showMessage(f"Skipped {len(self.logic.clipboardLines)} duplicate lines", 2000)
 
     def onDeleteSelectedLines(self):
-        deletedLines = 0
-        for nodeID in self.logic.selectedLineIDs:
+        selectedIDs = self.logic.selectedLineIDs
+        if not selectedIDs:
+            return
+
+        raterNodes = []
+        for nodeID in selectedIDs:
             node = slicer.mrmlScene.GetNodeByID(nodeID)
             if node and node.GetAttribute("rater") == self._parameterNode.rater:
-                if node in self.logic.pleuraLines:
-                    self.logic.pleuraLines.remove(node)
-                if node in self.logic.bLines:
-                    self.logic.bLines.remove(node)
-                self.logic._freeMarkupNode(node)
-                deletedLines += 1
-        self.logic.selectedLineIDs = []
-        self.logic.syncMarkupsToAnnotations()
-        self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
-        self._parameterNode.unsavedChanges = True
-        slicer.util.mainWindow().statusBar().showMessage(f"Deleted {deletedLines} line(s) you created", 2000)
+                raterNodes.append(node)
+
+        if len(raterNodes) == 0:
+            slicer.util.mainWindow().statusBar().showMessage("No lines belonging to you were selected for deletion", 2000)
+            return
+
+        # Confirm if more than one line is selected
+        if len(raterNodes) > 1:
+            confirmed = qt.QMessageBox.question(
+                slicer.util.mainWindow(),
+                "Delete selected lines",
+                f"Are you sure you want to delete {len(raterNodes)} of your selected lines?",
+                qt.QMessageBox.Yes | qt.QMessageBox.No,
+            )
+            if confirmed != qt.QMessageBox.Yes:
+                return
+
+        deletedLines = 0
+        for node in raterNodes:
+            if node in self.logic.pleuraLines:
+                self.logic.pleuraLines.remove(node)
+            if node in self.logic.bLines:
+                self.logic.bLines.remove(node)
+            self.logic._freeMarkupNode(node)
+            deletedLines += 1
+        if deletedLines > 0:
+            self.onDeselectAllLines() # clear selection as we deleted lines
+            self.logic.syncMarkupsToAnnotations()
+            self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
+            self._parameterNode.unsavedChanges = True
+            slicer.util.mainWindow().statusBar().showMessage(f"Deleted {deletedLines} line(s) you created", 2000)
+        else:
+            slicer.util.mainWindow().statusBar().showMessage("No lines belonging to you were deleted", 2000)
 
     def onLabelsFileSelected(self, labelsFilepath=None):
         # Use self.resourcePath to get the correct path to resources (consistent with other resource usage in this module)
