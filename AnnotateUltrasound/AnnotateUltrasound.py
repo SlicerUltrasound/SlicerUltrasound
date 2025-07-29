@@ -114,43 +114,6 @@ class AnnotateUltrasoundParameterNode:
     depthGuideVisible: bool = True
     rater = ''
 
-# class GlobalShortcutFilter(qt.QObject):
-#     def __init__(self, parentWidget):
-#         super().__init__()
-#         self.parentWidget = parentWidget
-
-#     def eventFilter(self, obj, event):
-#         if type(self.parentWidget) is not AnnotateUltrasoundWidget:
-#             return False
-
-#         if event.type() == qt.QEvent.KeyPress:
-#             focusWidget = qt.QApplication.focusWidget()
-#             print(f"[DEBUG] Focused widget: {focusWidget}, Type: {type(focusWidget)}")
-#             if focusWidget is None:
-#                 self.parentWidget._setRedViewFocus()
-#                 focusWidget = qt.QApplication.focusWidget()
-#                 print(f"[DEBUG] After setting focus: Focused widget: {focusWidget}, Type: {type(focusWidget)}")
-
-#             return False
-#             key = event.key()
-#             modifiers = qt.QApplication.keyboardModifiers()
-
-#             # Cmd/Ctrl+A → Select All
-#             if key == qt.Qt.Key_A and modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
-#                 self.parentWidget.onSelectAllLines()
-#                 return True
-
-#             # Escape → Clear selection
-#             elif key == qt.Qt.Key_Escape:
-#                 self.parentWidget.onDeselectAllLines()
-#                 return True
-
-#             elif key == qt.Qt.Key_Backspace or key == qt.Qt.Key_Delete:
-#                 self.parentWidget.onDeleteSelectedLines()
-#                 return True
-
-#         return False
-
 class SliceViewClickFilter(qt.QObject):
     def __init__(self, parentWidget, sliceView):
         super().__init__()
@@ -173,6 +136,38 @@ class SliceViewClickFilter(qt.QObject):
                     return False
         return False
 
+class CustomObserverMixin:
+    def addObserver(self, obj, event, method, group="none", priority=0.0):
+        if not hasattr(self, '_VTKObservationMixin__observations'):
+            self._VTKObservationMixin__observations = {}
+
+        events = self._VTKObservationMixin__observations.setdefault(obj, {})
+        methods = events.setdefault(event, {})
+
+        if method in methods:
+            return  # Observer already added
+
+        tag = obj.AddObserver(event, method, priority)
+        methods[method] = (group, tag, priority)
+
+    def removeObserver(self, obj, event, method):
+        if not hasattr(self, '_VTKObservationMixin__observations'):
+            return
+
+        try:
+            events = self._VTKObservationMixin__observations[obj]
+            methods = events[event]
+            group, tag, priority = methods.pop(method)
+            obj.RemoveObserver(tag)
+
+            if not methods:
+                del events[event]
+            if not events:
+                del self._VTKObservationMixin__observations[obj]
+
+        except KeyError:
+            raise KeyError(f"No observer found for: {obj}, {event}, {method}")
+
 #
 # AnnotateUltrasoundWidget
 #
@@ -187,7 +182,7 @@ def getAnnotateUltrasoundWidget():
         raise RuntimeError("AnnotateUltrasoundWidget instance is not initialized")
     return annotateUltrasoundWidgetInstance
 
-class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
@@ -239,7 +234,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Now set focus
         redView.setFocus()
         redView.activateWindow()
-        print(f"[DEBUG] Red view has focus? {redView.hasFocus()}")
+        # print(f"[DEBUG] Red view has focus? {redView.hasFocus()}")
 
     def initializeShortcuts(self):
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
@@ -291,10 +286,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shortcutL.setKey(qt.QKeySequence('L'))
         self.shortcutL.setContext(qt.Qt.ApplicationShortcut)
         # Add SelectAll/Copy/Paste shortcuts
-        #self.globalShortcutFilter = GlobalShortcutFilter(self)
-        #qt.QApplication.instance().installEventFilter(self.globalShortcutFilter)
-
-        # Create the shortcuts and set context
         redView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
         self.shortcutSelectAll = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.SelectAll), redView)
         self.shortcutSelectAll.setContext(qt.Qt.WidgetShortcut)
@@ -1804,7 +1795,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.removeObservers()
 
         self.disconnectKeyboardShortcuts()
-        qt.QApplication.instance().removeEventFilter(self.globalShortcutFilter)
         self.logic.clearScene()
         self.logic.clearClipboard()
         global annotateUltrasoundWidgetInstance
@@ -2231,7 +2221,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             redSliceView.raise_()
             redSliceView.activateWindow()
             qt.QApplication.setActiveWindow(redSliceView)
-            print(f"[DEBUG] Focus set to: {redSliceView}, hasFocus: {redSliceView.hasFocus()}")
+            # print(f"[DEBUG] Focus set to: {redSliceView}, hasFocus: {redSliceView.hasFocus()}")
 
         qt.QTimer.singleShot(100, forceFocus)
 
@@ -2302,7 +2292,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 # AnnotateUltrasoundLogic
 #
 
-class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
+class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, CustomObserverMixin, VTKObservationMixin):
     """This class should implement all the actual
     computation done by your module.  The interface
     should be such that other python code can import
@@ -2824,22 +2814,22 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         return None
 
     def _freeAllMarkupNodes(self):
-        if self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
-            self.removeObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
-
         for node in self.freeMarkupNodes:
             self.freeMarkupNodes.remove(node)
-            if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+            try:
                 self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-            if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+            except:
+                pass
+            try:
                 self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-            if self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
+            except:
+                pass
+            try:
                 self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+            except:
+                pass
             slicer.mrmlScene.RemoveNode(node)
         self.freeMarkupNodes = []
-
-        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
-            self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
 
     def _allocateNewMarkupNode(self):
         markupNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode")
@@ -2853,27 +2843,37 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         if markupNode is None or markupNode.GetID() is None:
             return
 
-        if self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+        try:
             self.removeObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
-        if self.hasObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified):
+        except:
+            pass
+        try:
             self.removeObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
-        if self.hasObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined):
+        except:
+            pass
+        try:
             self.removeObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if self.hasObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved):
+        except:
+            pass
+        try:
             self.removeObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
 
-        markupNode.Modified()
-        qt.QTimer.singleShot(0, lambda: markupNode.RemoveAllControlPoints())
-        print(f"[DEBUG] Removing markup node (id: {markupNode.GetID()}, name: {markupNode.GetName()})")
+        markupNode.RemoveAllControlPoints()
+
         if self.useFreeList:
             markupNode.SetName("freeMarkupNode")
             markupNode.SetAttribute("rater", "")
+            markupNode.Modified()
             self.freeMarkupNodes.append(markupNode)
         else:
-            qt.QTimer.singleShot(0, lambda: slicer.mrmlScene.RemoveNode(markupNode))
+            slicer.mrmlScene.RemoveNode(markupNode)
 
-        if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
+        try:
             self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
+        except:
+            pass
 
     def createMarkupLine(self, name, rater, coordinates, color=[1, 1, 0], addPointRemovedObserver=False):
         if self.useFreeList:
@@ -2898,10 +2898,8 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         for coord in coordinates:
             markupNode.AddControlPointWorld(coord[0], coord[1], coord[2])
 
-        if not self.hasObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified):
-            self.addObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
-        if not self.hasObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined):
-            self.addObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
+        self.addObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
+        self.addObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
         if addPointRemovedObserver and not self.hasObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved):
             self.addObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved)
         if not self.hasObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved):
@@ -2977,24 +2975,35 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
         displayNode.SetVisibility(self.showHideLines)
 
         # Update control points
-        if self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+        try:
             self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-        if self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+        except:
+            pass
+        try:
             self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
+        except:
+            pass
+        try:
             self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
-
+        except:
+            pass
         node.RemoveAllControlPoints()
         for pt in coordinates:
             node.AddControlPointWorld(*pt)
             node.Modified()
 
-        if not self.hasObserver(node, node.PointModifiedEvent, self.onPointModified):
+        try:
             self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-        if not self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined):
+        except:
+            pass
+        try:
             self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if not self.hasObserver(node, node.PointRemovedEvent, self.onPointRemoved):
+        except:
+            pass
+        try:
             self.addObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
 
     def clearSceneLines(self, sync=False):
         """
@@ -3104,8 +3113,7 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
             # Update overlay display
             self.refreshDisplay(updateOverlay=True, updateGui=True)
 
-            if not self.hasObserver(caller, caller.PointRemovedEvent, self.onPointRemoved):
-                self.addObserver(caller, caller.PointRemovedEvent, self.onPointRemoved)
+            self.addObserver(caller, caller.PointRemovedEvent, self.onPointRemoved)
 
             # Set unsavedChanges when user finishes placing a line (only if not programmatic)
             if not self._isProgrammaticUpdate:
