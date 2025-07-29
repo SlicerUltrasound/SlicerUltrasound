@@ -120,6 +120,9 @@ class GlobalShortcutFilter(qt.QObject):
         self.parentWidget = parentWidget
 
     def eventFilter(self, obj, event):
+        if type(self.parentWidget) is not AnnotateUltrasoundWidget:
+            return False
+
         if event.type() == qt.QEvent.KeyPress:
             key = event.key()
             modifiers = qt.QApplication.keyboardModifiers()
@@ -146,6 +149,9 @@ class SliceViewClickFilter(qt.QObject):
         self.parentWidget = parentWidget
 
     def eventFilter(self, obj, event):
+        if type(self.parentWidget) is not AnnotateUltrasoundWidget:
+            return False
+
         if event.type() == qt.QEvent.MouseButtonPress:
             modifiers = qt.QApplication.keyboardModifiers()
             if modifiers & (qt.Qt.MetaModifier | qt.Qt.ControlModifier):
