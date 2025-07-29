@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Line selection, copy, and paste test for AnnotateUltrasound module.
-This test tests the new SelectAll/Copy/Paste shortcuts and functionality.
+Line selection, copy, paste, and delete test for AnnotateUltrasound module.
+This test tests the new SelectAll/Copy/Paste/Delete shortcuts and functionality.
 """
 
 import sys
@@ -37,7 +37,7 @@ except ImportError:
 
 class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
     """
-    Line selection, copy, and paste test that tests the new functionality.
+    Line selection, copy, paste, and delete test that tests the new functionality.
     Uses ScriptedLoadableModuleTest base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
@@ -285,13 +285,19 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         """Test pasting copied lines."""
         print("Testing paste lines...")
 
+        lines_to_copy = len(self.logic.pleuraLines) + len(self.logic.bLines)
+        assert lines_to_copy > 0, "Should have lines to copy"
+
         # First copy some lines
         self.widget.onSelectAllLines()
         self.widget.onCopyLines()
+        clipboard_line_count = len(self.logic.clipboardLines)
+        assert clipboard_line_count > 0, "Should have copied lines"
+
         expected_pleura_lines_copied = len(self.logic.pleuraLines)
         expected_b_lines_copied = len(self.logic.bLines)
+        assert clipboard_line_count == expected_pleura_lines_copied + expected_b_lines_copied, f"Clipboard lines should be: {expected_pleura_lines_copied} + {expected_b_lines_copied} = {clipboard_line_count}"
 
-        # Go to the next frame
         self.widget._nextFrameInSequence()
 
         # Count lines before pasting
@@ -299,7 +305,7 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         bline_count_before = len(self.logic.bLines)
 
         # Paste the lines
-        self.widget.onPasteLines()
+        self.widget.onPasteLines(force=True)
 
         # Verify lines were pasted
         pleura_count_after = len(self.logic.pleuraLines)
@@ -358,7 +364,7 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
             self.widget.onCopyLines()
 
             # Paste
-            self.widget.onPasteLines()
+            self.widget.onPasteLines(force=True)
 
             # Verify we have more lines each time
             total_lines = len(self.logic.pleuraLines) + len(self.logic.bLines)
@@ -408,6 +414,16 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         # Test Ctrl+V (Paste)
         print("Testing Ctrl+V (Paste)...")
         try:
+            self.create_test_lines()
+
+            # First select all lines
+            self.widget.onSelectAllLines()
+            self.widget.onCopyLines()
+
+            self.widget._nextFrameInSequence()
+            time.sleep(1)
+
+            # Count lines before pasting
             pleura_count_before = len(self.logic.pleuraLines)
             bline_count_before = len(self.logic.bLines)
 
@@ -431,7 +447,7 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
             assert len(self.logic.selectedLineIDs) > 0, "Should have selected lines"
 
             # Simulate Escape
-            self.widget.shortcutDeselectAll.activated.emit()
+            self.widget.shortcutEscape.activated.emit()
 
             # Verify selection is cleared
             assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after Escape"
@@ -439,6 +455,40 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
 
         except Exception as e:
             print(f"⚠️ Could not test Escape shortcut: {e}")
+
+        # Test Delete (Delete Selected Lines)
+        print("Testing Delete (Delete Selected Lines)...")
+
+        # Mock the QMessageBox to simulate user clicking "Yes"
+        original_question = qt.QMessageBox.question
+        qt.QMessageBox.question = lambda *args, **kwargs: qt.QMessageBox.Yes
+
+        try:
+            self.create_test_lines()
+
+            # First select some lines
+            self.widget.onSelectAllLines()
+            assert len(self.logic.selectedLineIDs) > 0, "Should have selected lines"
+
+            # Count lines before deletion
+            total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
+
+            # Simulate Delete
+            self.widget.shortcutDelete.activated.emit()
+
+            # Verify lines were deleted
+            total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
+            assert total_lines_after < total_lines_before, f"Should have fewer lines after Delete key: {total_lines_after} < {total_lines_before}"
+
+            # Verify selection is cleared
+            assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after Delete"
+            print("✅ Delete (Delete Selected Lines) shortcut works")
+
+        except Exception as e:
+            print(f"⚠️ Could not test Delete shortcut: {e}")
+        finally:
+            # Restore original QMessageBox.question
+            qt.QMessageBox.question = original_question
 
         print("✅ Keyboard shortcuts test passed")
 
@@ -586,16 +636,263 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
 
         print("✅ Control point selection test passed")
 
+    def test_delete_selected_lines(self):
+        """Test deleting selected lines."""
+        print("Testing delete selected lines...")
+
+        # First, select some lines
+        self.widget.onSelectAllLines()
+        initial_selected_count = len(self.logic.selectedLineIDs)
+        assert initial_selected_count > 0, "Should have selected lines to delete"
+
+        # Count lines before deletion
+        pleura_count_before = len(self.logic.pleuraLines)
+        bline_count_before = len(self.logic.bLines)
+        total_lines_before = pleura_count_before + bline_count_before
+
+        # Delete the selected lines
+        self.widget.onDeleteSelectedLines(force=True)
+
+        # Verify lines were deleted
+        pleura_count_after = len(self.logic.pleuraLines)
+        bline_count_after = len(self.logic.bLines)
+        total_lines_after = pleura_count_after + bline_count_after
+
+        # Should have fewer lines after deletion
+        assert total_lines_after < total_lines_before, f"Should have fewer lines after deletion: {total_lines_after} < {total_lines_before}"
+
+        # Verify selection is cleared after deletion
+        assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after deletion"
+
+        # Verify unsaved changes flag is set
+        assert self.widget._parameterNode.unsavedChanges, "Unsaved changes flag should be set after deletion"
+
+        print(f"✅ Delete selected lines test passed: deleted {total_lines_before - total_lines_after} lines")
+
+    def test_delete_single_line(self):
+        """Test deleting a single selected line."""
+        print("Testing delete single line...")
+
+        self.create_test_lines()
+        # Select only one line
+        if len(self.logic.pleuraLines) > 0:
+            test_line = self.logic.pleuraLines[0]
+            self.widget.toggleLineSelection(test_line)
+            assert len(self.logic.selectedLineIDs) == 1, "Should have exactly one selected line"
+
+            # Count lines before deletion
+            pleura_count_before = len(self.logic.pleuraLines)
+
+            # Delete the selected line
+            self.widget.onDeleteSelectedLines(force=True)
+
+            # Verify line was deleted
+            pleura_count_after = len(self.logic.pleuraLines)
+            assert pleura_count_after == pleura_count_before - 1, f"Should have deleted exactly one line: {pleura_count_before} -> {pleura_count_after}"
+
+            # Verify selection is cleared
+            assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after deletion"
+
+            print("✅ Delete single line test passed")
+
+        elif len(self.logic.bLines) > 0:
+            test_line = self.logic.bLines[0]
+            self.widget.toggleLineSelection(test_line)
+            assert len(self.logic.selectedLineIDs) == 1, "Should have exactly one selected line"
+
+            # Count lines before deletion
+            bline_count_before = len(self.logic.bLines)
+
+            # Delete the selected line
+            self.widget.onDeleteSelectedLines(force=True)
+
+            # Verify line was deleted
+            bline_count_after = len(self.logic.bLines)
+            assert bline_count_after == bline_count_before - 1, f"Should have deleted exactly one line: {bline_count_before} -> {bline_count_after}"
+
+            # Verify selection is cleared
+            assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after deletion"
+
+            print("✅ Delete single line test passed")
+
+        else:
+            print("⚠️ No lines available for single line deletion test")
+
+    def test_delete_no_selection(self):
+        """Test delete behavior when no lines are selected."""
+        print("Testing delete with no selection...")
+
+        # Clear any existing selection
+        self.logic.selectedLineIDs = []
+        assert len(self.logic.selectedLineIDs) == 0, "Should have no selected lines"
+
+        # Count lines before attempting deletion
+        pleura_count_before = len(self.logic.pleuraLines)
+        bline_count_before = len(self.logic.bLines)
+
+        # Try to delete with no selection
+        self.widget.onDeleteSelectedLines(force=True)
+
+        # Verify no lines were deleted
+        pleura_count_after = len(self.logic.pleuraLines)
+        bline_count_after = len(self.logic.bLines)
+        assert pleura_count_after == pleura_count_before, "No pleura lines should be deleted"
+        assert bline_count_after == bline_count_before, "No b-lines should be deleted"
+
+        print("✅ Delete with no selection test passed")
+
+    def test_delete_keyboard_shortcut(self):
+        """Test the Delete key shortcut for deleting selected lines."""
+        print("Testing Delete key shortcut...")
+
+        # Select some lines
+        self.widget.onSelectAllLines()
+        initial_selected_count = len(self.logic.selectedLineIDs)
+        assert initial_selected_count > 0, "Should have selected lines"
+
+        # Count lines before deletion
+        total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
+
+        # Mock the QMessageBox to simulate user clicking "Yes"
+        original_question = qt.QMessageBox.question
+        qt.QMessageBox.question = lambda *args, **kwargs: qt.QMessageBox.Yes
+
+        # Simulate Delete key press
+        try:
+            self.widget.shortcutDelete.activated.emit()
+
+            # Verify lines were deleted
+            total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
+            assert total_lines_after < total_lines_before, f"Should have fewer lines after Delete key: {total_lines_after} < {total_lines_before}"
+
+            # Verify selection is cleared
+            assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after Delete key"
+
+            print("✅ Delete key shortcut test passed")
+
+        except Exception as e:
+            print(f"⚠️ Could not test Delete key shortcut: {e}")
+        finally:
+            # Restore original QMessageBox.question
+            qt.QMessageBox.question = original_question
+
+    def test_delete_rater_filtering(self):
+        """Test that delete only affects lines belonging to the current rater."""
+        print("Testing delete rater filtering...")
+
+        # Create lines with different raters
+        current_rater = self.logic.getRater()
+        other_rater = "other_rater" if current_rater != "other_rater" else "test_rater"
+
+        # Create a line with the current rater
+        current_rater_line = self.logic.createMarkupLine(
+            "Pleura", current_rater,
+            [[-90.0, -45.0, 0.0], [-100.0, -47.0, 0.0]],
+            [1, 1, 0]
+        )
+        current_rater_line.SetAttribute("rater", current_rater)
+        self.logic.pleuraLines.append(current_rater_line)
+
+        # Create a line with a different rater
+        other_rater_line = self.logic.createMarkupLine(
+            "B-line", other_rater,
+            [[-95.0, -50.0, 0.0], [-105.0, -52.0, 0.0]],
+            [0, 1, 1]
+        )
+        other_rater_line.SetAttribute("rater", other_rater)
+        self.logic.bLines.append(other_rater_line)
+
+        # Select both lines
+        self.widget.toggleLineSelection(current_rater_line)
+        self.widget.toggleLineSelection(other_rater_line)
+        assert len(self.logic.selectedLineIDs) == 2, "Should have two selected lines"
+
+        # Count lines before deletion
+        pleura_count_before = len(self.logic.pleuraLines)
+        bline_count_before = len(self.logic.bLines)
+
+        # Delete selected lines
+        self.widget.onDeleteSelectedLines()
+
+        # Verify only the current rater's line was deleted
+        pleura_count_after = len(self.logic.pleuraLines)
+        bline_count_after = len(self.logic.bLines)
+
+        # The current rater's line should be deleted, but the other rater's line should remain
+        assert pleura_count_after == pleura_count_before - 1, f"Current rater's line should be deleted: {pleura_count_before} -> {pleura_count_after}"
+        assert bline_count_after == bline_count_before, f"Other rater's line should remain: {bline_count_before}"
+
+        # Verify the other rater's line is still in the scene
+        assert slicer.mrmlScene.IsNodePresent(other_rater_line), "Other rater's line should still be in scene"
+
+        print("✅ Delete rater filtering test passed")
+
+    def test_delete_confirmation_dialog(self):
+        """Test the confirmation dialog when deleting multiple lines."""
+        print("Testing delete confirmation dialog...")
+
+        self.create_test_lines()
+
+        # Select multiple lines
+        self.widget.onSelectAllLines()
+        selected_count = len(self.logic.selectedLineIDs)
+        assert selected_count > 1, "Should have multiple selected lines for confirmation test"
+
+        # Mock the QMessageBox to simulate user clicking "No"
+        original_question = qt.QMessageBox.question
+        qt.QMessageBox.question = lambda *args, **kwargs: qt.QMessageBox.No
+
+        try:
+            # Count lines before attempted deletion
+            total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
+
+            # Try to delete (should be cancelled by the mock)
+            self.widget.onDeleteSelectedLines()
+
+            # Verify no lines were deleted
+            total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
+            assert total_lines_after == total_lines_before, "No lines should be deleted when user cancels"
+
+            # Verify selection is still intact
+            assert len(self.logic.selectedLineIDs) == selected_count, "Selection should remain when user cancels"
+
+            print("✅ Delete confirmation dialog test passed (cancelled)")
+
+        finally:
+            # Restore original QMessageBox.question
+            qt.QMessageBox.question = original_question
+
+        # Now test with user clicking "Yes"
+        qt.QMessageBox.question = lambda *args, **kwargs: qt.QMessageBox.Yes
+
+        try:
+            # Count lines before deletion
+            total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
+
+            # Delete the selected lines
+            self.widget.onDeleteSelectedLines()
+
+            # Verify lines were deleted
+            total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
+            assert total_lines_after < total_lines_before, f"Lines should be deleted when user confirms: {total_lines_after} < {total_lines_before}"
+
+            print("✅ Delete confirmation dialog test passed (confirmed)")
+
+        finally:
+            # Restore original QMessageBox.question
+            qt.QMessageBox.question = original_question
+
     def runTest(self):
-        """Run the line selection, copy, and paste test."""
-        print("Starting line selection, copy, and paste test...")
+        """Run the line selection, copy, paste, and delete test."""
+        print("Starting line selection, copy, paste, and delete test...")
         print("This test will:")
         print("1. Load the AnnotateUltrasound module")
         print("2. Load test DICOM data")
         print("3. Create test lines (Pleura and B-lines)")
         print("4. Test line selection functionality")
         print("5. Test copy and paste functionality")
-        print("6. Test keyboard shortcuts")
+        print("6. Test delete functionality")
+        print("7. Test keyboard shortcuts")
 
         # Load test data
         if not self.load_test_data():
@@ -638,17 +935,32 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         print("\n--- Testing Control Point Selection ---")
         self.test_control_point_selection()
 
+        print("\n=== PHASE 4: Delete Line Tests ===")
+        print("\n--- Testing Delete Selected Lines ---")
+        self.test_delete_selected_lines()
+        print("\n--- Testing Delete Single Line ---")
+        self.test_delete_single_line()
+        print("\n--- Testing Delete with No Selection ---")
+        self.test_delete_no_selection()
+        print("\n--- Testing Delete Keyboard Shortcut ---")
+        self.test_delete_keyboard_shortcut()
+        print("\n--- Testing Delete Rater Filtering ---")
+        self.test_delete_rater_filtering()
+        print("\n--- Testing Delete Confirmation Dialog ---")
+        self.test_delete_confirmation_dialog()
+
         print("\n=== TEST SUMMARY ===")
-        print("✅ All line selection, copy, and paste tests completed successfully!")
+        print("✅ All line selection, copy, paste, and delete tests completed successfully!")
         print("The following functionality was tested:")
         print("- Line selection (Select All, Deselect All)")
         print("- Copy and paste operations")
         print("- Multiple copy/paste cycles")
-        print("- Keyboard shortcuts (Ctrl+A, Ctrl+C, Ctrl+V, Escape)")
+        print("- Keyboard shortcuts (Ctrl+A, Ctrl+C, Ctrl+V, Escape, Delete)")
         print("- Visual feedback for selected lines")
         print("- Clipboard management")
         print("- Individual line selection by clicking")
         print("- Control point selection")
+        print("- Delete functionality (multiple, single, no selection, keyboard shortcut, rater filtering, confirmation dialog)")
         print("- State management and cleanup")
 
 

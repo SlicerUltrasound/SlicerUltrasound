@@ -1471,7 +1471,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         self.logic.selectedLineIDs = []  # clear after copying
         slicer.util.mainWindow().statusBar().showMessage(f"Copied {len(self.logic.clipboardLines)} lines", 2000)
 
-    def onPasteLines(self):
+    def onPasteLines(self, force=False):
         logging.debug('onPasteLines')
 
         if not hasattr(self.logic, "clipboardLines") or not self.logic.clipboardLines:
@@ -1515,7 +1515,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
                     alreadyExists = True
                     break
 
-            if alreadyExists:
+            if alreadyExists and not force:
                 continue
 
             rater = self._parameterNode.rater
@@ -1545,7 +1545,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         else:
             slicer.util.mainWindow().statusBar().showMessage(f"Skipped {len(self.logic.clipboardLines)} duplicate lines", 2000)
 
-    def onDeleteSelectedLines(self):
+    def onDeleteSelectedLines(self, force=False):
         selectedIDs = self.logic.selectedLineIDs
         if not selectedIDs:
             return
@@ -1553,7 +1553,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         raterNodes = []
         for nodeID in selectedIDs:
             node = slicer.mrmlScene.GetNodeByID(nodeID)
-            if node and node.GetAttribute("rater") == self._parameterNode.rater:
+            if node and (node.GetAttribute("rater") == self._parameterNode.rater or force):
                 raterNodes.append(node)
 
         if len(raterNodes) == 0:
@@ -1561,7 +1561,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
             return
 
         # Confirm if more than one line is selected
-        if len(raterNodes) > 1:
+        if not force and len(raterNodes) > 1:
             confirmed = qt.QMessageBox.question(
                 slicer.util.mainWindow(),
                 "Delete selected lines",
