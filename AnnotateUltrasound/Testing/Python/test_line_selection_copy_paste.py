@@ -473,8 +473,14 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
             # Count lines before deletion
             total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
 
-            # Simulate Delete
-            self.widget.shortcutDelete.activated.emit()
+            # Simulate Delete using the event filter
+            # Create a QKeyEvent for Delete key
+            key_event = qt.QKeyEvent(qt.QEvent.KeyPress, qt.Qt.Key_Delete, qt.Qt.NoModifier)
+
+            # Send the event to the slice view (which has the event filter installed)
+            slice_view = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+            qt.QApplication.postEvent(slice_view, key_event)
+            qt.QApplication.processEvents()
 
             # Verify lines were deleted
             total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
@@ -757,9 +763,15 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         original_question = qt.QMessageBox.question
         qt.QMessageBox.question = lambda *args, **kwargs: qt.QMessageBox.Yes
 
-        # Simulate Delete key press
+        # Simulate Delete key press using the event filter
         try:
-            self.widget.shortcutDelete.activated.emit()
+            # Create a QKeyEvent for Delete key
+            key_event = qt.QKeyEvent(qt.QEvent.KeyPress, qt.Qt.Key_Delete, qt.Qt.NoModifier)
+
+            # Send the event to the slice view (which has the event filter installed)
+            slice_view = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+            qt.QApplication.postEvent(slice_view, key_event)
+            qt.QApplication.processEvents()
 
             # Verify lines were deleted
             total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
@@ -772,6 +784,50 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
 
         except Exception as e:
             print(f"⚠️ Could not test Delete key shortcut: {e}")
+        finally:
+            # Restore original QMessageBox.question
+            qt.QMessageBox.question = original_question
+
+    def test_backspace_keyboard_shortcut(self):
+        """Test the Backspace key shortcut for deleting selected lines."""
+        print("Testing Backspace key shortcut...")
+
+        # Create fresh test lines
+        self.create_test_lines()
+
+        # Select some lines
+        self.widget.onSelectAllLines()
+        initial_selected_count = len(self.logic.selectedLineIDs)
+        assert initial_selected_count > 0, "Should have selected lines"
+
+        # Count lines before deletion
+        total_lines_before = len(self.logic.pleuraLines) + len(self.logic.bLines)
+
+        # Mock the QMessageBox to simulate user clicking "Yes"
+        original_question = qt.QMessageBox.question
+        qt.QMessageBox.question = lambda *args, **kwargs: qt.QMessageBox.Yes
+
+        # Simulate Backspace key press using the event filter
+        try:
+            # Create a QKeyEvent for Backspace key
+            key_event = qt.QKeyEvent(qt.QEvent.KeyPress, qt.Qt.Key_Backspace, qt.Qt.NoModifier)
+
+            # Send the event to the slice view (which has the event filter installed)
+            slice_view = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+            qt.QApplication.postEvent(slice_view, key_event)
+            qt.QApplication.processEvents()
+
+            # Verify lines were deleted
+            total_lines_after = len(self.logic.pleuraLines) + len(self.logic.bLines)
+            assert total_lines_after < total_lines_before, f"Should have fewer lines after Backspace key: {total_lines_after} < {total_lines_before}"
+
+            # Verify selection is cleared
+            assert len(self.logic.selectedLineIDs) == 0, "Selection should be cleared after Backspace key"
+
+            print("✅ Backspace key shortcut test passed")
+
+        except Exception as e:
+            print(f"⚠️ Could not test Backspace key shortcut: {e}")
         finally:
             # Restore original QMessageBox.question
             qt.QMessageBox.question = original_question
@@ -944,6 +1000,8 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         self.test_delete_no_selection()
         print("\n--- Testing Delete Keyboard Shortcut ---")
         self.test_delete_keyboard_shortcut()
+        print("\n--- Testing Backspace Keyboard Shortcut ---")
+        self.test_backspace_keyboard_shortcut()
         print("\n--- Testing Delete Rater Filtering ---")
         self.test_delete_rater_filtering()
         print("\n--- Testing Delete Confirmation Dialog ---")
@@ -955,7 +1013,7 @@ class LineSelectionCopyPasteTest(ScriptedLoadableModuleTest):
         print("- Line selection (Select All, Deselect All)")
         print("- Copy and paste operations")
         print("- Multiple copy/paste cycles")
-        print("- Keyboard shortcuts (Ctrl+A, Ctrl+C, Ctrl+V, Escape, Delete)")
+        print("- Keyboard shortcuts (Ctrl+A, Ctrl+C, Ctrl+V, Escape, Delete, Backspace)")
         print("- Visual feedback for selected lines")
         print("- Clipboard management")
         print("- Individual line selection by clicking")
