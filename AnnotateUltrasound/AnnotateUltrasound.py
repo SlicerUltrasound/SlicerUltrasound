@@ -124,17 +124,6 @@ class SliceViewEventFilter(qt.QObject):
         if type(self.parentWidget) is not AnnotateUltrasoundWidget:
             return False
 
-        # --- Handle Delete/Backspace ---
-        if event.type() == qt.QEvent.KeyPress:
-            if event.key() in [qt.Qt.Key_Backspace, qt.Qt.Key_Delete]:
-                focusWidget = qt.QApplication.focusWidget()
-                # Only handle if focus is in or under slice view
-                if self._isChildOf(focusWidget, self.sliceView):
-                    if not isinstance(focusWidget, (qt.QLineEdit, qt.QTextEdit, qt.QPlainTextEdit)):
-                        self.parentWidget.onDeleteSelectedLines()
-                        return True  # eat the event
-                return False
-
         if event.type() == qt.QEvent.MouseButtonPress:
             self.sliceView.setFocus()
             modifiers = qt.QApplication.keyboardModifiers()
@@ -252,7 +241,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         # Now set focus
         redView.setFocus()
         redView.activateWindow()
-        # print(f"[DEBUG] Red view has focus? {redView.hasFocus()}")
 
     def initializeShortcuts(self):
         self.shortcutW = qt.QShortcut(slicer.util.mainWindow())
@@ -303,27 +291,60 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         self.shortcutL = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutL.setKey(qt.QKeySequence('L'))
         self.shortcutL.setContext(qt.Qt.ApplicationShortcut)
-        # Add SelectAll/Copy/Paste shortcuts
-        redView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
-        self.shortcutSelectAll = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.SelectAll), redView)
-        self.shortcutSelectAll.setContext(qt.Qt.WidgetShortcut)
-        self.shortcutEscape = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Escape), redView)
-        self.shortcutEscape.setContext(qt.Qt.WidgetShortcut)
-        self.shortcutCopy = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Copy), redView)
-        self.shortcutCopy.setContext(qt.Qt.WidgetShortcut)
-        self.shortcutPaste = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Paste), redView)
-        self.shortcutPaste.setContext(qt.Qt.WidgetShortcut)
+        # Add SelectAll/Copy/Paste shortcuts to mainWindow with ApplicationShortcut context
+        mainWindow = slicer.util.mainWindow()
+        self.shortcutSelectAll = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.SelectAll), mainWindow)
+        self.shortcutSelectAll.setContext(qt.Qt.ApplicationShortcut)
+        self.shortcutEscape = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Escape), mainWindow)
+        self.shortcutEscape.setContext(qt.Qt.ApplicationShortcut)
+        self.shortcutCopy = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Copy), mainWindow)
+        self.shortcutCopy.setContext(qt.Qt.ApplicationShortcut)
+        self.shortcutPaste = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Paste), mainWindow)
+        self.shortcutPaste.setContext(qt.Qt.ApplicationShortcut)
+        self.shortcutDelete = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Delete), mainWindow)
+        self.shortcutDelete.setContext(qt.Qt.ApplicationShortcut)
+        self.shortcutBackspace = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Backspace), mainWindow)
+        self.shortcutBackspace.setContext(qt.Qt.ApplicationShortcut)
 
     def connectDrawingShortcuts(self):
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
         self.shortcutS.connect('activated()', lambda: self.onAddLine("B-line", not self.ui.addBlineButton.isChecked()))
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura", not self.ui.removePleuraButton.isChecked()))  # "E" removes the last pleura line
         self.shortcutD.connect('activated()', lambda: self.onRemoveLine("B-line", not self.ui.removeBlineButton.isChecked()))   # "D" removes the last B-line
-        # Add SelectAll/Copy/Paste shortcut connections
-        self.shortcutSelectAll.activated.connect(self.onSelectAllLines)
+        # Add SelectAll/Copy/Paste shortcut connections using helpers that check for Red view focus
+        self.shortcutSelectAll.activated.connect(self._selectAllIfRedViewFocused)
         self.shortcutEscape.activated.connect(self.onDeselectAllLines)
-        self.shortcutCopy.activated.connect(self.onCopyLines)
-        self.shortcutPaste.activated.connect(self.onPasteLines)
+        self.shortcutCopy.activated.connect(self._copyIfRedViewFocused)
+        self.shortcutPaste.activated.connect(self._pasteIfRedViewFocused)
+        self.shortcutDelete.activated.connect(self._deleteIfRedViewFocused)
+        self.shortcutBackspace.activated.connect(self._deleteIfRedViewFocused)
+
+    def _redViewHasFocus(self):
+        focused = qt.QApplication.focusWidget()
+        return self._isChildOf(focused, self.sliceView)
+
+    def _isChildOf(self, child, parent):
+        while child:
+            if child is parent:
+                return True
+            child = child.parent()
+        return False
+
+    def _pasteIfRedViewFocused(self):
+        if self._redViewHasFocus():
+            self.onPasteLines()
+
+    def _copyIfRedViewFocused(self):
+        if self._redViewHasFocus():
+            self.onCopyLines()
+
+    def _selectAllIfRedViewFocused(self):
+        if self._redViewHasFocus():
+            self.onSelectAllLines()
+
+    def _deleteIfRedViewFocused(self):
+        if self._redViewHasFocus():
+            self.onDeleteSelectedLines()
 
     def connectKeyboardShortcuts(self):
         # Disconnect any existing connections first to avoid duplicates
@@ -386,6 +407,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
             pass
         try:
             self.shortcutPaste.activated.disconnect()
+        except RuntimeError:
+            pass
+        try:
+            self.shortcutDelete.activated.disconnect()
+        except RuntimeError:
+            pass
+        try:
+            self.shortcutBackspace.activated.disconnect()
         except RuntimeError:
             pass
 
@@ -2229,18 +2258,32 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         self._setRedViewFocus()
 
     def _setRedViewFocus(self):
-        """Force focus to the Red slice view after delay."""
+        """Force focus to the Red slice view's render widget after delay."""
         def forceFocus():
             mainWin = slicer.util.mainWindow()
             mainWin.raise_()
             mainWin.activateWindow()
 
             redSliceView = slicer.app.layoutManager().sliceWidget("Red").sliceView()
-            redSliceView.setFocus()
-            redSliceView.raise_()
-            redSliceView.activateWindow()
-            qt.QApplication.setActiveWindow(redSliceView)
-            # print(f"[DEBUG] Focus set to: {redSliceView}, hasFocus: {redSliceView.hasFocus()}")
+            renderWidget = None
+
+            for child in redSliceView.findChildren(qt.QWidget):
+                className = type(child).__name__
+                if "vtk" in className.lower() or "render" in className.lower():
+                    renderWidget = child
+                    break
+
+            if not renderWidget:
+                # Fallback: try by object name
+                renderWidget = redSliceView.findChild(qt.QWidget, "qt_viewport")
+
+            if renderWidget:
+                renderWidget.setFocus()
+                renderWidget.raise_()
+                renderWidget.activateWindow()
+                qt.QApplication.setActiveWindow(renderWidget)
+            else:
+                logging.warning("Could not find render widget in Red slice view")
 
         qt.QTimer.singleShot(100, forceFocus)
 
