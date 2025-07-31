@@ -305,15 +305,18 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         self.shortcutDelete.setContext(qt.Qt.ApplicationShortcut)
         self.shortcutBackspace = qt.QShortcut(qt.QKeySequence(qt.Qt.Key_Backspace), mainWindow)
         self.shortcutBackspace.setContext(qt.Qt.ApplicationShortcut)
+        self.shortcutCut = qt.QShortcut(qt.QKeySequence(qt.QKeySequence.Cut), mainWindow)
+        self.shortcutCut.setContext(qt.Qt.ApplicationShortcut)
 
     def connectDrawingShortcuts(self):
         self.shortcutW.connect('activated()', lambda: self.onAddLine("Pleura", not self.ui.addPleuraButton.isChecked()))
         self.shortcutS.connect('activated()', lambda: self.onAddLine("B-line", not self.ui.addBlineButton.isChecked()))
         self.shortcutE.connect('activated()', lambda: self.onRemoveLine("Pleura", not self.ui.removePleuraButton.isChecked()))  # "E" removes the last pleura line
         self.shortcutD.connect('activated()', lambda: self.onRemoveLine("B-line", not self.ui.removeBlineButton.isChecked()))   # "D" removes the last B-line
-        # Add SelectAll/Copy/Paste shortcut connections using helpers that check for Red view focus
+        # Add SelectAll/Copy/Paste/Cut shortcut connections using helpers that check for Red view focus
         self.shortcutSelectAll.activated.connect(self._selectAllIfRedViewFocused)
         self.shortcutEscape.activated.connect(self.onDeselectAllLines)
+        self.shortcutCut.activated.connect(self._cutIfRedViewFocused)
         self.shortcutCopy.activated.connect(self._copyIfRedViewFocused)
         self.shortcutPaste.activated.connect(self._pasteIfRedViewFocused)
         self.shortcutDelete.activated.connect(self._deleteIfRedViewFocused)
@@ -345,6 +348,14 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
     def _deleteIfRedViewFocused(self):
         if self._redViewHasFocus():
             self.onDeleteSelectedLines()
+
+    def _cutIfRedViewFocused(self):
+        if self._redViewHasFocus():
+            selected = list(self.logic.selectedLineIDs) # Save current selection
+            self.onCopyLines()
+            self.logic.selectedLineIDs = selected # Restore for delete, clipboard has the nodes we might paste later
+            self.onDeleteSelectedLines()
+            self.logic.selectedLineIDs = []
 
     def connectKeyboardShortcuts(self):
         # Disconnect any existing connections first to avoid duplicates
@@ -399,6 +410,10 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
             pass  # Already disconnected
         try:
             self.shortcutEscape.activated.disconnect()
+        except RuntimeError:
+            pass  # Already disconnected
+        try:
+            self.shortcutCut.activated.disconnect()
         except RuntimeError:
             pass  # Already disconnected
         try:
@@ -1469,12 +1484,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
 
         self.logic.clearClipboard()
 
-        # Initialize clipboardLines if it doesn't exist
-        if not hasattr(self.logic, "clipboardLines"):
-            self.logic.clipboardLines = []
-        else:
-            self.logic.clipboardLines.clear()
-
         if not hasattr(self.logic, "selectedLineIDs") or not self.logic.selectedLineIDs:
             logging.info("No lines selected to copy")
             return
@@ -1518,7 +1527,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
     def onPasteLines(self, force=False):
         logging.debug(f'onPasteLines -- force: {force}')
 
-        if not hasattr(self.logic, "clipboardLines") or not self.logic.clipboardLines:
+        if not getattr(self.logic, "clipboardLines", None):
             logging.info("Clipboard is empty")
             return
 
@@ -2642,11 +2651,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, CustomObserverMixin, 
         return save_data # a copy of the data, so caller has to save
 
     def clearClipboard(self):
-        if hasattr(self, "clipboardLines"):
+        if getattr(self, "clipboardLines", None):
             for node in self.clipboardLines:
-                if node and slicer.mrmlScene.IsNodePresent(node):
-                    slicer.mrmlScene.RemoveNode(node)
-        self.clipboardLines = []
+                self._freeMarkupNode(node)
+            self.clipboardLines.clear()
+        else:
+            self.clipboardLines = []
 
     def loadNextSequence(self):
         """
@@ -4224,5 +4234,3 @@ if __name__ == "__main__":
     # Register the module
     import AnnotateUltrasound
     slicer.modules.annotateultrasound = AnnotateUltrasound.AnnotateUltrasound(slicer.qSlicerApplication().moduleManager())
-
-
