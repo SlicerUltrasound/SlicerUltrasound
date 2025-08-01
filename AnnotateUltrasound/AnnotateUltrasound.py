@@ -354,7 +354,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
             selected = list(self.logic.selectedLineIDs) # Save current selection
             self.onCopyLines()
             self.logic.selectedLineIDs = selected # Restore for delete, clipboard has the nodes we might paste later
-            self.onDeleteSelectedLines()
+            self.onDeleteSelectedLines(force=True) # don't ask for confirmation
             self.logic.selectedLineIDs = []
 
     def connectKeyboardShortcuts(self):
@@ -1609,7 +1609,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         raterNodes = []
         for nodeID in selectedIDs:
             node = slicer.mrmlScene.GetNodeByID(nodeID)
-            if node and (node.GetAttribute("rater") == self._parameterNode.rater or force):
+            if node and (node.GetAttribute("rater") == self._parameterNode.rater):
                 raterNodes.append(node)
 
         if len(raterNodes) == 0:
