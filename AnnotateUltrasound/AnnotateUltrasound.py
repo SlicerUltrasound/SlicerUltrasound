@@ -649,6 +649,9 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         sliceView.installEventFilter(self.sliceViewEventFilter)
         self.sliceView = sliceView  # Save reference so it's not GC'ed
 
+        # Customize sequence browser toolbar button tooltips
+        self._customizeSequenceBrowserTooltips()
+
     def distanceToLineSegment2D(self, p, a, b):
         """Squared distance from point p to segment ab in 2D (XY only)."""
         px, py = p[0], p[1]
@@ -2358,6 +2361,33 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
 
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
         self._setRedViewFocus()
+
+    def _customizeSequenceBrowserTooltips(self):
+        """Customize the tooltips of sequence browser toolbar buttons to reflect custom shortcuts."""
+        try:
+            logging.info("Customizing sequence browser tooltips")
+            # Get the sequence browser toolbar
+            sequenceToolBar = slicer.modules.sequences.toolBar()
+
+            # Find all buttons in the toolbar
+            buttons = sequenceToolBar.findChildren(qt.QPushButton)
+
+            for button in buttons:
+                # Look for the next frame button by checking its tooltip or object name
+                currentTooltip = button.toolTip
+
+                # Update the "Next Frame" button tooltip
+                if "Next frame" in currentTooltip and "Ctrl+Shift+Right" in currentTooltip:
+                    button.setToolTip("Next Frame (Right)")
+                    logging.info("Updated Next Frame button tooltip to show 'Right' shortcut")
+
+                # Optionally, also update the "Previous Frame" button
+                elif "Previous frame" in currentTooltip and "Ctrl+Shift+Left" in currentTooltip:
+                    button.setToolTip("Previous Frame (Left)")
+                    logging.info("Updated Previous Frame button tooltip to show 'Left' shortcut")
+
+        except Exception as e:
+            logging.warning(f"Could not customize sequence browser tooltips: {e}")
 
 #
 # AnnotateUltrasoundLogic
