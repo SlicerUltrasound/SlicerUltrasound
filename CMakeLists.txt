@@ -14,8 +14,11 @@ set(EXTENSION_DEPENDS SlicerIGT) # Specified as a list or "NA" if no dependencie
 #-----------------------------------------------------------------------------
 # Extension dependencies
 set(Slicer_USE_ADDITIONAL_LAUNCHER_SETTINGS OFF)
-find_package(Slicer REQUIRED)
-include(CTest)
+# For some reason, this is not working when enabled when trying to build the extension in Windows in CI.
+# It is not clear why. So we disable it.
+# Disable tests in the extension build; they are run externally via Makefile.
+set(BUILD_TESTING OFF CACHE BOOL "Disable tests in extension build" FORCE)
+set(CTEST_USE_LAUNCHERS OFF CACHE BOOL "Disable CTest launchers" FORCE)
 include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
