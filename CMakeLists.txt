@@ -19,6 +19,7 @@ set(Slicer_USE_ADDITIONAL_LAUNCHER_SETTINGS OFF)
 # Disable tests in the extension build; they are run externally via Makefile.
 set(BUILD_TESTING OFF CACHE BOOL "Disable tests in extension build" FORCE)
 set(CTEST_USE_LAUNCHERS OFF CACHE BOOL "Disable CTest launchers" FORCE)
+find_package(Slicer REQUIRED)
 include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
