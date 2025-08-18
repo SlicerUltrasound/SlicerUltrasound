@@ -197,7 +197,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         Called when the user opens the module the first time and the widget is initialized.
         """
         super().setup()
-
+        self.connectKeyboardShortcuts()
         # Set up state tracking for rater table collapse handling
         self._userManuallySetRaterTableState = False
         self._lastUserManualCollapsedState = True
@@ -302,23 +302,14 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             index = parentLayout.indexOf(self.ui.workflowCollapsibleButton)
             parentLayout.insertWidget(index + 1, self._adjudicationToolsWidget)
 
-        # Add observer to selection node to enforce only visible nodes can be selected
-        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
-        if not hasattr(self, 'selectionObserverTag') or self.selectionObserverTag is None:
-            self.selectionObserverTag = selectionNode.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onSelectionChanged)
-
         # Ensure parameter node is initialized after setup is complete
         self.initializeParameterNode()
         # Load fixed labels file
         self.onLabelsFileSelected()
-        # set up click observer on red view
-        self.setupClickObserverOnRedView()
 
     def cleanup(self):
-        # Remove click observer on red view
-        self.removeClickObserverFromRedView()
-
         super().cleanup()
+        self.disconnectKeyboardShortcuts()
 
     def onDepthGuideToggled(self, toggled):
         # Save new state in application settings and update depth guide volume to show/hide the depth guide
@@ -335,112 +326,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             self._parameterNode.rater = self.ui.raterName.text.strip().lower()
             statusText = f"Adjudicator name changed to {self._parameterNode.rater}"
             slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
-
-    # These functions are used to handle clicks on the red view when selecting lines by clicking on the red view
-    # near the line to be selected.
-    # --- Click observer on red view ---
-    def setupClickObserverOnRedView(self):
-        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
-        renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
-        self._clickObserverTag = renderWindowInteractor.AddObserver(vtk.vtkCommand.LeftButtonPressEvent, self.onRedViewClick)
-
-    def removeClickObserverFromRedView(self):
-        if hasattr(self, '_clickObserverTag') and self._clickObserverTag is not None:
-            sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
-            renderWindowInteractor = sliceWidget.sliceView().renderWindow().GetInteractor()
-            renderWindowInteractor.RemoveObserver(self._clickObserverTag)
-            self._clickObserverTag = None
-
-    # --- On red view click ---
-    # This function is called when the user clicks on the red view.
-    # It finds the closest visible markup line node (to any segment) and selects it.
-    # If the closest node is within 3 mm of the click, it selects the node.
-    # If the closest node is more than 3 mm away, it does nothing.
-    def onRedViewClick(self, caller, event):
-        x, y = caller.GetEventPosition()
-        # Get the slice widget and node
-        sliceWidget = slicer.app.layoutManager().sliceWidget("Red")
-        sliceNode = sliceWidget.mrmlSliceNode()
-        xyToRas = sliceNode.GetXYToRAS()
-        xy = [x, y, 0, 1]
-        ras = [0, 0, 0, 1]
-        xyToRas.MultiplyPoint(xy, ras)
-        ras = ras[:3]
-        # Find the closest visible markup line node (to any segment)
-        minDist = float('inf')
-        closestNode = None
-        threshold = 4.0  # distance squared, ~2mm
-        for node in slicer.util.getNodesByClass('vtkMRMLMarkupsLineNode'):
-            displayNode = node.GetDisplayNode()
-            nodeRater = node.GetAttribute('rater')
-            if not displayNode or not displayNode.GetVisibility():
-                continue
-            nPoints = node.GetNumberOfControlPoints()
-            for i in range(nPoints - 1):
-                pt1 = [0, 0, 0]
-                pt2 = [0, 0, 0]
-                node.GetNthControlPointPosition(i, pt1)
-                node.GetNthControlPointPosition(i + 1, pt2)
-                dist = self.distanceToLineSegment2D(ras[:2], pt1[:2], pt2[:2])
-                if dist < minDist:
-                    minDist = dist
-                    closestNode = node
-        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
-        if closestNode and minDist < threshold:
-            selectionNode.SetActivePlaceNodeID(closestNode.GetID())
-        else:
-            # Clear selection if clicking away from any line
-            selectionNode.SetActivePlaceNodeID("")
-        # Update line markups to refresh visual appearance (highlighting, etc.)
-        self.logic.syncAnnotationsToMarkups()
-        self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
-
-    def onAddLine(self, lineType, checked):
-        # Remove click observer before starting line placement
-        self.removeClickObserverFromRedView()
-        super().onAddLine(lineType, checked)
-        if not checked:
-            self.setupClickObserverOnRedView()
-
-    def onRemoveLine(self, lineType, checked):
-        # Remove click observer before starting line removal
-        self.removeClickObserverFromRedView()
-        super().onRemoveLine(lineType, checked)
-        if not checked:
-            self.setupClickObserverOnRedView()
-
-    def removeLastPleuraLine(self):
-        print(f"Called Adjudicate removeLastPleuraLine")
-        self.logic._suppressSync = True
-        super().removeLastPleuraLine()
-        self.logic._suppressSync = False
-
-    def removeLastBline(self):
-        print(f"Called Adjudicate removeLastBline")
-
-        self.logic._suppressSync = True
-        super().removeLastBline()
-        self.logic._suppressSync = False
-
-    def delayedOnEndPlaceMode(self, lineType):
-        super().delayedOnEndPlaceMode(lineType)
-        # Re-add click observer after line placement
-        self.setupClickObserverOnRedView()
-
-    def onSelectionChanged(self, caller, event):
-        if self.logic._suppressSync:
-            return
-        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
-        selectedNodeID = selectionNode.GetActivePlaceNodeID()
-        if selectedNodeID:
-            node = slicer.mrmlScene.GetNodeByID(selectedNodeID)
-            if node and node.GetClassName() == "vtkMRMLMarkupsLineNode":
-                displayNode = node.GetDisplayNode()
-                if not displayNode or not displayNode.GetVisibility():
-                    selectionNode.SetActivePlaceNodeID("")  # Clear selection
-        # Update line markups to refresh visual appearance (highlighting, etc.)
-        self.logic.syncAnnotationsToMarkups()
-        self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
 
     def findNextUnlabeledScan(self):
         """
@@ -724,6 +609,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         newNode = nodes[new_idx]
         selectionNode.SetActivePlaceNodeID(newNode.GetID())
         slicer.util.showStatusMessage(f"{status_message_prefix} {new_idx+1} of {len(nodes)}.", 2000)
+        self.logic.syncAnnotationsToMarkups()
         self.logic.refreshDisplay(updateOverlay=True, updateGui=True)
         rater = newNode.GetAttribute("rater") or "unknown"
         line_type = "pleura" if newNode in self.logic.pleuraLines else "b-line"
@@ -768,10 +654,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         """
         # Use the Logic's centralized method to extract and set up raters
         super().extractSeenAndSelectedRaters()
-
-    def refocusAndRestoreShortcuts(self, delay: int = 200):
-        qt.QTimer.singleShot(delay, self._delayedSetRedViewFocus)
-        qt.QTimer.singleShot(delay + 100, self._restoreFocusAndShortcuts)
 
     def updateGuiFromAnnotations(self):
         super().updateGuiFromAnnotations()
