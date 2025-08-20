@@ -12,9 +12,10 @@ import math
 import os
 from PIL import Image
 import pydicom
+from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
 import requests
 from typing import Optional
-
+import time
 import qt
 import vtk
 
@@ -1201,71 +1202,16 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
     def getAutoMask(self):
         current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+
         if current_dicom_record is None:
             logging.error("No current DICOM dataset loaded")
             return None
-        model, input_shape, device = self.downloadAndPrepareModel()
+        model, device = self.downloadAndPrepareModel()
+
         if model is None:
             return None
-        return self.findMaskAutomatic(model, input_shape, device)
 
-    def downloadAndPrepareModel(self):
-        """ Download the AI model and prepare it for inference """
-        # Set the Device to run the model on
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logging.info(f"The model will run on Device: {device}")
-
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        checkpoint_dir = os.path.join(script_dir, 'Resources/checkpoints/')
-        os.makedirs(os.path.dirname(checkpoint_dir), exist_ok=True)
-
-        model_path = os.path.join(checkpoint_dir, 'model_traced.pt')
-        model_config_path = os.path.join(checkpoint_dir, 'model_config.yaml')
-
-        model_url = "https://www.dropbox.com/scl/fi/abgn6ln13thh0v9mq5kqj/model_traced.pt?rlkey=8a9eugxbqeuzwrglz55sh7hkd&st=mwclwtgv&dl=1"
-        config_url = "https://www.dropbox.com/scl/fi/klnwakbysn95nae85lmjz/model_config.yaml?rlkey=p1jada30bvbsihtfiw80dq7h2&st=7a8y0ewy&dl=1"
-
-        if not os.path.exists(model_path):
-            logging.info(f"The AI model does not exist. Starting download...")
-            dialog = AnonymizeUltrasoundWidget.createWaitDialog(self, "Downloading AI Model", "The AI model does not exist. Downloading...")
-            success = self.download_model(model_url, model_path)
-            dialog.close()
-            if not success:
-                return None, None, None
-
-        if not os.path.exists(model_config_path):
-            logging.info(f"The model config file does not exist. Starting download...")
-            success = self.download_model(config_url, model_config_path)
-            if not success:
-                return None, None, None
-
-        # Check if the model loaded successfully
-        try:
-            model = torch.jit.load(model_path).to(device).eval()
-        except Exception as e:
-            logging.error(f"Failed to load the model: {e}")
-            logging.error("Automatic mode is disabled. Please define the mask manually.")
-            # TODO: Disable the button of Auto mask generation?
-            return None, None, None
-
-        # Check if the model config loaded successfully
-        try:
-            with open(model_config_path, 'r') as file:
-                model_config = yaml.safe_load(file)
-            input_shape_str = model_config['input_shape']
-            input_shape = tuple(map(int, input_shape_str.strip('()').split(',')))
-        except Exception as e:
-            logging.error(f"Failed to load the model config: {e}")
-            logging.error("Automatic mode is disabled. Please define the mask manually.")
-            # TODO: Disable the button of Auto mask generation?
-            return None, None, None
-
-        return model, input_shape, device
-
-    def findMaskAutomatic(self, model, input_shape, device):
-        """ Generate a mask automatically using the AI model """
+        # 1. Get the max volume array from the current sequence browser node
         slicer.app.pauseRender()
         parameterNode = self.getParameterNode()
         currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
@@ -1274,6 +1220,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
         maxVolumeArray = np.copy(currentVolumeArray)
 
+        # 2. Preprocess the image to get a single frame
         for i in range(1, masterSequenceNode.GetNumberOfDataNodes()):
             currentVolumeNode = masterSequenceNode.GetNthDataNode(i)
             currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
@@ -1281,37 +1228,67 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         frame_item = maxVolumeArray[0, :, :]
         slicer.app.resumeRender()
 
+        # 3. Convert to grayscale and resize to 240x320
         if len(frame_item.shape) == 3 and frame_item.shape[2] == 3:
             frame_item = cv2.cvtColor(frame_item, cv2.COLOR_RGB2GRAY)
-        original_frame_size = frame_item.shape[::-1]
-        logging.debug(f"Original frame size: {str(frame_item.shape)}")
-        frame_item = cv2.resize(frame_item, input_shape)
-        logging.debug(f"Resized frame size: {str(input_shape)}")
+        original_frame_shape = frame_item.shape
+        frame_item = cv2.resize(frame_item, (240, 320))
+        frame_item = np.expand_dims(np.expand_dims(np.array(frame_item), axis=0), axis=0)
 
+        # 4. Run AI inference for corner prediction
         with torch.no_grad():
-            input_tensor = torch.tensor(np.expand_dims(np.expand_dims(np.array(frame_item), axis=0), axis=0)).float()
-            input_tensor = input_tensor.to(device)
-        output = model(input_tensor)
-        output = (torch.softmax(output, dim=1) > 0.5).cpu().numpy()
-        mask_output = np.uint8(output[0, 1, :, :])
-        mask_output = cv2.resize(np.uint8(output[0, 1, :, :]), original_frame_size)
-        logging.info(f"({str(mask_output.shape)}) Mask generated successfully")
+            input_tensor = torch.tensor(frame_item).float()
+            coords_normalized = model(input_tensor.to(device)).cpu().numpy()
 
-        # Paint the red overlay where the model says the fan is
-        Hc, Wc = mask_output.shape
-        rgb = np.zeros((1, Hc, Wc, 3), dtype=np.uint8)
-        rgb[0, mask_output == 1, 0] = 255      # red channel only
-        self._autoMaskRGB = rgb
-        self._composeAndPushOverlay()
+        # 5. Denormalize coordinates
+        coords = coords_normalized.reshape(4, 2)
+        coords[:, 0] *= original_frame_shape[1]  # width
+        coords[:, 1] *= original_frame_shape[0]  # height
 
-        approx_corners = self.find_four_corners(mask_output)
+        top_left = tuple(coords[0])
+        top_right = tuple(coords[1])
+        bottom_left = tuple(coords[2])
+        bottom_right = tuple(coords[3])
 
-        if approx_corners is None:
-            logging.error("Could not find the four corners of the foreground in the mask")
+        return np.array([top_left, top_right, bottom_left, bottom_right])
+
+    def downloadAndPrepareModel(self):
+        """ Download the AI model and prepare it for inference """
+        # Set the Device to run the model on
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
         else:
-            top_left, top_right, bottom_right, bottom_left = approx_corners
-            logging.debug(f"Approximate corners - Top-left: {top_left}, Top-right: {top_right}, Bottom-right: {bottom_right}, Bottom-left: {bottom_left}")
-        return approx_corners
+            device = torch.device("cpu")
+
+        logging.info(f"The model will run on Device: {device}")
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        checkpoint_dir = os.path.join(script_dir, 'Resources/checkpoints/')
+        os.makedirs(os.path.dirname(checkpoint_dir), exist_ok=True)
+
+        model_path = os.path.join(checkpoint_dir, 'model_traced_unet_dsnt.pt')
+
+        model_url = "https://www.dropbox.com/scl/fi/mnu2k4n8fju6gy1glhieb/model_traced.pt?rlkey=eb0xmwzwsoesq3mp11s8xt9xd&dl=1"
+
+        if not os.path.exists(model_path):
+            logging.info(f"The AI model does not exist. Starting download...")
+            dialog = AnonymizeUltrasoundWidget.createWaitDialog(self, "Downloading AI Model", "The AI model does not exist. Downloading...")
+            success = self.download_model(model_url, model_path)
+            dialog.close()
+            if not success:
+                return None, None
+
+        # Check if the model loaded successfully
+        try:
+            model = torch.jit.load(model_path).to(device).eval()
+        except Exception as e:
+            logging.error(f"Failed to load the model: {e}")
+            logging.error("Automatic mode is disabled. Please define the mask manually.")
+            return None, None
+
+        return model, device
 
     def download_model(self, url, output_path):
         """ Download a file from a URL """
@@ -1330,60 +1307,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             logging.error(f"Failed to download the file: {e}")
             # TODO: Disable the button of Auto mask generation?
             return False
-
-    def find_extreme_corners(self, points):
-        # Convert points to a numpy array for easier manipulation
-        points = np.array(points)
-        # Find the top-left corner (minimum x + y)
-        top_left = list(points[np.argmin(points[:, 0] + points[:, 1])])
-        # Find the top-right corner (maximum x - y)
-        top_right = list(points[np.argmax(points[:, 0] - points[:, 1])])
-        # Find the bottom-left corner (minimum x - y)
-        bottom_left = list(points[np.argmin(points[:, 0] - points[:, 1])])
-        # Find the bottom-right corner (maximum x + y)
-        bottom_right = list(points[np.argmax(points[:, 0] + points[:, 1])])
-
-        corners = [tuple(top_left), tuple(top_right), tuple(bottom_left), tuple(bottom_right)]
-        unique_corners = set(corners)
-        num_unique_corners = len(unique_corners)
-
-        # If there are 3 unique corners, then the mask is a triangle
-        epsilon = 2
-        if num_unique_corners == 3:
-            # Define the top point (which one is higher from top-left and top-right, higher means less y)
-            top_point = top_left if top_left[1] < top_right[1] else top_right
-            # Set top-left and top-right equal to top_point
-            top_left = list(top_point)
-            top_right = list(top_point)
-            # Adjust x coordinates
-            top_left[0] -= epsilon
-            top_right[0] += epsilon
-
-        # TODO: Is it possible?!
-        if num_unique_corners < 3:
-            return None
-
-        return np.array([top_left, top_right, bottom_left, bottom_right])
-
-    def find_four_corners(self, mask):
-        """ Find the four corners of the foreground in the mask. """
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if len(contours) == 0:
-            return None
-        # Assuming the largest contour is the foreground
-        contour = max(contours, key=cv2.contourArea)
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx_corners = cv2.approxPolyDP(contour, epsilon, True)
-
-        # Reshape the approx_corners array to a 2D array
-        approx_corners = approx_corners.reshape(-1, 2)
-
-        # If the contour has more than 4 corners, then find the extreme corners
-        if len(approx_corners) < 3:
-            return None
-
-        approx_corners = self.find_extreme_corners(approx_corners)
-        return approx_corners
 
     def showMaskContour(self, show=True):
         parameterNode = self.getParameterNode()
