@@ -606,6 +606,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Set the patient name prefix to the input directory name
         self.ui.namePrefixLineEdit.text = inputDirectory.split('/')[-1]
+        if numFiles > 0:
+            self.onNextButton()
 
     def set_processing_mode(self, mode: bool):
         self.processing_mode = mode
@@ -727,43 +729,39 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
 
         # Automatic mask via AI only when NOT in three-point fan mode
-        # TODO: Support for three-point fan mode auto mask
         autoMaskSuccessful = False
         if self.ui.autoMaskCheckBox.checked:
-            if threePointFanModeEnabled:
-                logging.info("Auto mask not applied because in three-point fan mode")
+            # Get the mask control points
+            maskMarkupsNode.RemoveAllControlPoints()
+            coords_IJK = self.logic.getAutoMask()
+            if coords_IJK is None:
+                logging.error("Auto mask not found")
             else:
-                # Get the mask control points
-                maskMarkupsNode.RemoveAllControlPoints()
-                coords_IJK = self.logic.getAutoMask()
-                if coords_IJK is None:
-                    logging.error("Auto mask not found")
-                else:
-                    autoMaskSuccessful = True
+                autoMaskSuccessful = True
 
-                # Try to apply the automatic mask markups
-                currentVolumeNode = self.logic.getCurrentProxyNode()
-                if autoMaskSuccessful == True and currentVolumeNode is not None:
-                    ijkToRas = vtk.vtkMatrix4x4()
-                    currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
+            # Try to apply the automatic mask markups
+            currentVolumeNode = self.logic.getCurrentProxyNode()
+            if autoMaskSuccessful == True and currentVolumeNode is not None:
+                ijkToRas = vtk.vtkMatrix4x4()
+                currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
 
-                    num_points = coords_IJK.shape[0]
-                    coords_RAS = np.zeros((num_points, 4))
-                    for i in range(num_points):
-                        point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
-                        # convert to IJK
-                        coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
+                num_points = coords_IJK.shape[0]
+                coords_RAS = np.zeros((num_points, 4))
+                for i in range(num_points):
+                    point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
+                    # convert to IJK
+                    coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
 
-                    for i in range(num_points):
-                        coord = coords_RAS[i, :]
-                        maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
+                for i in range(num_points):
+                    coord = coords_RAS[i, :]
+                    maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
 
-                    # Update the status
-                    self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
-                    self.ui.defineMaskButton.checked = False
-                else:
-                    logging.error("Ultraosund volume node not found")
-                    autoMaskSuccessful = False
+                # Update the status
+                self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
+                self.ui.defineMaskButton.checked = False
+            else:
+                logging.error("Ultraosund volume node not found")
+                autoMaskSuccessful = False
 
         # If markups are not automatically defined, start the manual process using mouse interactions
 
@@ -1226,18 +1224,45 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 frame_item = next(pixel_data_frames)
                 image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
                 frame = np.array(image)
-
                 # If frame is grayscale, add a channel dimension
                 if len(frame.shape) == 2:
                     frame = np.expand_dims(frame, axis=2)
-
-                # Convert from rows, cols, channels to channels, rows, cols
-                frame = np.transpose(frame, (2, 0, 1))
+                frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
                 output[i, :, :, :] = frame
         except Exception as e:
-            logging.error(f"Error reading DICOM frames: {e}")
-            return None
+            try:
+                # Fallback to decode_data_sequence approach
+                frame_data = decode_data_sequence(ds.PixelData)
 
+                for i, frame_item in enumerate(frame_data):
+                    if i >= num_frames:
+                        break
+                    image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
+                    frame = np.array(image)
+                    # If frame is grayscale, add a channel dimension
+                    if len(frame.shape) == 2:
+                        frame = np.expand_dims(frame, axis=2)
+                    frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
+                    output[i, :, :, :] = frame
+
+            except Exception as e:
+                try:
+                    # Fallback to ds.pixel_array approach
+                    pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower
+                    # ensure that the shape is (num_frames, height, width, channels).
+                    # it is sometimes (height, width, channels)
+                    if len(pixel_data_frames.shape) == 3 and num_frames == 1:
+                        pixel_data_frames = np.expand_dims(pixel_data_frames, axis=0)
+
+                    for i in range(num_frames):
+                        frame = pixel_data_frames[i, :, :]
+                        if len(frame.shape) == 2:
+                            frame = np.expand_dims(frame, axis=2)
+                        frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
+                        output[i, :, :, :] = frame
+
+                except Exception as e:
+                    raise e
         return output
 
     def getAutoMask(self):
