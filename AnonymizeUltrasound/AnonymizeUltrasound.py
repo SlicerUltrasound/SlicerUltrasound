@@ -12,7 +12,6 @@ import math
 import os
 from PIL import Image
 import pydicom
-from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
 import requests
 from typing import Optional
 import time
@@ -858,7 +857,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
                 self.ui.defineMaskButton.checked = False
             else:
-                logging.error("Ultraosund volume node not found")
+                logging.error("Ultrasound volume node not found")
                 autoMaskSuccessful = False
 
         # If markups are not automatically defined, start the manual process using mouse interactions
@@ -1308,59 +1307,30 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return proxyNode
 
-    def read_frames_from_dicom(self, dicom_file_path):
+    def sequence_to_numpy(self, masterSequenceNode) -> np.ndarray:
         """
-        Reads frames from a dicom file and returns a numpy array in the format of [Frames, Channels, Height, Width]. PyTorch convention is NCHW for image batches.
-        :param dicom_file_path: path to the dicom file
-        :return: numpy array [N,C,H,W]
+        Convert all frames in the sequence to a numpy array in the format of (N, C, H, W).
+        :param masterSequenceNode: the master sequence node
+        :param make_copy: whether to make a copy of the array
+        :return: numpy array (N, C, H, W)
         """
-        ds = pydicom.dcmread(dicom_file_path)
-        width = ds.Columns
-        height = ds.Rows
-        channels = ds.SamplesPerPixel
+        n = masterSequenceNode.GetNumberOfDataNodes()
+        if n == 0:
+            return np.empty((0,))
 
-        try:
-            num_frames = ds.NumberOfFrames
-        except:
-            num_frames = 1
-            print(f"Warning: No NumberOfFrames found in {dicom_file_path}, trying to read with num_frames=1")
+        firstNode = masterSequenceNode.GetNthDataNode(0)
 
-        output = np.zeros((num_frames, channels, height, width), dtype=np.uint8)
+        # This method assumes the sequence stores volume nodes
+        if not (firstNode.IsA('vtkMRMLScalarVolumeNode') or firstNode.IsA('vtkMRMLVectorVolumeNode')):
+            raise TypeError(f'Unsupported node type in sequence: {firstNode.GetClassName()}')
 
-        try:
-            frame_data = decode_data_sequence(ds.PixelData)
+        a0 = slicer.util.arrayFromVolume(firstNode).squeeze(axis=0) # (N, H, W, C) -> (H, W, C)
+        out = np.empty((n,) + a0.shape, dtype=a0.dtype)
+        out[0] = a0
+        for i in range(1, n):
+            out[i] = slicer.util.arrayFromVolume(masterSequenceNode.GetNthDataNode(i))
 
-            for i, frame_item in enumerate(frame_data):
-                if i >= num_frames:
-                    break
-                image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
-                frame = np.array(image)
-                # If frame is grayscale, add a channel dimension
-                if len(frame.shape) == 2:
-                    frame = np.expand_dims(frame, axis=2)
-                frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
-                output[i, :, :, :] = frame
-
-        except Exception as e:
-            try:
-                logging.info(f"Fallback to ds.pixel_array_approach: {e}")
-                # Fallback to ds.pixel_array approach
-                pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower
-                # ensure that the shape is (num_frames, height, width, channels). 
-                # it is sometimes (height, width, channels)
-                if len(pixel_data_frames.shape) == 3 and num_frames == 1:
-                    pixel_data_frames = np.expand_dims(pixel_data_frames, axis=0)
-
-                for i in range(num_frames):
-                    frame = pixel_data_frames[i, :, :]
-                    if len(frame.shape) == 2:
-                        frame = np.expand_dims(frame, axis=2)
-                    frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
-                    output[i, :, :, :] = frame
-
-            except Exception as e:
-                logging.error(f"Error reading DICOM frames: {e}")
-        return output
+        return out.transpose(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
 
     def getAutoMask(self):
         start_time = time.time()
@@ -1376,13 +1346,19 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # 1. Read DICOM frames and preprocess image
         read_dicom_time = time.time()
-        # TODO(ddinh): Use the max volume array from the sequence browser node instead of reading the DICOM file
-        original_image_array = self.read_frames_from_dicom(current_dicom_record.InputPath) # (N, C, H, W)
-        original_dims = (original_image_array.shape[-2], original_image_array.shape[-1])  # (height, width)
+
+        slicer.app.pauseRender()
+        parameterNode = self.getParameterNode()
+        currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
+        masterSequenceNode = currentSequenceBrowser.GetMasterSequenceNode()
+        orig_image_array = self.sequence_to_numpy(masterSequenceNode) # (N, C, H, W)
+        orig_image_dims = (orig_image_array.shape[-2], orig_image_array.shape[-1])  # (height, width)
+        slicer.app.resumeRender()
+
         logging.info(f"Read DICOM frames in {time.time() - read_dicom_time} seconds")
 
         try:
-            input_tensor = self.preprocess_image(original_image_array)
+            input_tensor = self.preprocess_image(orig_image_array)
         except Exception as e:
             logging.error(f"Error preprocessing image: {e}")
             return None
@@ -1395,8 +1371,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # 3. Denormalize coordinates
         coords = coords_normalized.reshape(4, 2)
-        coords[:, 0] *= original_dims[1]  # width
-        coords[:, 1] *= original_dims[0]  # height
+        coords[:, 0] *= orig_image_dims[1]  # width
+        coords[:, 1] *= orig_image_dims[0]  # height
 
         top_left = tuple(coords[0])
         top_right = tuple(coords[1])
