@@ -149,6 +149,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # M: toggle Define Mask, N: next scan, Space: toggle auto overlay, E: export scan, A: export and load next scan
         self.shortcutM = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutM.setKey(qt.QKeySequence('M'))
+        self.shortcutP = qt.QShortcut(slicer.util.mainWindow())
+        self.shortcutP.setKey(qt.QKeySequence('P'))
         self.shortcutN = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutN.setKey(qt.QKeySequence('N'))
         self.shortcutC = qt.QShortcut(slicer.util.mainWindow())
@@ -219,6 +221,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Workflow control buttons
 
         self.ui.nextButton.clicked.connect(self.onNextButton)
+        self.ui.prevButton.clicked.connect(self.onPreviousButton)
         self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
         self.ui.exportButton.clicked.connect(self.onExportScanButton)
         self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
@@ -612,6 +615,100 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     def set_processing_mode(self, mode: bool):
         self.processing_mode = mode
 
+    def onPreviousButton(self) -> None:
+        logging.info("Prev button clicked")
+        threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
+        continueProgress = self.ui.continueProgressCheckBox.checked
+
+        # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
+        if self.logic.dicom_file_manager.next_dicom_index is None and continueProgress:
+            self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
+            return
+
+        # Remove observers for the mask markups node, because loading a new series will reset the scene and create a new markups node
+
+        maskMarkupsNode = self._parameterNode.maskMarkups
+        if maskMarkupsNode:
+            self.removeObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointModifiedEvent, self.onPointModified)
+
+        # Load the next series
+
+        dialog = self.createWaitDialog("Loading series", "Please wait until the DICOM file is loaded...")
+        currentDicomDfIndex = None
+        try:
+            outputDirectory = self.ui.outputDirectoryButton.directory
+            currentDicomDfIndex = self.logic.loadPreviousSequence(outputDirectory, continueProgress)
+            logging.info(f"Loaded series {currentDicomDfIndex}")
+            if currentDicomDfIndex is None:
+                statusText = "No more series to load"
+                self.ui.statusLabel.text = statusText
+                dialog.close()
+            else:
+                self.ui.progressBar.value = currentDicomDfIndex + 1
+                dialog.close()
+        except Exception as e:
+            dialog.close()
+            logging.warning("Error loading series: " + str(e))  # Known error is raised on Windows if loading from outside C: drive
+
+        # Add observers for the mask markups node
+
+        maskMarkupsNode = self._parameterNode.maskMarkups
+        if maskMarkupsNode:
+            self.addObserver(maskMarkupsNode, slicer.vtkMRMLMarkupsNode.PointModifiedEvent, self.onPointModified)
+
+        # Uncheck all label checkboxes
+
+        for i in range(self.ui.labelsScrollAreaWidgetContents.layout().count()):
+            groupBox = self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget()
+            if groupBox is None:
+                continue
+            # Find all checkboxes in groupBox
+            for j in range(groupBox.layout().count()):
+                checkBox = groupBox.layout().itemAt(j).widget()
+                if isinstance(checkBox, qt.QCheckBox):
+                    checkBox.setChecked(False)
+
+        # Update GUI
+
+        if currentDicomDfIndex is not None and self.logic.dicom_file_manager.dicom_df is not None:
+            current_dicom_record = self.logic.dicom_file_manager.dicom_df.iloc[currentDicomDfIndex]
+
+            patientID = current_dicom_record.DICOMDataset.PatientID if current_dicom_record is not None else "N/A"
+            if patientID:
+                self.ui.patientIdLabel.text = patientID
+            else:
+                logging.error("Patient ID is missing")
+                self.ui.patientIdLabel.text = 'None'
+
+            instanceUID = current_dicom_record.DICOMDataset.SOPInstanceUID if current_dicom_record is not None else "N/A"
+            if instanceUID is None:
+                logging.error("Instance UID is missing")
+                self.ui.sopInstanceUidLabel.text = 'None'
+            else:
+                self.ui.sopInstanceUidLabel.text = instanceUID
+
+            statusText = f"Instance {instanceUID} loaded from file:\n"
+
+            # Get the file path from the dataframe
+
+            filepath = current_dicom_record['InputPath']
+            statusText += filepath
+            self.ui.statusLabel.text = statusText
+
+            self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
+            self.logic.showMaskContour()
+
+            # Set red slice compositing mode to 2
+            sliceCompositeNode = slicer.app.layoutManager().sliceWidget("Red").mrmlSliceCompositeNode()
+            sliceCompositeNode.SetCompositing(2)
+
+            # Reactivate the main window to ensure keyboard shortcuts work
+            slicer.util.mainWindow().activateWindow()
+            slicer.util.mainWindow().raise_()
+            slicer.util.mainWindow().setFocus()
+        else:
+            self.ui.statusLabel.text = "No DICOM file loaded"
+
     def onNextButton(self) -> None:
         logging.info("Next button clicked")
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
@@ -729,6 +826,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
 
         # Automatic mask via AI only when NOT in three-point fan mode
+        # TODO: Support for three-point fan mode auto mask
         autoMaskSuccessful = False
         if self.ui.autoMaskCheckBox.checked:
             # Get the mask control points
@@ -975,6 +1073,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     def connectKeyboardShortcuts(self):
         """Connect shortcut keys to their corresponding actions."""
         self.shortcutM.connect('activated()', lambda: self.ui.defineMaskButton.toggle())
+        self.shortcutP.connect('activated()', self.onPreviousButton)
         self.shortcutN.connect('activated()', self.onNextButton)
         self.shortcutC.connect('activated()', lambda: self.ui.threePointFanCheckBox.toggle())
         self.shortcutE.connect('activated()', self.onExportScanButton)
@@ -984,6 +1083,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         """Disconnect shortcut keys when leaving the module to avoid unwanted interactions."""
         try:
             self.shortcutM.activated.disconnect()
+            self.shortcutP.activated.disconnect()
             self.shortcutN.activated.disconnect()
             self.shortcutC.activated.disconnect()
             self.shortcutE.activated.disconnect()
@@ -1038,6 +1138,16 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         Return the number of instances in the current DICOM dataframe.
         """
         return self.dicom_file_manager.get_number_of_instances()
+
+    def loadPreviousSequence(self, outputDirectory, continueProgress=True, preserve_directory_structure=True):
+        if self.dicom_file_manager.dicom_df is None:
+            return None
+
+        if self.dicom_file_manager.next_dicom_index <= 1:
+            return None
+        else:
+            self.dicom_file_manager.next_dicom_index -= 2
+            return self.loadNextSequence(outputDirectory=outputDirectory, continueProgress=continueProgress, preserve_directory_structure=preserve_directory_structure)
 
     def loadNextSequence(self, outputDirectory, continueProgress=True, preserve_directory_structure=True):
         """
@@ -1218,10 +1328,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         output = np.zeros((num_frames, channels, height, width), dtype=np.uint8)
 
         try:
-            pixel_data_frames = generate_pixel_data_frame(ds.PixelData)
+            frame_data = decode_data_sequence(ds.PixelData)
 
-            for i in range(num_frames):
-                frame_item = next(pixel_data_frames)
+            for i, frame_item in enumerate(frame_data):
+                if i >= num_frames:
+                    break
                 image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
                 frame = np.array(image)
                 # If frame is grayscale, add a channel dimension
@@ -1229,40 +1340,26 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     frame = np.expand_dims(frame, axis=2)
                 frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
                 output[i, :, :, :] = frame
+
         except Exception as e:
             try:
-                # Fallback to decode_data_sequence approach
-                frame_data = decode_data_sequence(ds.PixelData)
+                logging.info(f"Fallback to ds.pixel_array_approach: {e}")
+                # Fallback to ds.pixel_array approach
+                pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower
+                # ensure that the shape is (num_frames, height, width, channels). 
+                # it is sometimes (height, width, channels)
+                if len(pixel_data_frames.shape) == 3 and num_frames == 1:
+                    pixel_data_frames = np.expand_dims(pixel_data_frames, axis=0)
 
-                for i, frame_item in enumerate(frame_data):
-                    if i >= num_frames:
-                        break
-                    image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
-                    frame = np.array(image)
-                    # If frame is grayscale, add a channel dimension
+                for i in range(num_frames):
+                    frame = pixel_data_frames[i, :, :]
                     if len(frame.shape) == 2:
                         frame = np.expand_dims(frame, axis=2)
                     frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
                     output[i, :, :, :] = frame
 
             except Exception as e:
-                try:
-                    # Fallback to ds.pixel_array approach
-                    pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower
-                    # ensure that the shape is (num_frames, height, width, channels).
-                    # it is sometimes (height, width, channels)
-                    if len(pixel_data_frames.shape) == 3 and num_frames == 1:
-                        pixel_data_frames = np.expand_dims(pixel_data_frames, axis=0)
-
-                    for i in range(num_frames):
-                        frame = pixel_data_frames[i, :, :]
-                        if len(frame.shape) == 2:
-                            frame = np.expand_dims(frame, axis=2)
-                        frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
-                        output[i, :, :, :] = frame
-
-                except Exception as e:
-                    raise e
+                logging.error(f"Error reading DICOM frames: {e}")
         return output
 
     def getAutoMask(self):
