@@ -13,7 +13,6 @@ import math
 import os
 from PIL import Image
 import pydicom
-from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
 import requests
 from typing import Optional
 import time
