@@ -1200,7 +1200,48 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return proxyNode
 
+    def read_frames_from_dicom(self, dicom_file_path):
+        """
+        Reads frames from a dicom file and returns a numpy array in the format of [Frames, Channels, Height, Width]. PyTorch convention is NCHW for image batches.
+        :param dicom_file_path: path to the dicom file
+        :return: numpy array [N,C,H,W]
+        """
+        ds = pydicom.dcmread(dicom_file_path)
+        width = ds.Columns
+        height = ds.Rows
+        channels = ds.SamplesPerPixel
+
+        try:
+            num_frames = ds.NumberOfFrames
+        except:
+            num_frames = 1
+            print(f"Warning: No NumberOfFrames found in {dicom_file_path}, trying to read with num_frames=1")
+
+        output = np.zeros((num_frames, channels, height, width), dtype=np.uint8)
+
+        try:
+            pixel_data_frames = generate_pixel_data_frame(ds.PixelData)
+
+            for i in range(num_frames):
+                frame_item = next(pixel_data_frames)
+                image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
+                frame = np.array(image)
+
+                # If frame is grayscale, add a channel dimension
+                if len(frame.shape) == 2:
+                    frame = np.expand_dims(frame, axis=2)
+
+                # Convert from rows, cols, channels to channels, rows, cols
+                frame = np.transpose(frame, (2, 0, 1))
+                output[i, :, :, :] = frame
+        except Exception as e:
+            logging.error(f"Error reading DICOM frames: {e}")
+            return None
+
+        return output
+
     def getAutoMask(self):
+        start_time = time.time()
         current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
 
         if current_dicom_record is None:
@@ -1211,46 +1252,91 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if model is None:
             return None
 
-        # 1. Get the max volume array from the current sequence browser node
-        slicer.app.pauseRender()
-        parameterNode = self.getParameterNode()
-        currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
-        masterSequenceNode = currentSequenceBrowser.GetMasterSequenceNode()
-        currentVolumeNode = masterSequenceNode.GetNthDataNode(0)
-        currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
-        maxVolumeArray = np.copy(currentVolumeArray)
+        # 1. Read DICOM frames and preprocess image
+        read_dicom_time = time.time()
+        # TODO(ddinh): Use the max volume array from the sequence browser node instead of reading the DICOM file
+        original_image_array = self.read_frames_from_dicom(current_dicom_record.InputPath) # (N, C, H, W)
+        original_dims = (original_image_array.shape[-2], original_image_array.shape[-1])  # (height, width)
+        logging.info(f"Read DICOM frames in {time.time() - read_dicom_time} seconds")
 
-        # 2. Preprocess the image to get a single frame
-        for i in range(1, masterSequenceNode.GetNumberOfDataNodes()):
-            currentVolumeNode = masterSequenceNode.GetNthDataNode(i)
-            currentVolumeArray = slicer.util.arrayFromVolume(currentVolumeNode)
-            maxVolumeArray = np.maximum(maxVolumeArray, currentVolumeArray)
-        frame_item = maxVolumeArray[0, :, :]
-        slicer.app.resumeRender()
+        try:
+            input_tensor = self.preprocess_image(original_image_array)
+        except Exception as e:
+            logging.error(f"Error preprocessing image: {e}")
+            return None
 
-        # 3. Convert to grayscale and resize to 240x320
-        if len(frame_item.shape) == 3 and frame_item.shape[2] == 3:
-            frame_item = cv2.cvtColor(frame_item, cv2.COLOR_RGB2GRAY)
-        original_frame_shape = frame_item.shape
-        frame_item = cv2.resize(frame_item, (240, 320))
-        frame_item = np.expand_dims(np.expand_dims(np.array(frame_item), axis=0), axis=0)
-
-        # 4. Run AI inference for corner prediction
+        # 2. Run AI inference for corner prediction
+        inference_time = time.time()
         with torch.no_grad():
-            input_tensor = torch.tensor(frame_item).float()
             coords_normalized = model(input_tensor.to(device)).cpu().numpy()
+            logging.info(f"Inference time: {time.time() - inference_time} seconds")
 
-        # 5. Denormalize coordinates
+        # 3. Denormalize coordinates
         coords = coords_normalized.reshape(4, 2)
-        coords[:, 0] *= original_frame_shape[1]  # width
-        coords[:, 1] *= original_frame_shape[0]  # height
+        coords[:, 0] *= original_dims[1]  # width
+        coords[:, 1] *= original_dims[0]  # height
 
         top_left = tuple(coords[0])
         top_right = tuple(coords[1])
         bottom_left = tuple(coords[2])
         bottom_right = tuple(coords[3])
 
+        logging.info(f"Total time for auto mask generation: {time.time() - start_time} seconds")
+
         return np.array([top_left, top_right, bottom_left, bottom_right])
+
+    def preprocess_image(
+        self,
+        image: np.ndarray, # (N, C, H, W)
+        target_size: tuple[int, int] = (240, 320),  # (height, width) - matches training spatial_size
+    ):
+        """
+        Preprocess an image to match the EXACT training preprocessing pipeline.
+
+        Training pipeline (from configs/models/attention_unet_with_dsnt/train.yaml):
+        1. Transposed: indices [2, 0, 1]
+        2. Resized: spatial_size [240, 320]
+        3. ToTensord + EnsureTyped: float32
+
+        This function replicates that exact sequence.
+        """
+        # Step 1: Max-pool frames to get single frame
+        snapshot = image.max(axis=0)  # (C, H, W)
+
+        # Step 2: Convert to grayscale using PIL method (matching training dataset)
+        # First transpose to (H, W, C) for PIL processing
+        snapshot = np.transpose(snapshot, (1, 2, 0))  # (H, W, C)
+
+        # Handle single channel case - squeeze if needed
+        if snapshot.shape[2] == 1:
+            snapshot_for_pil = snapshot.squeeze(axis=2)  # (H, W)
+        else:
+            snapshot_for_pil = snapshot
+
+        pil_image = Image.fromarray(snapshot_for_pil.astype(np.uint8))
+        grayscale_image = pil_image.convert('L')
+        snapshot = np.array(grayscale_image)  # (H, W)
+
+        # Step 3: Add channel dimension to get (H, W, C) format
+        snapshot = np.expand_dims(snapshot, axis=-1)  # (H, W, 1)
+
+        # Step 4: Apply Transposed transform [2, 0, 1] - this goes from (H, W, C) to (C, H, W)
+        snapshot = np.transpose(snapshot, (2, 0, 1))  # (1, H, W)
+
+        # Step 5: Apply Resized transform to spatial_size [240, 320]
+        # Since we have (1, H, W), we need to work with (H, W) for cv2.resize
+        resized = cv2.resize(snapshot[0], (target_size[1], target_size[0]), interpolation=cv2.INTER_LINEAR)  # (240, 320)
+
+        # Add channel dimension back: (H, W) -> (1, H, W)
+        resized = np.expand_dims(resized, axis=0)  # (1, 240, 320)
+
+        # Step 6: Convert to tensor and ensure float32 (EnsureTyped)
+        tensor = torch.from_numpy(resized).float()  # (1, 240, 320)
+
+        # Step 7: Add batch dimension to get (1, 1, 240, 320)
+        tensor = tensor.unsqueeze(0)
+
+        return tensor
 
     def downloadAndPrepareModel(self):
         """ Download the AI model and prepare it for inference """
