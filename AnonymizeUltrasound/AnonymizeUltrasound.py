@@ -1,23 +1,22 @@
 from collections import defaultdict
 import csv
-import datetime
 from enum import Enum
 import hashlib
 import io
 import re
 import json
 import logging
-import random
 import numpy as np
 import math
 import os
-from PIL import Image
-import pydicom
 import requests
-from typing import Optional
+from typing import Optional, Dict
 import time
+import json
+
 import qt
 import vtk
+import traceback
 
 import slicer
 from slicer.i18n import tr as _
@@ -36,6 +35,14 @@ from slicer import vtkMRMLSequenceBrowserNode
 from slicer import vtkMRMLMarkupsFiducialNode
 
 from common.dicom_file_manager import DicomFileManager
+from common.create_frames import read_frames_from_dicom
+from common.dcm_inference import load_model, preprocess_image
+from common.create_masks import corner_points_to_fan_mask_config, create_mask
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# TODO(ddinh): tag models with metadata so we can switch between models
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
+MODEL_URL = "https://www.dropbox.com/scl/fi/mnu2k4n8fju6gy1glhieb/model_traced.pt?rlkey=eb0xmwzwsoesq3mp11s8xt9xd&dl=1"
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -133,6 +140,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
     ENABLE_MASK_CACHE_SETTING = "AnonymizeUltrasound/enableMaskCache"
     PRESERVE_DIRECTORY_STRUCTURE_SETTING = "AnonymizeUltrasound/preserveDirectoryStructure"
+    AUTO_ANON_ENABLE_SETTING = "AnonymizeUltrasound/EnableAutoAnonymize"
+    AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
+    AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
+    AUTO_ANON_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverviewDir"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -188,6 +199,28 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Buttons
 
         settings = slicer.app.settings()
+
+        # Enable toggle
+        enable_val = settings.value(self.AUTO_ANON_ENABLE_SETTING)
+        self.ui.enableAutoAnonymizeCheckBox.checked = bool(enable_val and str(enable_val).lower() == "true")
+        self.ui.enableAutoAnonymizeCheckBox.toggled.connect(self._on_auto_anon_enable_toggled)
+        self._apply_auto_anon_visibility(self.ui.enableAutoAnonymizeCheckBox.checked)
+
+        # Defaults for inputs
+        default_model = settings.value(self.AUTO_ANON_MODEL_PATH_SETTING) or MODEL_PATH
+        self.ui.autoAnonModelPathLineEdit.text = default_model
+        default_device = settings.value(self.AUTO_ANON_DEVICE_SETTING) or "cpu"
+        self.ui.autoAnonDeviceLineEdit.text = default_device
+        default_overview = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING) or ""
+        self.ui.autoAnonOverviewDirLineEdit.text = default_overview
+
+        # Persist user edits
+        self.ui.autoAnonModelPathLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_MODEL_PATH_SETTING, t))
+        self.ui.autoAnonDeviceLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_DEVICE_SETTING, t))
+        self.ui.autoAnonOverviewDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_OVERVIEW_DIR_SETTING, t))
+
+        # Run button
+        self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
 
         inputFolder = settings.value(self.INPUT_FOLDER_SETTING)
         if inputFolder:
@@ -453,6 +486,17 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         result = alert.exec_()
         return result == qt.QMessageBox.Yes
 
+    def message_box(self, title: str, message: str, icon: qt.QMessageBox.Icon = qt.QMessageBox.Information) -> None:
+        """
+        Show a message box with a given title and message.
+        """
+        alert = qt.QMessageBox()
+        alert.setIcon(icon)
+        alert.setWindowTitle(title)
+        alert.setText(message)
+        alert.setStandardButtons(qt.QMessageBox.Ok)
+        alert.exec_()
+
     def format_setting_name(self, setting_name: str) -> str:
         """
         Convert a setting name to a human-readable format.
@@ -602,7 +646,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Headers directory does not exist")
             return
 
-        numFiles = self.logic.dicom_file_manager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked)
+        numFiles = self.logic.dicom_file_manager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked, self.ui.hashPatientIdCheckBox.checked)
         logging.info(f"Found {numFiles} DICOM files in input folder")
 
         if numFiles > 0:
@@ -733,6 +777,51 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             slicer.util.mainWindow().setFocus()
         else:
             self.ui.statusLabel.text = "No DICOM file loaded"
+
+    def on_run_auto_anon_clicked(self):
+        in_dir = self.ui.inputDirectoryButton.directory
+        out_dir = self.ui.outputDirectoryButton.directory
+        hdr_dir = self.ui.headersDirectoryButton.directory
+        if not in_dir or not os.path.exists(in_dir):
+            slicer.util.errorDisplay("Please select a valid input directory (Import DICOM folder).")
+            return
+        if not out_dir or not os.path.exists(out_dir):
+            slicer.util.errorDisplay("Please select a valid output directory (Import DICOM folder).")
+            return
+        if not hdr_dir or not os.path.exists(hdr_dir):
+            slicer.util.errorDisplay("Please select a valid headers directory (Import DICOM folder).")
+            return
+
+        model_path = (self.ui.autoAnonModelPathLineEdit.text or MODEL_PATH).strip()
+        device = (self.ui.autoAnonDeviceLineEdit.text or "").strip()
+        overview_dir = (self.ui.autoAnonOverviewDirLineEdit.text or "").strip()
+
+        skip_single = self.ui.skipSingleframeCheckBox.checked
+        hash_pid = self.ui.hashPatientIdCheckBox.checked
+        preserve_dirs = self.ui.preserveDirectoryStructureCheckBox.checked
+        resume = self.ui.continueProgressCheckBox.checked
+
+        self.ui.statusLabel.text = "Running auto‑anonymize..."
+        slicer.app.processEvents()
+
+        try:
+            result = self.logic.batch_auto_anonymize(
+                input_folder=in_dir,
+                output_folder=out_dir,
+                headers_folder=hdr_dir,
+                model_path=model_path,
+                device=device,
+                preserve_directory_structure=preserve_dirs,
+                resume_anonymization=resume,
+                skip_single_frame=skip_single,
+                hash_patient_id=hash_pid,
+                overview_dir=overview_dir,
+                no_mask_generation=False
+            )
+            self.ui.statusLabel.text = f"Auto‑anonymize finished. {result['status']}"
+        except Exception as e:
+            logging.error(f"Auto‑anonymize failed: {e} {traceback.format_exc()}")
+            slicer.util.errorDisplay(str(e))
 
     def onNextButton(self) -> None:
         logging.info("Next button clicked")
@@ -1134,7 +1223,15 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if self.onExportScanButton():
             self.onNextButton()
 
-#
+    def _on_auto_anon_enable_toggled(self, enabled: bool):
+        settings = slicer.app.settings()
+        settings.setValue(self.AUTO_ANON_ENABLE_SETTING, str(enabled))
+        self._apply_auto_anon_visibility(enabled)
+
+    def _apply_auto_anon_visibility(self, enabled: bool):
+        if hasattr(self.ui, "autoAnonGroupBox"):
+            self.ui.autoAnonGroupBox.setVisible(bool(enabled))
+
 # AnonymizeUltrasoundLogic
 #
 
@@ -1396,7 +1493,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         logging.info(f"Read DICOM frames in {time.time() - read_dicom_time} seconds")
 
         try:
-            input_tensor = self.preprocess_image(orig_image_array)
+            input_tensor = preprocess_image(orig_image_array)
         except Exception as e:
             logging.error(f"Error preprocessing image: {e}")
             return None
@@ -1432,62 +1529,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return np.array(coords_ras)
 
-    def preprocess_image(
-        self,
-        image: np.ndarray, # (N, C, H, W)
-        target_size: tuple[int, int] = (240, 320),  # (height, width) - matches training spatial_size
-    ):
-        """
-        Preprocess an image to match the EXACT training preprocessing pipeline.
-
-        Training pipeline (from configs/models/attention_unet_with_dsnt/train.yaml):
-        1. Transposed: indices [2, 0, 1]
-        2. Resized: spatial_size [240, 320]
-        3. ToTensord + EnsureTyped: float32
-
-        This function replicates that exact sequence.
-        """
-        # Step 1: Max-pool frames to get single frame
-        snapshot = image.max(axis=0)  # (C, H, W)
-
-        # Step 2: Convert to grayscale using PIL method (matching training dataset)
-        # First transpose to (H, W, C) for PIL processing
-        snapshot = np.transpose(snapshot, (1, 2, 0))  # (H, W, C)
-
-        # Handle single channel case - squeeze if needed
-        if snapshot.shape[2] == 1:
-            snapshot_for_pil = snapshot.squeeze(axis=2)  # (H, W)
-        else:
-            snapshot_for_pil = snapshot
-
-        pil_image = Image.fromarray(snapshot_for_pil.astype(np.uint8))
-        grayscale_image = pil_image.convert('L')
-        snapshot = np.array(grayscale_image)  # (H, W)
-
-        # Step 3: Add channel dimension to get (H, W, C) format
-        snapshot = np.expand_dims(snapshot, axis=-1)  # (H, W, 1)
-
-        # Step 4: Apply Transposed transform [2, 0, 1] - this goes from (H, W, C) to (C, H, W)
-        snapshot = np.transpose(snapshot, (2, 0, 1))  # (1, H, W)
-
-        # Step 5: Apply Resized transform to spatial_size [240, 320]
-        # Since we have (1, H, W), we need to work with (H, W) for cv2.resize
-        resized = cv2.resize(snapshot[0], (target_size[1], target_size[0]), interpolation=cv2.INTER_LINEAR)  # (240, 320)
-
-        # Add channel dimension back: (H, W) -> (1, H, W)
-        resized = np.expand_dims(resized, axis=0)  # (1, 240, 320)
-
-        # Step 6: Convert to tensor and ensure float32 (EnsureTyped)
-        tensor = torch.from_numpy(resized).float()  # (1, 240, 320)
-
-        # Step 7: Add batch dimension to get (1, 1, 240, 320)
-        tensor = tensor.unsqueeze(0)
-
-        return tensor
-
-    def downloadAndPrepareModel(self):
-        """ Download the AI model and prepare it for inference """
-        # Set the Device to run the model on
+    def get_device(self):
+        """ Set the Device to run the model on """
         if torch.cuda.is_available():
             device = torch.device("cuda")
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -1497,25 +1540,22 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         logging.info(f"The model will run on Device: {device}")
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        checkpoint_dir = os.path.join(script_dir, 'Resources/checkpoints/')
-        os.makedirs(os.path.dirname(checkpoint_dir), exist_ok=True)
+        return device
 
-        model_path = os.path.join(checkpoint_dir, 'model_traced_unet_dsnt.pt')
-
-        model_url = "https://www.dropbox.com/scl/fi/mnu2k4n8fju6gy1glhieb/model_traced.pt?rlkey=eb0xmwzwsoesq3mp11s8xt9xd&dl=1"
-
-        if not os.path.exists(model_path):
+    def downloadAndPrepareModel(self):
+        """ Download the AI model and prepare it for inference """
+        device = self.get_device()
+        if not os.path.exists(MODEL_PATH):
             logging.info(f"The AI model does not exist. Starting download...")
             dialog = AnonymizeUltrasoundWidget.createWaitDialog(self, "Downloading AI Model", "The AI model does not exist. Downloading...")
-            success = self.download_model(model_url, model_path)
+            success = self.download_model(MODEL_URL, MODEL_PATH)
             dialog.close()
             if not success:
                 return None, None
 
         # Check if the model loaded successfully
         try:
-            model = torch.jit.load(model_path).to(device).eval()
+            model = torch.jit.load(MODEL_PATH).to(device).eval()
         except Exception as e:
             logging.error(f"Failed to load the model: {e}")
             logging.error("Automatic mode is disabled. Please define the mask manually.")
@@ -1840,7 +1880,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
             # Create a mask image
 
-            # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
             mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
             mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
 
@@ -1855,7 +1894,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             self.maskParameters["image_size_rows"] = image_size_rows
             self.maskParameters["image_size_cols"] = image_size_cols
 
-            # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})")
             return mask_array
 
     def line_coefficients(self, p1, p2):
@@ -2222,6 +2260,216 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """Clear all cached masks."""
         self.transducerMaskCache.clear()
         logging.info("Cleared all cached masks")
+
+    def batch_auto_anonymize(
+        self,
+        input_folder: str,
+        output_folder: str,
+        headers_folder: str,
+        model_path: str = MODEL_PATH,
+        device: str = "",
+        preserve_directory_structure: bool = True,
+        resume_anonymization: bool = False,
+        skip_single_frame: bool = False,
+        hash_patient_id: bool = True,
+        overview_dir: str = "",
+        no_mask_generation: bool = False,
+    ) -> Dict[str, str]:
+        """
+        In-process batch anonymization using shared logic:
+        - Scans DICOMs into dicom_df
+        - Optionally resumes at first missing output
+        - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
+        """
+        if device == "":
+            device = self.get_device()
+
+        # Scan directory (filenames reflect hash_patient_id)
+        num_files = self.dicom_file_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
+        logging.info(f"Found {num_files} DICOM files in input folder")
+
+        # Save keys.csv (drop non-serializable column)
+        if self.dicom_file_manager.dicom_df is not None and headers_folder:
+            try:
+                df = self.dicom_file_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
+                os.makedirs(headers_folder, exist_ok=True)
+                df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
+            except Exception as e:
+                raise Exception(f"Failed to save keys.csv: {e}") from e
+
+        # Determine starting index on resume
+        start_index = 0
+        # TODO: Implement resume_anonymization
+        if resume_anonymization:
+            progressed = self.dicom_file_manager.update_progress_from_output(output_folder, preserve_directory_structure)
+            if progressed is None:
+                logging.info("All files already processed; nothing to do.")
+                return {"status": "All files already processed; nothing to do."}
+            start_index = self.dicom_file_manager.next_dicom_index or 0
+
+        # Load model if masking enabled
+        model = None
+        # TODO: remove no_mask_generation and use model instead
+        if not no_mask_generation:
+            try:
+                model = load_model(model_path, device)
+                logging.info(f"Model loaded on {device}")
+            except Exception as e:
+                raise Exception(f"Failed to load model: {e}") from e
+
+        # TODO: fix matplotlib import slicer crash; support PDF report
+        # Optional overview
+        # make_overview = bool(overview_dir)
+        # if make_overview:
+        #     os.makedirs(overview_dir, exist_ok=True)
+        #     try:
+        #         import matplotlib.pyplot as plt
+        #     except Exception as e:
+        #         logging.warning(f"matplotlib not available; overviews disabled: {e}")
+        #         make_overview = False
+
+        # Progress dialog
+        total = len(self.dicom_file_manager.dicom_df) if self.dicom_file_manager.dicom_df is not None else 0
+        progress = qt.QProgressDialog("Auto-anonymizing...", "Cancel", 0, total, slicer.util.mainWindow())
+        progress.setWindowModality(qt.Qt.WindowModal)
+        progress.show()
+
+        success = failed = skipped = 0
+        error_messages = []
+
+        try:
+            for idx in range(start_index, total):
+                if progress.wasCanceled:
+                    logging.info("Batch auto-anonymize canceled by user.")
+                    break
+                progress.setValue(idx)
+                slicer.app.processEvents()
+
+                self.dicom_file_manager.current_dicom_index = idx
+                row = self.dicom_file_manager.dicom_df.iloc[idx]
+
+                # Build output path and skip if resuming and exists
+                final_output_path = self.dicom_file_manager.generate_output_filepath(
+                    output_folder, row.OutputPath, preserve_directory_structure
+                )
+
+                # TODO: implement resume_anonymization; integrate with existing setting to skip if output file exists
+                # Skip if resuming and output file exists
+                if resume_anonymization and os.path.exists(final_output_path):
+                    skipped += 1
+                    continue
+
+                try:
+                    # Read frames (N, C, H, W) -> image_array (N, H, W, C)
+                    original_image = read_frames_from_dicom(row.InputPath)
+                    orig_dims = (original_image.shape[-2], original_image.shape[-1])  # (H, W)
+                    image_array = np.transpose(original_image, (0, 2, 3, 1))
+
+                    mask_config = None
+                    curvilinear_mask = None
+
+                    if not no_mask_generation:
+                        # Preprocess + inference
+                        input_tensor = preprocess_image(original_image)  # (1,1,240,320)
+                        with torch.no_grad():
+                            coords_normalized = model(input_tensor.to(device)).cpu().numpy()
+                        coords = coords_normalized.reshape(4, 2)
+                        coords[:, 0] *= orig_dims[1]  # width
+                        coords[:, 1] *= orig_dims[0]  # height
+                        predicted_corners = {
+                            "upper_left": tuple(coords[0]),
+                            "upper_right": tuple(coords[1]),
+                            "lower_left": tuple(coords[2]),
+                            "lower_right": tuple(coords[3]),
+                        }
+                        # Build mask config + binary mask (0/1)
+                        mask_config = corner_points_to_fan_mask_config(predicted_corners, image_size=orig_dims)
+                        curvilinear_mask = create_mask(mask_config, image_size=orig_dims, intensity=1)
+
+                        # Apply mask per frame and channel
+                        masked_image_array = image_array.copy()
+                        for f in range(masked_image_array.shape[0]):
+                            for c in range(masked_image_array.shape[3]):
+                                masked_image_array[f, :, :, c] = np.multiply(masked_image_array[f, :, :, c], curvilinear_mask)
+                    else:
+                        masked_image_array = image_array
+
+                    # Derive anonymized name/id from filename (consistent with CLI)
+                    anon_filename = row.AnonFilename
+                    new_patient_name = os.path.splitext(anon_filename)[0]
+                    new_patient_id = anon_filename.split('_')[0]
+
+                    # Save anonymized DICOM
+                    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+                    self.dicom_file_manager.save_anonymized_dicom(
+                        image_array=masked_image_array,
+                        output_path=final_output_path,
+                        new_patient_name=new_patient_name,
+                        new_patient_id=new_patient_id,
+                        # TODO: support add labels before or after auto-anonymization (e.g., UI table with edit/delete/add or csv file upload during data cleanup
+                        labels=None 
+                    )
+
+                    # Save header JSON
+                    try:
+                        self.dicom_file_manager.save_anonymized_dicom_header(
+                            current_dicom_record=row,
+                            output_filename=anon_filename,
+                            headers_directory=headers_folder
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to save header for {row.InputPath}: {e}")
+                        raise Exception(f"Failed to save header for {row.InputPath}: {e}") from e
+
+                    # Save sequence JSON (mask config and SOPInstanceUID)
+                    try:
+                        sequence_info = {
+                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+                            'GrayscaleConversion': False
+                        }
+                        if mask_config is not None:
+                            sequence_info['MaskConfig'] = mask_config
+                        json_path = final_output_path.replace(".dcm", ".json")
+                        with open(json_path, 'w') as outfile:
+                            json.dump(sequence_info, outfile, indent=2)
+                    except Exception as e:
+                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
+                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
+
+                    # TODO: fix matplotlib import slicer crash; support PDF report
+                    # Optional overview (first frame)
+                    # if make_overview and not no_mask_generation and masked_image_array.shape[0] > 0:
+                    #     try:
+                    #         import matplotlib.pyplot as plt
+                    #         fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+                    #         axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
+                    #         orig_frame = image_array[0].squeeze()
+                    #         masked_frame = masked_image_array[0].squeeze()
+                    #         axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
+                    #         axes[1].imshow(orig_frame, cmap='gray')
+                    #         axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
+                    #         axes[1].axis('off')
+                    #         axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
+                    #         overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
+                    #         plt.tight_layout()
+                    #         plt.savefig(os.path.join(overview_dir, overview_filename))
+                    #         plt.close(fig)
+                    #     except Exception as e:
+                    #         logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
+
+                    success += 1
+
+                except Exception as e:
+                    error_messages.append(f"Failed to process {row.InputPath}: {e} {traceback.format_exc()}")
+                    failed += 1
+
+            progress.setValue(total)
+            slicer.app.processEvents()
+        finally:
+            progress.close()
+
+        logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped: {skipped}")
+        return {"status": f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped: {skipped}", "error_messages": error_messages}
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""

@@ -1,0 +1,3 @@
+-r requirements.txt
+torch==2.6.0+cu124 # Jetstream A100 40GB GPUs have CUDA 12.4
+monai

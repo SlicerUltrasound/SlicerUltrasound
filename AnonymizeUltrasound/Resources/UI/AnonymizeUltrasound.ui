@@ -319,374 +319,111 @@
         </widget>
       </item>
       <item>
-        <widget class="ctkCollapsibleButton" name="dataProcessingCollapsibleButton">
-          <property name="text">
-            <string>Processing</string>
-          </property>
-          <layout class="QFormLayout" name="formLayout_4">
-            <item row="0" column="0">
-              <widget class="QLabel" name="label_2">
-                <property name="text">
-                  <string>Patient ID:</string>
-                </property>
-              </widget>
-            </item>
-            <item row="0" column="1">
-              <widget class="QLabel" name="patientIdLabel">
-                <property name="text">
-                  <string>current patient id</string>
-                </property>
-              </widget>
-            </item>
-            <item row="1" column="0">
-              <widget class="QLabel" name="label_8">
-                <property name="text">
-                  <string>SOP Instance UID: </string>
-                </property>
-              </widget>
-            </item>
-            <item row="1" column="1">
-              <widget class="QLabel" name="sopInstanceUidLabel">
-                <property name="sizePolicy">
-                  <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
-                    <horstretch>0</horstretch>
-                    <verstretch>0</verstretch>
-                  </sizepolicy>
-                </property>
-                <property name="text">
-                  <string>current SOP Instance UID</string>
-                </property>
-              </widget>
-            </item>
-            <item row="2" column="0">
-              <widget class="QLabel" name="label_5">
-                <property name="text">
-                  <string>Patient Name Prefix (required): </string>
-                </property>
-              </widget>
-            </item>
-            <item row="2" column="1">
-              <widget class="QLineEdit" name="namePrefixLineEdit">
-                <property name="toolTip">
-                  <string>All patient names will start with this text if Patient ID hashing is
-                    selected. Required.</string>
-                </property>
-              </widget>
-            </item>
-            <item row="4" column="0">
-              <widget class="QLabel" name="label_10">
-                <property name="text">
-                  <string>Progress: </string>
-                </property>
-              </widget>
-            </item>
-            <item row="4" column="1">
-              <widget class="QProgressBar" name="progressBar">
-                <property name="value">
-                  <number>0</number>
-                </property>
-              </widget>
-            </item>
-            <item row="5" column="0" colspan="2">
-              <layout class="QHBoxLayout" name="horizontalLayout">
-                <item>
-                  <widget class="QPushButton" name="prevButton">
-                    <property name="minimumSize">
-                      <size>
-                        <width>0</width>
-                        <height>40</height>
-                      </size>
-                    </property>
-                    <property name="text">
-                      <string>Previous [P]</string>
-                    </property>
-                  </widget>
-                </item>
-                <item>
-                  <widget class="QPushButton" name="nextButton">
-                    <property name="minimumSize">
-                      <size>
-                        <width>0</width>
-                        <height>40</height>
-                      </size>
-                    </property>
-                    <property name="text">
-                      <string>Next [N]</string>
-                    </property>
-                  </widget>
-                </item>
-                <item>
-                  <widget class="QPushButton" name="defineMaskButton">
-                    <property name="minimumSize">
-                      <size>
-                        <width>0</width>
-                        <height>40</height>
-                      </size>
-                    </property>
-                    <property name="text">
-                      <string>Mask [M]</string>
-                    </property>
-                    <property name="checkable">
-                      <bool>true</bool>
-                    </property>
-                  </widget>
-                </item>
-                <item>
-                  <widget class="QPushButton" name="exportButton">
-                    <property name="minimumSize">
-                      <size>
-                        <width>0</width>
-                        <height>40</height>
-                      </size>
-                    </property>
-                    <property name="toolTip">
-                      <string>Applies mask and exports anonymized DICOM file</string>
-                    </property>
-                    <property name="text">
-                      <string>Export [E]</string>
-                    </property>
-                  </widget>
-                </item>
-                <item>
-                  <widget class="QPushButton" name="exportAndNextButton">
-                    <property name="minimumSize">
-                      <size>
-                        <width>0</width>
-                        <height>40</height>
-                      </size>
-                    </property>
-                    <property name="toolTip">
-                      <string>Export and load next scan</string>
-                    </property>
-                    <property name="text">
-                      <string>Export and Next [A]</string>
-                    </property>
-                  </widget>
-                </item>
-              </layout>
-            </item>
-          </layout>
+       <widget class="QCheckBox" name="enableAutoAnonymizeCheckBox">
+        <property name="text">
+         <string>Enable Auto‑Anonymize (Batch)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="autoAnonGroupBox">
+     <property name="title">
+      <string>Auto‑Anonymize</string>
+     </property>
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <layout class="QFormLayout" name="autoAnonFormLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="autoAnonModelPathLabel">
+        <property name="text"><string>Model path</string></property>
+        <property name="toolTip">
+          <string>Path to the model file</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="autoAnonModelPathLineEdit"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="autoAnonDeviceLabel">
+        <property name="text"><string>Device</string></property>
+        <property name="toolTip">
+          <string>Device to run the model on</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="autoAnonDeviceLineEdit"/>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="autoAnonOverviewLabel">
+        <property name="text"><string>Overview dir</string></property>
+        <property name="toolTip">
+          <string>Directory to save the overview files</string>
+        </property>
         </widget>
       </item>
-      <item>
-        <widget class="ctkCollapsibleButton" name="labelsCollapsibleButton">
-          <property name="sizePolicy">
-            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-              <horstretch>0</horstretch>
-              <verstretch>1</verstretch>
-            </sizepolicy>
-          </property>
-          <property name="text">
-            <string>Annotation labels</string>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout_4">
-            <item>
-              <widget class="QScrollArea" name="labelsScrollArea">
-                <property name="sizePolicy">
-                  <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                    <horstretch>0</horstretch>
-                    <verstretch>1</verstretch>
-                  </sizepolicy>
-                </property>
-                <property name="widgetResizable">
-                  <bool>true</bool>
-                </property>
-                <widget class="QWidget" name="labelsScrollAreaWidgetContents">
-                  <layout class="QVBoxLayout" name="verticalLayout_5" />
-                </widget>
-              </widget>
-            </item>
-          </layout>
-        </widget>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="autoAnonOverviewDirLineEdit"/>
       </item>
-      <item>
-        <spacer name="verticalSpacer">
-          <property name="orientation">
-            <enum>Qt::Vertical</enum>
-          </property>
-          <property name="sizeType">
-            <enum>QSizePolicy::Expanding</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-            <size>
-              <width>20</width>
-              <height>10</height>
-            </size>
-          </property>
-        </spacer>
+      <item row="3" column="0" colspan="2">
+       <widget class="QPushButton" name="runAutoAnonymizeButton">
+        <property name="text"><string>Run Auto‑Anonymize</string></property>
+        <property name="toolTip">
+          <string>Run Auto‑Anonymize (Batch) for all DICOM files in the input folder</string>
+        </property>
+       </widget>
       </item>
-      <item>
-        <widget class="QLabel" name="statusLabel">
-          <property name="sizePolicy">
-            <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-            </sizepolicy>
-          </property>
-          <property name="font">
-            <font>
-              <weight>75</weight>
-              <bold>true</bold>
-            </font>
-          </property>
-          <property name="text">
-            <string>Status label</string>
-          </property>
-        </widget>
-      </item>
-      <item>
-        <widget class="ctkCollapsibleButton" name="settingsCollapsibleButton">
-          <property name="text">
-            <string>Settings</string>
-          </property>
-          <property name="collapsed">
-            <bool>false</bool>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout_2">
-            <item>
-              <widget class="QCheckBox" name="preserveDirectoryStructureCheckBox">
-                <property name="text">
-                  <string>Preserve input directory structure</string>
-                </property>
-                <property name="toolTip">
-                  <string>When enabled, output files will maintain the same directory structure as
-                    input files. When disabled, all files are saved to the root of the output
-                    directory.</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="enableMaskCacheCheckBox">
-                <property name="toolTip">
-                  <string>If checked, cached mask will be used for DICOM transducer.</string>
-                </property>
-                <property name="text">
-                  <string>Use cached mask</string>
-                </property>
-                <property name="invertThreshold" stdset="0">
-                  <string />
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="autoMaskCheckBox">
-                <property name="toolTip">
-                  <string>If checked, values above threshold are set to 0. If unchecked, values
-                    below are set to 0.</string>
-                </property>
-                <property name="text">
-                  <string>Automatically suggest mask</string>
-                </property>
-                <property name="invertThreshold" stdset="0">
-                  <string />
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="autoOverlayCheckBox">
-                <property name="toolTip">
-                  <string>If checked, show the automatic (red) overlay mask.</string>
-                </property>
-                <property name="text">
-                  <string>Show automatic overlay</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="skipSingleframeCheckBox">
-                <property name="text">
-                  <string>Skip single-frame input DICOM files</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="continueProgressCheckBox">
-                <property name="text">
-                  <string>Continue progress (skip input if matching output exists)</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="hashPatientIdCheckBox">
-                <property name="toolTip">
-                  <string>Should only be unchecked if the input DICOM files are already have
-                    anonymized headers</string>
-                </property>
-                <property name="text">
-                  <string>Hash Patient ID (deidentify patient)</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="threePointFanCheckBox">
-                <property name="toolTip">
-                  <string>Allow defining a fan mask with 1 top point and 2 bottom points</string>
-                </property>
-                <property name="text">
-                  <string>Enable 3-Point Fan Mask [C]</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <layout class="QVBoxLayout" name="verticalLayout_3">
-                <item>
-                  <widget class="QLabel" name="label_4">
-                    <property name="text">
-                      <string>Annotation labels CSV file:</string>
-                    </property>
-                  </widget>
-                </item>
-                <item>
-                  <widget class="ctkPathLineEdit" name="labelsFileSelector" />
-                </item>
-              </layout>
-            </item>
-          </layout>
-        </widget>
-      </item>
-    </layout>
-  </widget>
-  <customwidgets>
-    <customwidget>
-      <class>ctkCollapsibleButton</class>
-      <extends>QWidget</extends>
-      <header>ctkCollapsibleButton.h</header>
-      <container>1</container>
-    </customwidget>
-    <customwidget>
-      <class>ctkDirectoryButton</class>
-      <extends>QWidget</extends>
-      <header>ctkDirectoryButton.h</header>
-    </customwidget>
-    <customwidget>
-      <class>ctkPathLineEdit</class>
-      <extends>QWidget</extends>
-      <header>ctkPathLineEdit.h</header>
-    </customwidget>
-    <customwidget>
-      <class>qMRMLWidget</class>
-      <extends>QWidget</extends>
-      <header>qMRMLWidget.h</header>
-      <container>1</container>
-    </customwidget>
-  </customwidgets>
-  <resources />
-  <connections>
-    <connection>
-      <sender>hashPatientIdCheckBox</sender>
-      <signal>toggled(bool)</signal>
-      <receiver>namePrefixLineEdit</receiver>
-      <slot>setEnabled(bool)</slot>
-      <hints>
-        <hint type="sourcelabel">
-          <x>229</x>
-          <y>668</y>
-        </hint>
-        <hint type="destinationlabel">
-          <x>291</x>
-          <y>694</y>
-        </hint>
-      </hints>
-    </connection>
-  </connections>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkDirectoryButton</class>
+   <extends>QWidget</extends>
+   <header>ctkDirectoryButton.h</header>
+  </customwidget>
+  <customwidget>
+   <class>ctkPathLineEdit</class>
+   <extends>QWidget</extends>
+   <header>ctkPathLineEdit.h</header>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>hashPatientIdCheckBox</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>namePrefixLineEdit</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>229</x>
+     <y>668</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>291</x>
+     <y>694</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
 </ui>

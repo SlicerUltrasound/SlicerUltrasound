@@ -102,13 +102,14 @@ class DicomFileManager:
 
         return transducerType.split(",")[0].lower()
 
-    def scan_directory(self, input_folder: str, skip_single_frame: bool = False) -> int:
+    def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
         """
         Scan directory for DICOM files and create dataframe
 
         Args:
             input_folder: Directory to scan
             skip_single_frame: Skip single frame DICOM files (AnonymizeUltrasound)
+            hash_patient_id: If True, hash the patient ID
 
         Returns:
             Number of DICOM files found
@@ -135,7 +136,7 @@ class DicomFileManager:
                         logging.info(f"Skipping non-DICOM file: {file_path}")
                         continue
 
-                    dicom_info = self._extract_dicom_info(file_path, input_folder, skip_single_frame)
+                    dicom_info = self._extract_dicom_info(file_path, input_folder, skip_single_frame, hash_patient_id)
                     if dicom_info:
                         dicom_data.append(dicom_info)
 
@@ -205,7 +206,7 @@ class DicomFileManager:
         """Get number of instances in dataframe"""
         return len(self.dicom_df) if self.dicom_df is not None else 0
 
-    def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool) -> Optional[dict]:
+    def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool, hash_patient_id: bool = True) -> Optional[dict]:
         """Extract DICOM information from file
 
         Reads a DICOM file and extracts relevant metadata for ultrasound processing.
@@ -216,6 +217,7 @@ class DicomFileManager:
             file_path: Path to the DICOM file to process
             input_folder: Path to the input folder
             skip_single_frame: If True, skip files with less than 2 frames
+            hash_patient_id: If True, hash the patient ID
 
         Returns:
             dict: Dictionary containing extracted DICOM metadata
@@ -245,7 +247,7 @@ class DicomFileManager:
                 return None
 
             physical_delta_x, physical_delta_y = self._extract_spacing_info(dicom_ds)
-            anon_filename = self._generate_filename_from_dicom(dicom_ds)
+            anon_filename = self._generate_filename_from_dicom(dicom_ds, hash_patient_id)
             content_date = getattr(dicom_ds, 'ContentDate', '19000101')
             content_time = getattr(dicom_ds, 'ContentTime', '000000')
             to_patch = physical_delta_x is None or physical_delta_y is None
@@ -301,7 +303,7 @@ class DicomFileManager:
 
         return physical_delta_x, physical_delta_y
 
-    def _generate_filename_from_dicom(self, dicom_ds, hashPatientId: bool = True):
+    def _generate_filename_from_dicom(self, dicom_ds, hash_patient_id: bool = True):
         """
         Generate an anonymized filename from a DICOM dataset.
 
@@ -310,7 +312,7 @@ class DicomFileManager:
 
         Args:
             dicom_ds: DICOM dataset containing patient and instance information
-            hashPatientId (bool): Whether to hash the patient ID (default: True)
+            hash_patient_id (bool): Whether to hash the patient ID (default: True)
                                 If True, creates a 10-digit hash of the patient ID
                                 If False, uses the original patient ID
 
@@ -335,7 +337,7 @@ class DicomFileManager:
             logging.error("SOPInstanceUID not found in DICOM header dict")
             return ""
 
-        if hashPatientId:
+        if hash_patient_id:
             hash_object = hashlib.sha256()
             hash_object.update(str(patientUID).encode())
             patientId = int(hash_object.hexdigest(), 16) % 10**self.PATIENT_ID_HASH_LENGTH
