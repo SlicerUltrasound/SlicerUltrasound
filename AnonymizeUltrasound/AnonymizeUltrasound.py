@@ -832,9 +832,21 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             maskMarkupsNode.RemoveAllControlPoints()
             coords_IJK = self.logic.getAutoMask()
             if coords_IJK is None:
-                logging.error("Auto mask not found")
+                logging.error("Auto mask not found, resetting three-point fan mode from settings")
+                # Three-point fan mask setting
+                settings = slicer.app.settings()
+                threePointStr = settings.value(self.THREE_POINT_FAN_SETTING)
+                if threePointStr and threePointStr.lower() == "true":
+                    self.ui.threePointFanCheckBox.checked = True
+                else:
+                    self.ui.threePointFanCheckBox.checked = False
             else:
                 autoMaskSuccessful = True
+                num_points = coords_IJK.shape[0]
+                if num_points == 3:
+                    self.ui.threePointFanCheckBox.checked = True
+                else:
+                    self.ui.threePointFanCheckBox.checked = False
 
             # Try to apply the automatic mask markups
             currentVolumeNode = self.logic.getCurrentProxyNode()
@@ -842,7 +854,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 ijkToRas = vtk.vtkMatrix4x4()
                 currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
 
-                num_points = coords_IJK.shape[0]
                 coords_RAS = np.zeros((num_points, 4))
                 for i in range(num_points):
                     point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
@@ -851,6 +862,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
                 for i in range(num_points):
                     coord = coords_RAS[i, :]
+                    logging.debug(f"Adding control point {coord}")
                     maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
 
                 # Update the status
@@ -1374,14 +1386,25 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         coords[:, 0] *= orig_image_dims[1]  # width
         coords[:, 1] *= orig_image_dims[0]  # height
 
-        top_left = tuple(coords[0])
-        top_right = tuple(coords[1])
-        bottom_left = tuple(coords[2])
-        bottom_right = tuple(coords[3])
+        top_left = np.array(coords[0])
+        top_right = np.array(coords[1])
+        bottom_left = np.array(coords[2])
+        bottom_right = np.array(coords[3])
+        # Merge top_left and top_right if very close
+        norm = np.linalg.norm(top_left - top_right)
+        if norm < 15.0:
+            merged_top = (top_left + top_right) / 2
+            logging.debug(f"Norm: {norm}, Merged Top: {merged_top}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
+            coords_ras = np.array([merged_top, bottom_left, bottom_right])
+        else:
+            logging.debug(f"Norm: {norm}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
+            coords_ras = np.array([top_left, top_right, bottom_left, bottom_right])
+
+        logging.debug(f"Coords RAS: {coords_ras}")
 
         logging.info(f"Total time for auto mask generation: {time.time() - start_time} seconds")
 
-        return np.array([top_left, top_right, bottom_left, bottom_right])
+        return np.array(coords_ras)
 
     def preprocess_image(
         self,
@@ -1570,8 +1593,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             fanMaskMarkupsNode.GetNthControlPointPosition(i, markupPoint)
             ijkPoint = rasToIjk.MultiplyPoint([markupPoint[0], markupPoint[1], markupPoint[2], 1.0])
             controlPoints_ijk[i] = [ijkPoint[0], ijkPoint[1], ijkPoint[2], 1.0]
+            logging.debug(f"Control point {i}: {markupPoint} -> {controlPoints_ijk[i]}")
 
-        if three_point:
+        if count == 3 and three_point:
             # For 3-point mode: assign points based on Y position
             # Point 0 (top) -> topLeft (apex)
             # Points 1,2 (bottom) -> bottomLeft, bottomRight
@@ -1584,22 +1608,18 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             # No topRight in 3-point mode
             topRight = None
         else:
-            centerOfGravity = np.mean(controlPoints_ijk[:4], axis=0)
+            # Extract first 4 valid points
+            pts = [controlPoints_ijk[i][:3] for i in range(4)]
 
-            topLeft = np.zeros(3)
-            topRight = np.zeros(3)
-            bottomLeft = np.zeros(3)
-            bottomRight = np.zeros(3)
+            # Sort by Y (row), then X (col)
+            pts_sorted_by_yx = sorted(pts, key=lambda pt: (pt[1], pt[0]))
 
-            for i in range(4):
-                if controlPoints_ijk[i][0] < centerOfGravity[0] and controlPoints_ijk[i][1] < centerOfGravity[1]:
-                    topLeft = controlPoints_ijk[i][:3]
-                elif controlPoints_ijk[i][0] >= centerOfGravity[0] and controlPoints_ijk[i][1] < centerOfGravity[1]:
-                    topRight = controlPoints_ijk[i][:3]
-                elif controlPoints_ijk[i][0] < centerOfGravity[0] and controlPoints_ijk[i][1] >= centerOfGravity[1]:
-                    bottomLeft = controlPoints_ijk[i][:3]
-                elif controlPoints_ijk[i][0] >= centerOfGravity[0] and controlPoints_ijk[i][1] >= centerOfGravity[1]:
-                    bottomRight = controlPoints_ijk[i][:3]
+            # Split top and bottom by Y position
+            top_pts = sorted(pts_sorted_by_yx[:2], key=lambda pt: pt[0])     # left to right
+            bottom_pts = sorted(pts_sorted_by_yx[2:], key=lambda pt: pt[0])  # left to right
+
+            topLeft, topRight = top_pts
+            bottomLeft, bottomRight = bottom_pts
 
             if np.array_equal(topLeft, np.zeros(3)) or np.array_equal(topRight, np.zeros(3)) or \
                     np.array_equal(bottomLeft, np.zeros(3)) or np.array_equal(bottomRight, np.zeros(3)):
@@ -1610,9 +1630,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         imageArray = slicer.util.arrayFromVolume(currentVolumeNode)  # (z, y, x, channels)
 
         # Create mask based on mode
-        if three_point:
+        if count == 3 and three_point:
             # Always create fan mask for 3-point mode
             assert topRight is None, "topRight should be None in 3-point mode"
+            logging.debug(f"Creating fan mask for 3-point mode {topLeft}, {None}, {bottomLeft}, {bottomRight}")
             mask_array = self.createFanMask(imageArray, topLeft, None, bottomLeft, bottomRight, value=1, three_point=True)
         else:
             # Detect if the mask is a fan or a rectangle for 4-point mode
@@ -1620,9 +1641,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             tolerancePixels = round(0.1 * maskHeight)  #todo: Make this tolerance value a setting
             if abs(topLeft[0] - bottomLeft[0]) < tolerancePixels and abs(topRight[0] - bottomRight[0]) < tolerancePixels:
                 # Mask is a rectangle
+                logging.debug(f"Creating rectangle mask for 3-point mode {topLeft}, {topRight}, {bottomLeft}, {bottomRight}")
                 mask_array = self.createRectangleMask(imageArray, topLeft, topRight, bottomLeft, bottomRight)
             else:
                 # 4-point fan
+                logging.debug(f"Creating fan mask for 4-point mode {topLeft}, {topRight}, {bottomLeft}, {bottomRight}")
                 mask_array = self.createFanMask(imageArray, topLeft, topRight, bottomLeft, bottomRight, value=1, three_point=False)
 
         mask_contour_array = np.copy(mask_array)
