@@ -5,9 +5,6 @@ import pydicom
 import pandas as pd
 import logging
 from typing import Optional, List
-import qt
-import slicer
-from DICOMLib import DICOMUtils
 import numpy as np
 from PIL import Image
 import io
@@ -15,6 +12,18 @@ import random
 import datetime
 import json
 from pydicom.dataset import FileMetaDataset
+
+try:
+    import qt
+    import slicer
+    from DICOMLib import DICOMUtils
+    HAS_SLICER = True
+except Exception:
+    # CLI mode does not have Slicer or qt
+    HAS_SLICER = False
+    qt = None
+    slicer = None
+    DICOMUtils = None
 
 class DicomFileManager:
     """
@@ -117,7 +126,7 @@ class DicomFileManager:
         dicom_data = []
         total_files = sum([len(files) for _, _, files in os.walk(input_folder)])
 
-        progress_dialog = self._create_progress_dialog("Parsing DICOM files...", total_files)
+        progress_dialog = self._create_progress_dialog("Parsing DICOM files...", total_files) if HAS_SLICER else None
 
         try:
             file_count = 0
@@ -126,9 +135,11 @@ class DicomFileManager:
                 dirs.sort()
                 files.sort()
                 for file in files:
-                    progress_dialog.setValue(file_count)
+                    if progress_dialog:
+                        progress_dialog.setValue(file_count)
                     file_count += 1
-                    slicer.app.processEvents()
+                    if HAS_SLICER:
+                        slicer.app.processEvents()
 
                     file_path = os.path.join(root, file)
                     _, ext = os.path.splitext(file)
@@ -145,7 +156,8 @@ class DicomFileManager:
             return len(self.dicom_df) if self.dicom_df is not None else 0
 
         finally:
-            progress_dialog.close()
+            if progress_dialog:
+                progress_dialog.close()
 
     def load_sequence(self, parameter_node, output_directory: Optional[str] = None,
                      continue_progress: bool = False, preserve_directory_structure: bool = True):
@@ -418,7 +430,7 @@ class DicomFileManager:
         self.next_dicom_index = num_done
         return num_done
 
-    def _create_progress_dialog(self, message: str, maximum: int) -> qt.QProgressDialog:
+    def _create_progress_dialog(self, message: str, maximum: int):
         """Create progress dialog"""
         dialog = qt.QProgressDialog(message, "Cancel", 0, maximum, slicer.util.mainWindow())
         dialog.setWindowModality(qt.Qt.WindowModal)
@@ -570,7 +582,7 @@ class DicomFileManager:
             logging.warning(f"Failed to cleanup temporary directory {temp_dir}: {e}")
 
     def save_anonymized_dicom(self, image_array: np.ndarray, output_path: str,
-                            new_patient_name: str = '', new_patient_id: str = '', labels: List[str] = None) -> None:
+                            new_patient_name: str = '', new_patient_id: str = '', labels: Optional[List[str]] = None) -> None:
         """
         Save image array as anonymized DICOM file.
 

@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
 This script anonymizes a directory of DICOM files using a pre-trained model for corner prediction.
-It uses lib.dcm_inference for helper functions related to the AI-based corner prediction 
-as well as lib.slicer_anonymizer for the anonymization logic and file management.
-It copies the behavior of SlicerUltrasound/AnonymizeUltrasound
 
 Args:
     input_folder: The directory containing the DICOM files to anonymize.
@@ -20,29 +17,63 @@ Args:
     no_mask_generation: Whether to NOT generate a mask. This means that only the headers will be anonymized. default: False
 
 """
-
-import os
+# Add the parent directory to the Python path
 import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import logging
 import torch
 import numpy as np
 from tqdm import tqdm
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import time
+import pandas as pd
 import matplotlib.pyplot as plt
 import shutil
+import json
+from common.dicom_file_manager import DicomFileManager
 
-from AnonymizeUltrasound.common.dcm_inference import (
+from common.dcm_inference import (
     load_model,
     preprocess_image,
     compute_masks_and_configs
 )
-from AnonymizeUltrasound.AnonymizeUltrasound import UltrasoundAnonymizer
-from AnonymizeUltrasound.common.create_frames import read_frames_from_dicom
-from AnonymizeUltrasound.common.logging_utils import setup_logging
+from common.create_frames import read_frames_from_dicom
+from common.logging_utils import setup_logging
 
-def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: UltrasoundAnonymizer, output_folder: str, headers_folder: str, preserve_directory_structure: bool, resume_anonymization: bool, overview_dir: Optional[str], skip_single_frame: bool, no_mask_generation: bool, logger=logging.getLogger(__name__)) -> tuple[bool, bool]:
+def apply_mask_to_sequence(image_array: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    masked = image_array.copy()
+    for f in range(masked.shape[0]):
+        for c in range(masked.shape[3]):
+            masked[f, :, :, c] = np.multiply(masked[f, :, :, c], mask)
+    return masked
+
+def save_sequence_info_json(final_output_path: str, row, mask_config: Optional[dict]) -> None:
+    seq = {
+        'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+        'GrayscaleConversion': False,
+    }
+    if mask_config is not None:
+        seq['MaskConfig'] = mask_config
+    with open(final_output_path.replace(".dcm", ".json"), 'w') as f:
+        json.dump(seq, f, indent=2)
+
+def process_dicom_file(
+    row: pd.Series,  # pandas.Series from df.iterrows()
+    model,
+    device: str,
+    dicom_file_manager: DicomFileManager,
+    output_folder: str,
+    headers_folder: str,
+    preserve_directory_structure: bool,
+    resume_anonymization: bool,
+    overview_dir: Optional[str],
+    skip_single_frame: bool,
+    no_mask_generation: bool,
+    logger=logging.getLogger(__name__),
+) -> Tuple[bool, bool]:
     """
     Process a single DICOM file: run inference, create mask, and save anonymized version.
     
@@ -65,12 +96,12 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
     try:
         start_time = time.time()
         
-        input_path = dicom_info['InputPath']
-        output_path = dicom_info['OutputPath']
-        anon_filename = dicom_info['AnonFilename']
+        input_path = row.InputPath
+        output_path = row.OutputPath
+        anon_filename = row.AnonFilename
         
         # Generate output file path to check for existence
-        final_output_path = anonymizer.generate_output_filepath(
+        final_output_path = dicom_file_manager.generate_output_filepath(
             output_folder, output_path, preserve_directory_structure
         )
         
@@ -122,13 +153,9 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
                         "lower_right": tuple(coords[3]),
                     }
                     
-                    # Store predicted corners and original dimensions for JSON output
-                    anonymizer.predicted_corners = predicted_corners
-                    anonymizer.original_dims = original_dims
-                    
                     # Compute mask from predicted corners
                     # technically this `curvilinear_mask` could be any type of mask, not just curvilinear
-                    curvilinear_mask = compute_masks_and_configs(
+                    curvilinear_mask, mask_config = compute_masks_and_configs(
                         original_dims=original_dims, 
                         predicted_corners=predicted_corners
                     )        
@@ -146,13 +173,7 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
                     image_array = np.transpose(original_image, (0, 2, 3, 1))
                     
                     # Apply mask to all frames
-                    masked_image_array = anonymizer.apply_mask_to_sequence(image_array, curvilinear_mask)
-                    
-                    # Store basic mask parameters for later use
-                    anonymizer.mask_parameters = {
-                        'MaskApplied': True,
-                        'ProcessedBy': 'auto_anonymize.py'
-                    }
+                    masked_image_array = apply_mask_to_sequence(image_array, curvilinear_mask)
                 else:
                     logger.warning(f"No mask created for {input_path}, skipping anonymization")
                     return False, False
@@ -163,11 +184,11 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
             logger.info(f"Time to apply mask: {apply_mask_end - apply_mask_start:.4f} seconds")
         else:
             # just copy the original image to the masked image array
-            masked_image_array = original_image
+            image_array = np.transpose(original_image, (0, 2, 3, 1))
+            masked_image_array = image_array
 
             logger.info("Mask generation is disabled, so the original image will be copied to the masked image array.")
         
-
         # Generate overview if requested
         if overview_dir and original_image.shape[0] > 0:
             plot_start = time.time()
@@ -215,7 +236,7 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
         # 4. Save anonymized DICOM file
         save_dicom_start = time.time()
         try:
-            anonymizer.save_anonymized_dicom(
+            dicom_file_manager.save_anonymized_dicom(
                 image_array=masked_image_array,
                 output_path=final_output_path,
                 new_patient_name=anon_filename.split('.')[0],
@@ -231,7 +252,11 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
         save_header_start = time.time()
         if headers_folder:
             try:
-                anonymizer.save_anonymized_dicom_header(output_filename=anon_filename, headers_directory=headers_folder)
+                dicom_file_manager.save_anonymized_dicom_header(
+                    current_dicom_record=row,
+                    output_filename=anon_filename,
+                    headers_directory=headers_folder
+                )
             except Exception as e:
                 logger.error(f"Failed to save DICOM header for {input_path}: {e}")
                 # Don't return False here as the main anonymization succeeded
@@ -242,14 +267,14 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
         save_info_start = time.time()
         if not no_mask_generation:
             try:
-                sop_instance_uid = dicom_info['InstanceUID']
-                anonymizer.save_json(final_output_path, sop_instance_uid)
+                sop_instance_uid = getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None'
+                save_sequence_info_json(final_output_path, row, mask_config)
             except Exception as e:
                 logger.error(f"Failed to save json for {final_output_path}: {e}")
                 # Don't return False here as the main anonymization succeeded
         else:
             logger.info("Mask generation is disabled, so the original json will be copied over.")
-            input_json_path = dicom_info['InputPath'].replace('.dcm', '.json')
+            input_json_path = input_path.replace('.dcm', '.json')
             if os.path.exists(input_json_path):
                 shutil.copy(input_json_path, final_output_path.replace('.dcm', '.json'))
             else:
@@ -265,7 +290,7 @@ def process_dicom_file(dicom_info: dict, model, device: str, anonymizer: Ultraso
         return True, False
         
     except Exception as e:
-        logger.error(f"Unexpected error processing {dicom_info.get('InputPath', 'unknown')}: {e}")
+        logger.error(f"Unexpected error processing {row.InputPath}: {e}")
         return False, False
 
 
@@ -368,7 +393,7 @@ def main():
     logger.info(f"No mask generation: {args.no_mask_generation}")
     
     # Initialize anonymizer
-    anonymizer = UltrasoundAnonymizer()
+    dicom_file_manager = DicomFileManager()
     
     # Determine if patient ID should be hashed
     hash_patient_id = not args.no_hash_patient_id
@@ -394,7 +419,7 @@ def main():
 
     # 1. Scan directory for DICOM files
     logger.info("Scanning directory for DICOM files...")
-    num_files = anonymizer.scan_directory(args.input_folder, args.skip_single_frame, hash_patient_id=hash_patient_id)
+    num_files = dicom_file_manager.scan_directory(args.input_folder, args.skip_single_frame, hash_patient_id=hash_patient_id)
     
     if num_files == 0:
         logger.error("No valid DICOM files found in input directory")
@@ -402,8 +427,8 @@ def main():
     
     logger.info(f"Found {num_files} DICOM files to process")
 
-    # save the keys.csv file, which is just the anonymizer.dicom_df
-    anonymizer.dicom_df.to_csv(os.path.join(args.headers_folder, 'keys.csv'), index=False)
+    # save the keys.csv file, which is just the dicom_file_manager.dicom_df
+    dicom_file_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(os.path.join(args.headers_folder, 'keys.csv'), index=False)
     
     # 2. Load model if provided
     model = None
@@ -435,16 +460,16 @@ def main():
     skipped_count = 0
     
     # Create progress bar
-    pbar = tqdm(anonymizer.dicom_df.iterrows(), total=len(anonymizer.dicom_df), 
+    pbar = tqdm(dicom_file_manager.dicom_df.iterrows(), total=len(dicom_file_manager.dicom_df), 
                 desc="Processing DICOM files")
     
-    for idx, dicom_info in pbar:
-        anonymizer.current_dicom_index = idx
+    for idx, row in pbar:
+        dicom_file_manager.current_dicom_index = idx
         success, skipped = process_dicom_file(
-            dicom_info.to_dict(),
+            row,
             model,
             args.device,
-            anonymizer,
+            dicom_file_manager,
             args.output_folder,
             args.headers_folder,
             args.preserve_directory_structure,

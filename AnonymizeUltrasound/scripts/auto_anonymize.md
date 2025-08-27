@@ -7,14 +7,19 @@ Replicates the 3D Slicer AnonymizeUltrasound extension entirely from the shell, 
 1. Quick start
 
 First, install the dependencies.
+```python
+uv venv --python 3.9.10
+source .venv/bin/activate
+uv pip install -r requirements-cpu.txt
+```
 
 To run the script, use the following command:
 ```
-python -m inference.auto_anonymize \
+python -m auto_anonymize \
     /path/to/input_dicoms \
     /path/to/output_dicoms \
     /path/to/headers_out \
-    --model-path /path/to/attention_unet_dsnt.pt \
+    --model-path /path/to/model_trace.pt \
     --device cuda \
     --overview-dir /tmp/overviews
 ```

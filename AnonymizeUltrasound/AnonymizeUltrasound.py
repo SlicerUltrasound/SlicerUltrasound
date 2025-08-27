@@ -13,6 +13,8 @@ import requests
 from typing import Optional, Dict
 import time
 import json
+
+# Force matplotlib to not use a non-osx backend to avoid slicer crash
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt

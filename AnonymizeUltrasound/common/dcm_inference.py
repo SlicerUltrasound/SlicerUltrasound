@@ -77,10 +77,25 @@ def preprocess_image(
     return tensor
 
 def compute_masks_and_configs(original_dims, predicted_corners: Optional[dict] = None):
+    """
+    Compute curvilinear mask and fan mask configuration from predicted corners.
+    
+    Args:
+        original_dims (tuple): Original dimensions of the image (height, width)
+        predicted_corners (dict): Dictionary containing predicted corners
+            - 'top_left' (tuple): Top-left corner coordinates (x, y)
+            - 'top_right' (tuple): Top-right corner coordinates (x, y)
+            - 'bottom_left' (tuple): Bottom-left corner coordinates (x, y)
+            - 'bottom_right' (tuple): Bottom-right corner coordinates (x, y)
+    
+    Returns:
+        np.ndarray: Curvilinear mask
+        dict: Fan mask configuration
+    """
     if predicted_corners is None:
         raise ValueError("predicted_corners must be provided for 'direct' algorithm")
     else:
         cfg = corner_points_to_fan_mask_config(predicted_corners, original_dims)
         curvilinear_mask = create_mask(cfg, image_size=original_dims, intensity=1)
 
-    return curvilinear_mask
+    return curvilinear_mask, cfg
