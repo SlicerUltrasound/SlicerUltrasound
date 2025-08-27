@@ -13,6 +13,9 @@ import requests
 from typing import Optional, Dict
 import time
 import json
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 import qt
 import vtk
@@ -2317,16 +2320,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             except Exception as e:
                 raise Exception(f"Failed to load model: {e}") from e
 
-        # TODO: fix matplotlib import slicer crash; support PDF report
         # Optional overview
-        # make_overview = bool(overview_dir)
-        # if make_overview:
-        #     os.makedirs(overview_dir, exist_ok=True)
-        #     try:
-        #         import matplotlib.pyplot as plt
-        #     except Exception as e:
-        #         logging.warning(f"matplotlib not available; overviews disabled: {e}")
-        #         make_overview = False
+        make_overview = bool(overview_dir)
+        if make_overview:
+            os.makedirs(overview_dir, exist_ok=True)
 
         # Progress dialog
         total = len(self.dicom_file_manager.dicom_df) if self.dicom_file_manager.dicom_df is not None else 0
@@ -2436,26 +2433,24 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
                         raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
 
-                    # TODO: fix matplotlib import slicer crash; support PDF report
                     # Optional overview (first frame)
-                    # if make_overview and not no_mask_generation and masked_image_array.shape[0] > 0:
-                    #     try:
-                    #         import matplotlib.pyplot as plt
-                    #         fig, axes = plt.subplots(1, 3, figsize=(18, 4))
-                    #         axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
-                    #         orig_frame = image_array[0].squeeze()
-                    #         masked_frame = masked_image_array[0].squeeze()
-                    #         axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
-                    #         axes[1].imshow(orig_frame, cmap='gray')
-                    #         axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
-                    #         axes[1].axis('off')
-                    #         axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
-                    #         overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
-                    #         plt.tight_layout()
-                    #         plt.savefig(os.path.join(overview_dir, overview_filename))
-                    #         plt.close(fig)
-                    #     except Exception as e:
-                    #         logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
+                    if make_overview and not no_mask_generation and masked_image_array.shape[0] > 0:
+                        try:
+                            fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
+                            orig_frame = image_array[0].squeeze()
+                            masked_frame = masked_image_array[0].squeeze()
+                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
+                            axes[1].imshow(orig_frame, cmap='gray')
+                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
+                            axes[1].axis('off')
+                            axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
+                            overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
+                            plt.tight_layout()
+                            plt.savefig(os.path.join(overview_dir, overview_filename))
+                            plt.close(fig)
+                        except Exception as e:
+                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
 
                     success += 1
 
