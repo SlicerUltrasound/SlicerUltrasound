@@ -361,6 +361,12 @@
             </item>
             <item>
                 <widget class="ctkCollapsibleButton" name="labelAnnotationsCollapsibleButton">
+                    <property name="sizePolicy">
+                        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                            <horstretch>0</horstretch>
+                            <verstretch>1</verstretch>
+                        </sizepolicy>
+                    </property>
                     <property name="text">
                         <string>Clip Level labels</string>
                     </property>
@@ -383,23 +389,15 @@
                         <item>
                             <widget class="QScrollArea" name="labelsScrollArea">
                                 <property name="sizePolicy">
-                                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+                                    <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
                                         <horstretch>0</horstretch>
-                                        <verstretch>0</verstretch>
+                                        <verstretch>1</verstretch>
                                     </sizepolicy>
                                 </property>
                                 <property name="widgetResizable">
                                     <bool>true</bool>
                                 </property>
                                 <widget class="QWidget" name="labelsScrollAreaWidgetContents">
-                                    <property name="geometry">
-                                        <rect>
-                                            <x>0</x>
-                                            <y>0</y>
-                                            <width>410</width>
-                                            <height>68</height>
-                                        </rect>
-                                    </property>
                                     <layout class="QVBoxLayout" name="verticalLayout_4">
                                         <property name="spacing">
                                             <number>0</number>
@@ -431,7 +429,7 @@
                     <property name="sizeHint" stdset="0">
                         <size>
                             <width>20</width>
-                            <height>40</height>
+                            <height>10</height>
                         </size>
                     </property>
                 </spacer>

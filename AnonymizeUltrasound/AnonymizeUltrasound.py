@@ -4,6 +4,7 @@ import datetime
 from enum import Enum
 import hashlib
 import io
+import re
 import json
 import logging
 import random
@@ -297,7 +298,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.labelsFileSelector.connect('currentPathChanged(QString)', self.onLabelsPathChanged)
         labelsPath = settings.value(self.LABELS_PATH_SETTING)
         if not labelsPath or labelsPath == '':
-            labelsPath = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'Resources/default_labels.csv')
+            labelsPath = self.resourcePath('default_labels.csv')
         self.ui.labelsFileSelector.currentPath = labelsPath
         self.ui.labelsCollapsibleButton.collapsed = True
 
@@ -381,36 +382,61 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._onParameterNodeModified)
             self._onParameterNodeModified()
 
-    def onLabelsPathChanged(self, filePath):
+    def onLabelsPathChanged(self, labelsFilepath=None):
+        # Use provided path or default to resource path
+        if labelsFilepath is None:
+            # Try to load from settings first
+            settings = qt.QSettings()
+            savedPath = settings.value(self.LABELS_PATH_SETTING)
+            if savedPath and os.path.exists(savedPath):
+                labelsFilepath = savedPath
+            else:
+                labelsFilepath = self.resourcePath('default_labels.csv')
+
+        # Save the path to settings for next time
         settings = qt.QSettings()
-        settings.setValue(self.LABELS_PATH_SETTING, filePath)
+        settings.setValue(self.LABELS_PATH_SETTING, labelsFilepath)
 
+        logging.info(f"Loading labels file from: {labelsFilepath}")
         categories = defaultdict(list)
-
         try:
-            with open(filePath, 'r') as file:
+            with open(labelsFilepath, 'r') as file:
                 reader = csv.reader(file)
                 for row in reader:
                     category, label = map(str.strip, row)
+                    # Store original values in categories dict but display humanized versions
                     categories[category].append(label)
         except (FileNotFoundError, PermissionError) as e:
-            logging.error(f"Cannot read labels file: {filePath}, error: {e}")
+            logging.error(f"Cannot read labels file: {labelsFilepath}, error: {e}")
+            return
 
-        # Remove all existing labels from the scroll area
+        # Clear existing widgets
         for i in reversed(range(self.ui.labelsScrollAreaWidgetContents.layout().count())):
             self.ui.labelsScrollAreaWidgetContents.layout().itemAt(i).widget().deleteLater()
 
-        # Populate labels scroll area
+        # humanize category and label, splitting them on CamelCase
+        def humanize(text):
+            # Split on CamelCase, handling consecutive capitals
+            # This will split "LiverSpleenDiaphragm" into ["Liver", "Spleen", "Diaphragm"]
+            words = re.findall('[A-Z][a-z\d]+|[A-Z\d]+(?=[A-Z][a-z\d]|[^a-zA-Z\d]|$)|[a-z\d]+', text)
+            return ' '.join(words)
+        # Create widgets with humanized display text
         for category, labels in categories.items():
-            categoryGroupBox = qt.QGroupBox(category, self.ui.labelsScrollAreaWidgetContents)
+            categoryGroupBox = qt.QGroupBox(humanize(category), self.ui.labelsScrollAreaWidgetContents)
+            categoryGroupBox.setSizePolicy(qt.QSizePolicy.Preferred, qt.QSizePolicy.Preferred)
             categoryLayout = qt.QVBoxLayout(categoryGroupBox)
+            categoryLayout.setSpacing(0)  # Remove spacing between items
+            categoryLayout.setContentsMargins(2, 2, 2, 2)  # Reduce margins to minimum
             for label in labels:
-                checkBox = qt.QCheckBox(label, categoryGroupBox)
+                checkBox = qt.QCheckBox(humanize(label), categoryGroupBox)
+                checkBox.setSizePolicy(qt.QSizePolicy.Preferred, qt.QSizePolicy.Preferred)
+                checkBox.toggled.connect(lambda checked, cb=checkBox: self.onLabelCheckBoxToggled(cb, checked))
+                # Store original category and label for saving
+                checkBox.setProperty('originalCategory', category)
+                checkBox.setProperty('originalLabel', label)
                 categoryLayout.addWidget(checkBox)
             categoryGroupBox.setLayout(categoryLayout)
             self.ui.labelsScrollAreaWidgetContents.layout().addWidget(categoryGroupBox)
-
-        self.ui.labelsScrollAreaWidgetContents.layout().addStretch(1)
 
     def confirm_setting_change(self, message: str = "Are you sure you want to change this setting?") -> bool:
         """
