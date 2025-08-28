@@ -823,7 +823,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 overview_dir=overview_dir,
                 no_mask_generation=False
             )
-            self.ui.statusLabel.text = f"Auto‑anonymize finished. {result['status']}"
+            self.ui.statusLabel.text = result['status']
         except Exception as e:
             logging.error(f"Auto‑anonymize failed: {e} {traceback.format_exc()}")
             slicer.util.errorDisplay(str(e))
