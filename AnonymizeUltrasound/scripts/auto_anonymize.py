@@ -64,7 +64,7 @@ def process_dicom_file(
     row: pd.Series,  # pandas.Series from df.iterrows()
     model,
     device: str,
-    dicom_file_manager: DicomFileManager,
+    dicom_manager: DicomFileManager,
     output_folder: str,
     headers_folder: str,
     preserve_directory_structure: bool,
@@ -81,7 +81,7 @@ def process_dicom_file(
         dicom_info: Dictionary containing DICOM file information
         model: Loaded AI model for corner prediction
         device: Device to run inference on
-        anonymizer: UltrasoundAnonymizer instance
+        dicom_manager: DICOM file manager instance
         output_folder: Output directory for anonymized DICOM files
         headers_folder: Output directory for DICOM headers
         preserve_directory_structure: Whether to preserve directory structure
@@ -101,7 +101,7 @@ def process_dicom_file(
         anon_filename = row.AnonFilename
         
         # Generate output file path to check for existence
-        final_output_path = dicom_file_manager.generate_output_filepath(
+        final_output_path = dicom_manager.generate_output_filepath(
             output_folder, output_path, preserve_directory_structure
         )
         
@@ -236,7 +236,7 @@ def process_dicom_file(
         # 4. Save anonymized DICOM file
         save_dicom_start = time.time()
         try:
-            dicom_file_manager.save_anonymized_dicom(
+            dicom_manager.save_anonymized_dicom(
                 image_array=masked_image_array,
                 output_path=final_output_path,
                 new_patient_name=anon_filename.split('.')[0],
@@ -252,7 +252,7 @@ def process_dicom_file(
         save_header_start = time.time()
         if headers_folder:
             try:
-                dicom_file_manager.save_anonymized_dicom_header(
+                dicom_manager.save_anonymized_dicom_header(
                     current_dicom_record=row,
                     output_filename=anon_filename,
                     headers_directory=headers_folder
@@ -393,7 +393,7 @@ def main():
     logger.info(f"No mask generation: {args.no_mask_generation}")
     
     # Initialize anonymizer
-    dicom_file_manager = DicomFileManager()
+    dicom_manager = DicomFileManager()
     
     # Determine if patient ID should be hashed
     hash_patient_id = not args.no_hash_patient_id
@@ -419,7 +419,7 @@ def main():
 
     # 1. Scan directory for DICOM files
     logger.info("Scanning directory for DICOM files...")
-    num_files = dicom_file_manager.scan_directory(args.input_folder, args.skip_single_frame, hash_patient_id=hash_patient_id)
+    num_files = dicom_manager.scan_directory(args.input_folder, args.skip_single_frame, hash_patient_id=hash_patient_id)
     
     if num_files == 0:
         logger.error("No valid DICOM files found in input directory")
@@ -427,8 +427,8 @@ def main():
     
     logger.info(f"Found {num_files} DICOM files to process")
 
-    # save the keys.csv file, which is just the dicom_file_manager.dicom_df
-    dicom_file_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(os.path.join(args.headers_folder, 'keys.csv'), index=False)
+    # save the keys.csv file, which is just the dicom_manager.dicom_df
+    dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(os.path.join(args.headers_folder, 'keys.csv'), index=False)
     
     # 2. Load model if provided
     model = None
@@ -460,16 +460,16 @@ def main():
     skipped_count = 0
     
     # Create progress bar
-    pbar = tqdm(dicom_file_manager.dicom_df.iterrows(), total=len(dicom_file_manager.dicom_df), 
+    pbar = tqdm(dicom_manager.dicom_df.iterrows(), total=len(dicom_manager.dicom_df),
                 desc="Processing DICOM files")
     
     for idx, row in pbar:
-        dicom_file_manager.current_dicom_index = idx
+        dicom_manager.current_index = idx
         success, skipped = process_dicom_file(
             row,
             model,
             args.device,
-            dicom_file_manager,
+            dicom_manager,
             args.output_folder,
             args.headers_folder,
             args.preserve_directory_structure,

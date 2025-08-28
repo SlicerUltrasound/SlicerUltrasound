@@ -153,9 +153,6 @@ def scanconversion_config_to_corner_points(scanconversion_config):
     
     return corner_points
 
-import cv2
-import numpy as np
-
 def create_trapezoid_mask(config):
     """
     Create a trapezoid mask with the given configuration.
@@ -186,29 +183,6 @@ def create_trapezoid_mask(config):
     cv2.fillPoly(mask, [points], 255)
     
     return mask
-
-
-def create_mask(config, edge_erosion=0.0, image_size=None, intensity=255):
-    """
-    Generate a binary mask based on the mask type (curvilinear fan or rectangle).
-
-    Args:
-        config (dict): Dictionary with scan conversion parameters.
-        edge_erosion (float): Fraction of the image size (number of rows) to be eroded from the edges of the mask.
-        image_size (tuple): Image size as (height, width). Used if not specified in config.
-
-    Returns:
-        mask_array (np.ndarray): Binary mask with ones inside the scan area and zeros outside.
-    """
-    mask_type = config.get("mask_type", "fan")  # Default to fan for backward compatibility
-    
-    if mask_type == "rectangle":
-        return create_rectangle_mask(config, edge_erosion, image_size)
-    elif mask_type == "fan":
-        return create_curvilinear_mask(config, edge_erosion, image_size, intensity=intensity)
-    else:
-        raise ValueError(f"Unsupported mask type: {mask_type}. Supported types are 'rectangle' and 'fan'.")
-
 
 def create_rectangle_mask(config, edge_erosion=0.0, image_size=None):
     """
@@ -262,7 +236,6 @@ def create_rectangle_mask(config, edge_erosion=0.0, image_size=None):
     
     return mask
 
-
 def create_curvilinear_mask(config, edge_erosion=0.0, image_size=None, intensity=255):
     """
     Generate a binary mask for the curvilinear image with ones inside the scan lines area and zeros outside.
@@ -306,8 +279,6 @@ def create_curvilinear_mask(config, edge_erosion=0.0, image_size=None, intensity
     if (angle1 is None) or (angle2 is None) or (center_rows_px is None) or (center_cols_px is None) or (radius1 is None) or (radius2 is None):
         raise ValueError("Missing required parameters in the configuration for curvilinear mask.")
 
-    
-
     mask = np.zeros((image_rows, image_cols), dtype=np.int8)
     mask = cv2.ellipse(mask, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle1, angle2, 1, -1)
     mask = cv2.circle(mask, (center_cols_px, center_rows_px), radius1, 0, -1)
@@ -327,6 +298,26 @@ def create_curvilinear_mask(config, edge_erosion=0.0, image_size=None, intensity
     mask = mask * intensity
     return mask
 
+def create_mask(config, edge_erosion=0.0, image_size=None, intensity=255):
+    """
+    Generate a binary mask based on the mask type (curvilinear fan or rectangle).
+
+    Args:
+        config (dict): Dictionary with scan conversion parameters.
+        edge_erosion (float): Fraction of the image size (number of rows) to be eroded from the edges of the mask.
+        image_size (tuple): Image size as (height, width). Used if not specified in config.
+
+    Returns:
+        mask_array (np.ndarray): Binary mask with ones inside the scan area and zeros outside.
+    """
+    mask_type = config.get("mask_type", "fan")  # Default to fan for backward compatibility
+    
+    if mask_type == "rectangle":
+        return create_rectangle_mask(config, edge_erosion, image_size)
+    elif mask_type == "fan":
+        return create_curvilinear_mask(config, edge_erosion, image_size, intensity=intensity)
+    else:
+        raise ValueError(f"Unsupported mask type: {mask_type}. Supported types are 'rectangle' and 'fan'.")
 
 def line_coefficients(p1, p2):
     """
@@ -463,8 +454,23 @@ def corner_points_to_fan_mask_config(corner_points, image_size=None):
         }
     return fan_config_dict
 
-# Example usage
-if __name__ == '__main__':
-    config = json.load(open('config.json'))
-    masks_dir = config['masks_dir']
-    create_masks(masks_dir)
+def compute_masks_and_configs(original_dims: tuple[int, int], predicted_corners: dict) -> tuple[np.ndarray, dict]:
+    """
+    Compute curvilinear mask and fan mask configuration from predicted corners.
+    
+    Args:
+        original_dims (tuple): Original dimensions of the image (height, width)
+        predicted_corners (dict): Dictionary containing predicted corners
+            - 'top_left' (tuple): Top-left corner coordinates (x, y)
+            - 'top_right' (tuple): Top-right corner coordinates (x, y)
+            - 'bottom_left' (tuple): Bottom-left corner coordinates (x, y)
+            - 'bottom_right' (tuple): Bottom-right corner coordinates (x, y)
+    
+    Returns:
+        np.ndarray: Curvilinear mask
+        dict: Fan mask configuration
+    """
+    cfg = corner_points_to_fan_mask_config(predicted_corners, original_dims)
+    curvilinear_mask = create_mask(cfg, image_size=original_dims, intensity=1)
+
+    return curvilinear_mask, cfg

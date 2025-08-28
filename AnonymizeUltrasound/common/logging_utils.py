@@ -3,7 +3,6 @@ import logging
 import sys
 from datetime import datetime
 
-
 def setup_logging(log_dir='logs', process_name='', log_level='INFO'):
     """Set up logging configuration for error tracking."""
     if not os.path.exists(log_dir):

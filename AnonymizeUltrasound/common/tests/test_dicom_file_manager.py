@@ -209,13 +209,13 @@ class TestDicomFileManager:
         }]
 
         manager._create_dataframe(dicom_data)
-        manager.current_dicom_index = 0
+        manager.current_index = 0
         return manager
 
     def test_init(self, manager):
         """Test DicomFileManager initialization"""
         assert manager.dicom_df is None
-        assert manager.next_dicom_index == 0
+        assert manager.next_index == 0
         assert manager._temp_directories == []
 
     def test_get_transducer_model_valid(self, manager):
@@ -372,7 +372,7 @@ class TestDicomFileManager:
         assert len(manager.dicom_df) == 2
         assert 'TransducerModel' in manager.dicom_df.columns
         assert 'SeriesNumber' in manager.dicom_df.columns
-        assert manager.next_dicom_index == 0
+        assert manager.next_index == 0
 
     def test_update_progress_from_output_no_dataframe(self, manager):
         """Test progress update with no dataframe"""
@@ -407,7 +407,7 @@ class TestDicomFileManager:
 
         result = manager.update_progress_from_output(temp_dir, True)
         assert result == 1
-        assert manager.next_dicom_index == 1
+        assert manager.next_index == 1
 
     def test_update_progress_from_output_with_preserve_structure(self, manager, temp_dir):
         # Create test dataframe with OutputPath
@@ -422,7 +422,7 @@ class TestDicomFileManager:
         result = manager.update_progress_from_output(temp_dir, preserve_directory_structure=True)
 
         assert result == 1
-        assert manager.next_dicom_index == 1
+        assert manager.next_index == 1
 
     def test_update_progress_from_output_with_flatten_structure(self, manager, temp_dir):
         # Create test dataframe with OutputPath
@@ -436,7 +436,7 @@ class TestDicomFileManager:
         result = manager.update_progress_from_output(temp_dir, preserve_directory_structure=False)
 
         assert result == 1
-        assert manager.next_dicom_index == 1
+        assert manager.next_index == 1
 
     def test_get_file_for_instance_uid_found(self, manager):
         """Test getting file path for instance UID when found"""
@@ -499,20 +499,20 @@ class TestDicomFileManager:
     def test_increment_dicom_index_basic(self, manager):
         """Test basic DICOM index increment"""
         manager.dicom_df = pd.DataFrame({'test': [1, 2, 3]})
-        manager.next_dicom_index = 0
+        manager.next_index = 0
 
         result = manager._increment_dicom_index()
         assert result is True
-        assert manager.next_dicom_index == 1
+        assert manager.next_index == 1
 
     def test_increment_dicom_index_at_end(self, manager):
         """Test DICOM index increment at end of dataframe"""
         manager.dicom_df = pd.DataFrame({'test': [1, 2]})
-        manager.next_dicom_index = 1
+        manager.next_index = 1
 
         result = manager._increment_dicom_index()
         assert result is False
-        assert manager.next_dicom_index == 2
+        assert manager.next_index == 2
 
     def test_increment_dicom_index_with_continue_progress(self, manager, temp_dir):
         """Test DICOM index increment with continue progress"""
@@ -521,7 +521,7 @@ class TestDicomFileManager:
             'AnonFilename': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm'],
             'OutputPath': ['file1.dcm', 'file2.dcm', 'file3.dcm', 'file4.dcm']
         })
-        manager.next_dicom_index = 0
+        manager.next_index = 0
 
         # Create some existing output files (file1.dcm and file2.dcm already exist)
         Path(os.path.join(temp_dir, 'file1.dcm')).touch()
@@ -533,24 +533,24 @@ class TestDicomFileManager:
 
         # Should skip to file3.dcm (index 2) since file1.dcm and file2.dcm already exist
         assert result is True
-        assert manager.next_dicom_index == 2
+        assert manager.next_index == 2
 
         # Test increment again - should go to file4.dcm (index 3)
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is True
-        assert manager.next_dicom_index == 3
+        assert manager.next_index == 3
 
         # Test increment again - should go beyond end (index 4)
         result = manager._increment_dicom_index(temp_dir, continue_progress=True)
         assert result is False
-        assert manager.next_dicom_index == 4
+        assert manager.next_index == 4
 
     def test_increment_dicom_index_with_preserve_structure(self, manager, temp_dir):
         # Create test dataframe
         manager.dicom_df = pd.DataFrame({
             'OutputPath': ['dir1/file1.dcm', 'dir2/file2.dcm', 'dir3/file3.dcm']
         })
-        manager.next_dicom_index = 0
+        manager.next_index = 0
 
         # Create first and second files in nested input directory
         os.makedirs(os.path.join(temp_dir, 'dir1'))
@@ -566,7 +566,7 @@ class TestDicomFileManager:
 
         # Since the output directory is preserved, the next file to be processed is the
         # third file in the input directory since the first two files already exist in the output directory.
-        assert manager.next_dicom_index == 2
+        assert manager.next_index == 2
         assert result is True
 
     def test_increment_dicom_index_without_preserve_structure(self, manager, temp_dir):
@@ -589,7 +589,7 @@ class TestDicomFileManager:
 
         # Since the output directory is not preserved, the next file to be processed is the
         # second file in the input directory since the first file already exists in the output directory.
-        assert manager.next_dicom_index == 1
+        assert manager.next_index == 1
         assert result is True
 
     @patch('os.path.exists')
@@ -686,9 +686,9 @@ class TestDicomFileManager:
         assert not os.path.exists(output_path)
 
     def test_save_anonymized_dicom_invalid_index(self, manager, sample_image_array_multi_frame, temp_dir):
-        """Test save_anonymized_dicom with invalid current_dicom_index"""
+        """Test save_anonymized_dicom with invalid current_index"""
         manager.dicom_df = pd.DataFrame({'test': [1, 2, 3]})
-        manager.current_dicom_index = 5  # Out of bounds
+        manager.current_index = 5  # Out of bounds
 
         output_path = os.path.join(temp_dir, "output.dcm")
 
@@ -1346,7 +1346,7 @@ class TestDicomFileManager:
 
             # Verify return value
             assert result == (0, mock_sequence_browser)
-            assert manager_with_data.current_dicom_index == 0
+            assert manager_with_data.current_index == 0
 
     def test_load_sequence_no_dataframe(self, manager):
         """Test load_sequence with no dataframe returns None, None"""
@@ -1357,18 +1357,18 @@ class TestDicomFileManager:
         assert result == (None, None)
 
     def test_load_sequence_none_next_index(self, manager_with_data):
-        """Test load_sequence with None next_dicom_index returns None, None"""
+        """Test load_sequence with None next_index returns None, None"""
         parameter_node = Mock()
-        manager_with_data.next_dicom_index = None
+        manager_with_data.next_index = None
 
         result = manager_with_data.load_sequence(parameter_node)
 
         assert result == (None, None)
 
     def test_load_sequence_index_out_of_bounds(self, manager_with_data):
-        """Test load_sequence with next_dicom_index >= dataframe length"""
+        """Test load_sequence with next_index >= dataframe length"""
         parameter_node = Mock()
-        manager_with_data.next_dicom_index = len(manager_with_data.dicom_df)
+        manager_with_data.next_index = len(manager_with_data.dicom_df)
 
         result = manager_with_data.load_sequence(parameter_node)
 
