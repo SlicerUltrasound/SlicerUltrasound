@@ -1,11 +1,136 @@
-.DS_Store
-.coverage
-.vscode/
-*/**/__pycache__
-*~
-*/**/data/
-*/**/.venv/
 # AI model checkpoints
 AnonymizeUltrasound/Resources/checkpoints/*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch and ML specific
+*.pth
+*.pt
+*.pkl
+*.pickle
+data/
+checkpoints/
+weights/
+logs/
+runs/
+wandb/
+mlruns/
+.neptune/
+tensorboard_logs/
+tb_logs/
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+conda-meta/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+.ropeproject
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+log/
+
+# Outputs and results
+output/
+outputs/
+results/
+visualizations/
+plots/
+figures/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.tiff
+*.bmp
+*.svg
+!docs/figures/
+
+# Large files and archives
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.dmg
+*.iso
+
+# CUDA
+*.cubin
+*.fatbin
+*.ptx
+
+# Temporary files
+tmp/
+temp/
+.keep
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Testing
 .coverage
+.pytest_cache/
+.tox/
+.nox/
 coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Configuration and secrets
+.env
+.env.local
+.env.*.local
+secrets.json
+*.key
+*.pem
+.aws/
+.gcp/

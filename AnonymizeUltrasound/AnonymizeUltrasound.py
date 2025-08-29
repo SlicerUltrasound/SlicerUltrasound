@@ -1,23 +1,22 @@
 from collections import defaultdict
 import csv
-import datetime
 from enum import Enum
-import hashlib
-import io
 import re
 import json
 import logging
-import random
 import numpy as np
 import math
 import os
-from PIL import Image
-import pydicom
 import requests
-from typing import Optional
+from typing import Optional, Dict, List, Any
 import time
+import json
+import shutil
+from datetime import datetime
+
 import qt
 import vtk
+import traceback
 
 import slicer
 from slicer.i18n import tr as _
@@ -30,12 +29,20 @@ from slicer.ScriptedLoadableModule import (
 )
 from slicer.util import VTKObservationMixin
 from slicer.parameterNodeWrapper import parameterNodeWrapper
-
 from slicer import vtkMRMLScalarVolumeNode, vtkMRMLVectorVolumeNode
 from slicer import vtkMRMLSequenceBrowserNode
 from slicer import vtkMRMLMarkupsFiducialNode
+from DICOMLib import DICOMUtils
 
 from common.dicom_file_manager import DicomFileManager
+from common.create_frames import read_frames_from_dicom
+from common.create_masks import corner_points_to_fan_mask_config, create_mask
+from common.dcm_inference import load_model, preprocess_image, get_device
+from common.compare_masks import compare_masks, load_mask_config
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
+MODEL_URL = "https://www.dropbox.com/scl/fi/mnu2k4n8fju6gy1glhieb/model_traced.pt?rlkey=eb0xmwzwsoesq3mp11s8xt9xd&dl=1"
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -133,6 +140,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
     ENABLE_MASK_CACHE_SETTING = "AnonymizeUltrasound/enableMaskCache"
     PRESERVE_DIRECTORY_STRUCTURE_SETTING = "AnonymizeUltrasound/preserveDirectoryStructure"
+    AUTO_ANON_ENABLE_SETTING = "AnonymizeUltrasound/EnableAutoAnonymize"
+    AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
+    AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
+    AUTO_ANON_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverviewDir"
+    AUTO_ANON_GT_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeGroundTruthDir"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -188,6 +200,31 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Buttons
 
         settings = slicer.app.settings()
+
+        # Enable toggle
+        enable_val = settings.value(self.AUTO_ANON_ENABLE_SETTING)
+        self.ui.enableAutoAnonymizeCheckBox.checked = bool(enable_val and str(enable_val).lower() == "true")
+        self.ui.enableAutoAnonymizeCheckBox.toggled.connect(self._on_auto_anon_enable_toggled)
+        self._apply_auto_anon_visibility(self.ui.enableAutoAnonymizeCheckBox.checked)
+
+        # Defaults for inputs
+        default_model = settings.value(self.AUTO_ANON_MODEL_PATH_SETTING) or MODEL_PATH
+        self.ui.autoAnonModelPathLineEdit.text = default_model
+        default_device = settings.value(self.AUTO_ANON_DEVICE_SETTING) or "cpu"
+        self.ui.autoAnonDeviceLineEdit.text = default_device
+        default_overview = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING) or ""
+        self.ui.autoAnonOverviewDirLineEdit.text = default_overview
+        default_gt = settings.value(self.AUTO_ANON_GT_DIR_SETTING) or ""
+        self.ui.autoAnonGroundTruthDirLineEdit.text = default_gt
+
+        # Persist user edits
+        self.ui.autoAnonModelPathLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_MODEL_PATH_SETTING, t))
+        self.ui.autoAnonDeviceLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_DEVICE_SETTING, t))
+        self.ui.autoAnonOverviewDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_OVERVIEW_DIR_SETTING, t))
+        self.ui.autoAnonGroundTruthDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_GT_DIR_SETTING, t))
+
+        # Run button
+        self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
 
         inputFolder = settings.value(self.INPUT_FOLDER_SETTING)
         if inputFolder:
@@ -453,6 +490,17 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         result = alert.exec_()
         return result == qt.QMessageBox.Yes
 
+    def message_box(self, title: str, message: str, icon: qt.QMessageBox.Icon = qt.QMessageBox.Information) -> None:
+        """
+        Show a message box with a given title and message.
+        """
+        alert = qt.QMessageBox()
+        alert.setIcon(icon)
+        alert.setWindowTitle(title)
+        alert.setText(message)
+        alert.setStandardButtons(qt.QMessageBox.Ok)
+        alert.exec_()
+
     def format_setting_name(self, setting_name: str) -> str:
         """
         Convert a setting name to a human-readable format.
@@ -602,7 +650,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Headers directory does not exist")
             return
 
-        numFiles = self.logic.dicom_file_manager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked)
+        numFiles = self.logic.dicom_manager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked, self.ui.hashPatientIdCheckBox.checked)
         logging.info(f"Found {numFiles} DICOM files in input folder")
 
         if numFiles > 0:
@@ -610,10 +658,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self._parameterNode.status = AnonymizerStatus.INITIAL
 
-        # Export self.logic.dicom_file_manager.dicom_df as a CSV file in the headers directory
-        if self.logic.dicom_file_manager.dicom_df is not None:
+        # Export self.logic.dicom_manager.dicom_df as a CSV file in the headers directory
+        if self.logic.dicom_manager.dicom_df is not None:
             outputFilePath = os.path.join(outputHeadersDirectory, "keys.csv")
-            self.logic.dicom_file_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(outputFilePath, index=False)
+            self.logic.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(outputFilePath, index=False)
 
         statusText = str(numFiles)
         if self.ui.skipSingleframeCheckBox.checked:
@@ -623,7 +671,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         if self.ui.continueProgressCheckBox.checked:
             # Find the number of files already processed in the output directory
-            numDone = self.logic.dicom_file_manager.update_progress_from_output(outputDirectory, self.ui.preserveDirectoryStructureCheckBox.checked)
+            numDone = self.logic.dicom_manager.update_progress_from_output(outputDirectory, self.ui.preserveDirectoryStructureCheckBox.checked)
             if numDone is None:
                 statusText += '\nAll files have been processed. Cannot load more files from input folder.'
             elif numDone < 1:
@@ -646,7 +694,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         continueProgress = self.ui.continueProgressCheckBox.checked
 
         # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
-        if self.logic.dicom_file_manager.next_dicom_index is None and continueProgress:
+        if self.logic.dicom_manager.next_index is None and continueProgress:
             self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
             return
 
@@ -695,8 +743,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Update GUI
 
-        if currentDicomDfIndex is not None and self.logic.dicom_file_manager.dicom_df is not None:
-            current_dicom_record = self.logic.dicom_file_manager.dicom_df.iloc[currentDicomDfIndex]
+        if currentDicomDfIndex is not None and self.logic.dicom_manager.dicom_df is not None:
+            current_dicom_record = self.logic.dicom_manager.dicom_df.iloc[currentDicomDfIndex]
 
             patientID = current_dicom_record.DICOMDataset.PatientID if current_dicom_record is not None else "N/A"
             if patientID:
@@ -734,13 +782,60 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self.ui.statusLabel.text = "No DICOM file loaded"
 
+    def on_run_auto_anon_clicked(self):
+        in_dir = self.ui.inputDirectoryButton.directory
+        out_dir = self.ui.outputDirectoryButton.directory
+        hdr_dir = self.ui.headersDirectoryButton.directory
+        if not in_dir or not os.path.exists(in_dir):
+            slicer.util.errorDisplay("Please select a valid input directory (Import DICOM folder).")
+            return
+        if not out_dir or not os.path.exists(out_dir):
+            slicer.util.errorDisplay("Please select a valid output directory (Import DICOM folder).")
+            return
+        if not hdr_dir or not os.path.exists(hdr_dir):
+            slicer.util.errorDisplay("Please select a valid headers directory (Import DICOM folder).")
+            return
+
+        model_path = (self.ui.autoAnonModelPathLineEdit.text or MODEL_PATH).strip()
+        device = (self.ui.autoAnonDeviceLineEdit.text or "").strip()
+        overview_dir = (self.ui.autoAnonOverviewDirLineEdit.text or "").strip()
+        ground_truth_dir = (self.ui.autoAnonGroundTruthDirLineEdit.text or "").strip()
+
+        skip_single = self.ui.skipSingleframeCheckBox.checked
+        hash_pid = self.ui.hashPatientIdCheckBox.checked
+        preserve_dirs = self.ui.preserveDirectoryStructureCheckBox.checked
+        resume = self.ui.continueProgressCheckBox.checked
+
+        self.ui.statusLabel.text = "Running auto‑anonymize..."
+        slicer.app.processEvents()
+
+        try:
+            result = self.logic.batch_auto_anonymize(
+                input_folder=in_dir,
+                output_folder=out_dir,
+                headers_folder=hdr_dir,
+                model_path=model_path,
+                device=device,
+                preserve_directory_structure=preserve_dirs,
+                resume_anonymization=resume,
+                skip_single_frame=skip_single,
+                hash_patient_id=hash_pid,
+                overview_dir=overview_dir,
+                # ground_truth_dir=ground_truth_dir,
+                # metrics_csv_path=os.path.join(hdr_dir, f"{os.path.basename(in_dir)}_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"),
+            )
+            self.ui.statusLabel.text = result['status']
+        except Exception as e:
+            logging.error(f"Auto‑anonymize failed: {e} {traceback.format_exc()}")
+            slicer.util.errorDisplay(str(e))
+
     def onNextButton(self) -> None:
         logging.info("Next button clicked")
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
         continueProgress = self.ui.continueProgressCheckBox.checked
 
         # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
-        if self.logic.dicom_file_manager.next_dicom_index is None and continueProgress:
+        if self.logic.dicom_manager.next_index is None and continueProgress:
             self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
             return
 
@@ -789,8 +884,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         # Update GUI
 
-        if currentDicomDfIndex is not None and self.logic.dicom_file_manager.dicom_df is not None:
-            current_dicom_record = self.logic.dicom_file_manager.dicom_df.iloc[currentDicomDfIndex]
+        if currentDicomDfIndex is not None and self.logic.dicom_manager.dicom_df is not None:
+            current_dicom_record = self.logic.dicom_manager.dicom_df.iloc[currentDicomDfIndex]
 
             patientID = current_dicom_record.DICOMDataset.PatientID if current_dicom_record is not None else "N/A"
             if patientID:
@@ -851,7 +946,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
 
         # Automatic mask via AI only when NOT in three-point fan mode
-        # TODO: Support for three-point fan mode auto mask
         autoMaskSuccessful = False
         if self.ui.autoMaskCheckBox.checked:
             # Get the mask control points
@@ -1038,8 +1132,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         outputDirectory = self.ui.outputDirectoryButton.directory
         headersDirectory = self.ui.headersDirectoryButton.directory
 
-        current_dicom_record = self.logic.dicom_file_manager.dicom_df.iloc[self.logic.dicom_file_manager.current_dicom_index]
-        filename, patient_uid, _ = self.logic.dicom_file_manager.generate_filename_from_dicom_dataset(current_dicom_record.DICOMDataset, hashPatientId)
+        current_dicom_record = self.logic.dicom_manager.dicom_df.iloc[self.logic.dicom_manager.current_index]
+        filename, patient_uid, _ = self.logic.dicom_manager.generate_filename_from_dicom_dataset(current_dicom_record.DICOMDataset, hashPatientId)
 
         dialog = self.createWaitDialog("Exporting scan", "Please wait until the scan is exported...")
 
@@ -1134,9 +1228,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if self.onExportScanButton():
             self.onNextButton()
 
-#
-# AnonymizeUltrasoundLogic
-#
+    def _on_auto_anon_enable_toggled(self, enabled: bool):
+        settings = slicer.app.settings()
+        settings.setValue(self.AUTO_ANON_ENABLE_SETTING, str(enabled))
+        self._apply_auto_anon_visibility(enabled)
+
+    def _apply_auto_anon_visibility(self, enabled: bool):
+        if hasattr(self.ui, "autoAnonGroupBox"):
+            self.ui.autoAnonGroupBox.setVisible(bool(enabled))
 
 
 class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
@@ -1154,13 +1253,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         ScriptedLoadableModuleLogic.__init__(self)
         VTKObservationMixin.__init__(self)
 
-        self.dicom_file_manager = DicomFileManager()
+        self.dicom_manager = DicomFileManager()
         self.showAutoOverlay = False
         self._autoMaskRGB = None     # 1×H×W×3  uint8, red
         self._manualMaskRGB = None   # 1×H×W×3  uint8, green
         self._parameterNode = self._getOrCreateParameterNode()
         self.transducerMaskCache = {}   # TransducerModel -> mask volume node
         self.currentTransducerModel = 'unknown'
+        self._temp_directories = []
 
     def _getOrCreateParameterNode(self):
         if not hasattr(self, "_parameterNode"):
@@ -1174,17 +1274,128 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """
         Return the number of instances in the current DICOM dataframe.
         """
-        return self.dicom_file_manager.get_number_of_instances()
+        return self.dicom_manager.get_number_of_instances()
 
     def loadPreviousSequence(self, outputDirectory, continueProgress=True, preserve_directory_structure=True):
-        if self.dicom_file_manager.dicom_df is None:
+        if self.dicom_manager.dicom_df is None:
             return None
 
-        if self.dicom_file_manager.next_dicom_index <= 1:
+        if self.dicom_manager.next_index <= 1:
             return None
         else:
-            self.dicom_file_manager.next_dicom_index -= 2
+            self.dicom_manager.next_index -= 2
             return self.loadNextSequence(outputDirectory=outputDirectory, continueProgress=continueProgress, preserve_directory_structure=preserve_directory_structure)
+
+    def _setup_temp_directory(self) -> str:
+        """Setup temporary directory for DICOM files"""
+        temp_dir = os.path.join(slicer.app.temporaryPath, 'UltrasoundModules')
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # Clean existing files with error handling
+        try:
+            for file in os.listdir(temp_dir):
+                file_path = os.path.join(temp_dir, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+        except OSError as e:
+            logging.warning(f"Failed to clean temp directory {temp_dir}: {e}")
+
+        self._temp_directories.append(temp_dir)
+        return temp_dir
+
+    def _load_dicom_from_temp(self, temp_dir: str) -> List[str]:
+        """Load DICOM files using Slicer's DICOM utilities
+
+        This method creates a temporary DICOM database and loads DICOM files
+        from the specified directory into Slicer. It returns a list of node IDs
+        for the loaded DICOM files.
+
+        Args:
+            temp_dir: Path to the temporary directory containing DICOM files
+
+        Returns:
+            List[str]: List of node IDs for the loaded DICOM files
+        """
+        loaded_node_ids = []
+        with DICOMUtils.TemporaryDICOMDatabase() as db:
+            DICOMUtils.importDicom(temp_dir, db)
+            patient_uids = db.patients()
+            for patient_uid in patient_uids:
+                loaded_node_ids.extend(DICOMUtils.loadPatientByUID(patient_uid))
+        return loaded_node_ids
+
+    def _find_sequence_browser(self, loaded_node_ids: List[str]):
+        """Find sequence browser node from loaded nodes"""
+        for node_id in loaded_node_ids:
+            node = slicer.mrmlScene.GetNodeByID(node_id)
+            if node and node.IsA("vtkMRMLSequenceBrowserNode"):
+                return node
+        return None
+
+    def load_sequence(self, parameter_node, output_directory: Optional[str] = None,
+                     continue_progress: bool = False, preserve_directory_structure: bool = True):
+        """
+        Load next DICOM sequence from the dataframe.
+
+        This method loads the next DICOM file in the sequence, creates a temporary directory,
+        copies the DICOM file there, and loads it using Slicer's DICOM utilities. It then
+        finds the sequence browser node and updates the parameter node.
+
+        Args:
+            parameter_node: Parameter node to store the loaded sequence browser
+            output_directory: Optional output directory to check for existing files
+            continue_progress: If True, skip files that already exist in output directory
+            preserve_directory_structure: If True, the output filepath will be the same as the relative path.
+        Returns:
+            tuple: (current_dicom_df_index, sequence_browser) where:
+                - current_dicom_df_index: The index of the current DICOM file in the dataframe
+                - sequence_browser: The loaded sequence browser node
+                Returns (None, None) if no more sequences available or loading fails.
+        """
+        if self.dicom_manager.dicom_df is None or self.dicom_manager.next_index is None or self.dicom_manager.next_index >= len(self.dicom_manager.dicom_df):
+            return None, None
+
+        next_row = self.dicom_manager.dicom_df.iloc[self.dicom_manager.next_index]
+        temp_dicom_dir = self._setup_temp_directory()
+
+        # Copy DICOM file to temporary folder
+        shutil.copy(next_row['InputPath'], temp_dicom_dir)
+
+        # Load DICOM using Slicer's DICOM utilities
+        loaded_node_ids = self._load_dicom_from_temp(temp_dicom_dir)
+        logging.info(f"Loaded DICOM nodes: {loaded_node_ids}")
+
+        sequence_browser = self._find_sequence_browser(loaded_node_ids)
+
+        if sequence_browser:
+            parameter_node.ultrasoundSequenceBrowser = sequence_browser
+        else:
+            logging.error(f"Failed to find sequence browser node in {loaded_node_ids}")
+            return None, None
+
+        # Increment index
+        next_index_val = self.dicom_manager.increment_dicom_index(output_directory, continue_progress, preserve_directory_structure)
+
+        # Cleanup
+        self._cleanup_temp_directory(temp_dicom_dir)
+
+        # Update current DICOM dataframe index
+        self.dicom_manager.current_index = self.dicom_manager.next_index - 1 if self.dicom_manager.next_index is not None and self.dicom_manager.next_index > 0 else 0
+
+        if next_index_val or self.dicom_manager.next_index is not None:
+            return self.dicom_manager.current_index, sequence_browser
+
+        return None, None
+
+    def _cleanup_temp_directory(self, temp_dir: str):
+        """Cleanup temporary directory"""
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            if temp_dir in self._temp_directories:
+                self._temp_directories.remove(temp_dir)
+        except Exception as e:
+            logging.warning(f"Failed to cleanup temporary directory {temp_dir}: {e}")
 
     def loadNextSequence(self, outputDirectory, continueProgress=True, preserve_directory_structure=True):
         """
@@ -1194,7 +1405,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         self.resetScene()
         parameterNode = self.getParameterNode()
 
-        current_dicom_index, sequence_browser = self.dicom_file_manager.load_sequence(parameterNode, outputDirectory, continueProgress, preserve_directory_structure)
+        current_index, sequence_browser = self.load_sequence(parameterNode, outputDirectory, continueProgress, preserve_directory_structure)
 
         # If no more sequences are available, return None
         if sequence_browser is None:
@@ -1202,10 +1413,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # After loading the DICOM, try to find a cached mask for the transducer model
         # If found, apply it. If not, the user will need to define it manually.
-        if self.dicom_file_manager.dicom_df is not None:
-            current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+        if self.dicom_manager.dicom_df is not None:
+            current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
             transducerType = current_dicom_record.get("TransducerModel", "unknown")
-            self.currentTransducerModel = self.dicom_file_manager.get_transducer_model(transducerType)
+            self.currentTransducerModel = self.dicom_manager.get_transducer_model(transducerType)
             cached_mask = self.getCachedMaskForTransducer(self.currentTransducerModel)
 
             if cached_mask:
@@ -1237,7 +1448,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             compositeNode = sliceLogic.GetSliceCompositeNode()
             compositeNode.SetBackgroundVolumeID(backgroundVolumeNode.GetID())
 
-        return current_dicom_index
+        return current_index
 
     def resetScene(self):
         """
@@ -1268,9 +1479,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         :param keep_folders: If True, output files are expected by the same name in the same subfolders as input files.
         :return:  index for dicomDf that points to the next row that needs to be processed.
         """
-        self.dicom_file_manager.next_dicom_index = None
+        self.dicom_manager.next_index = None
         self.incrementDicomDfIndex(input_folder, output_folder, skip_existing=True)
-        return self.dicom_file_manager.next_dicom_index
+        return self.dicom_manager.next_index
 
     def incrementDicomDfIndex(self, input_folder=None, output_directory=None, skip_existing=False):
         """
@@ -1280,24 +1491,24 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         :param keep_folders: If True, keep the folder structure of the input DICOM files in the output directory.
         :return: None
         """
-        if self.dicom_file_manager.dicom_df is None:
+        if self.dicom_manager.dicom_df is None:
             return None
 
-        listOfIndices = self.dicom_file_manager.dicom_df.index.tolist()
+        listOfIndices = self.dicom_manager.dicom_df.index.tolist()
         listOfIndices.sort()
 
-        if self.dicom_file_manager.next_dicom_index is None:
+        if self.dicom_manager.next_index is None:
             nextIndexIndex = 0
         else:
             try:
-                nextIndexIndex = listOfIndices.index(self.dicom_file_manager.next_dicom_index)
+                nextIndexIndex = listOfIndices.index(self.dicom_manager.next_index)
                 nextIndexIndex += 1
             except ValueError:
-                nextIndexIndex = 0 # next_dicom_index is not in list, so start from beginning
+                nextIndexIndex = 0 # next_index is not in list, so start from beginning
 
         if skip_existing and output_directory:
             while nextIndexIndex < len(listOfIndices):
-                current_dicom_record = self.dicom_file_manager.dicom_df.iloc[nextIndexIndex]
+                current_dicom_record = self.dicom_manager.dicom_df.iloc[nextIndexIndex]
                 output_path = output_directory
                 output_filename = current_dicom_record['AnonFilename']
                 output_fullpath = os.path.join(output_path, output_filename)
@@ -1312,14 +1523,14 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 nextIndexIndex += 1
 
         if nextIndexIndex < len(listOfIndices):
-            self.dicom_file_manager.next_dicom_index = listOfIndices[nextIndexIndex]
-            logging.info(f"Next DICOM dataframe index: {self.dicom_file_manager.next_dicom_index}")
+            self.dicom_manager.next_index = listOfIndices[nextIndexIndex]
+            logging.info(f"Next DICOM dataframe index: {self.dicom_manager.next_index}")
         else:
-            self.dicom_file_manager.next_dicom_index = None
+            self.dicom_manager.next_index = None
             self.widget.set_processing_mode(False)
             slicer.util.mainWindow().statusBar().showMessage("No more DICOM files to process", 3000)
 
-        return self.dicom_file_manager.next_dicom_index
+        return self.dicom_manager.next_index
 
     def getCurrentProxyNode(self):
         """
@@ -1372,7 +1583,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
     def getAutoMask(self):
         start_time = time.time()
-        current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+        current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
 
         if current_dicom_record is None:
             logging.error("No current DICOM dataset loaded")
@@ -1396,7 +1607,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         logging.info(f"Read DICOM frames in {time.time() - read_dicom_time} seconds")
 
         try:
-            input_tensor = self.preprocess_image(orig_image_array)
+            input_tensor = preprocess_image(orig_image_array)
         except Exception as e:
             logging.error(f"Error preprocessing image: {e}")
             return None
@@ -1432,90 +1643,20 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return np.array(coords_ras)
 
-    def preprocess_image(
-        self,
-        image: np.ndarray, # (N, C, H, W)
-        target_size: tuple[int, int] = (240, 320),  # (height, width) - matches training spatial_size
-    ):
-        """
-        Preprocess an image to match the EXACT training preprocessing pipeline.
-
-        Training pipeline (from configs/models/attention_unet_with_dsnt/train.yaml):
-        1. Transposed: indices [2, 0, 1]
-        2. Resized: spatial_size [240, 320]
-        3. ToTensord + EnsureTyped: float32
-
-        This function replicates that exact sequence.
-        """
-        # Step 1: Max-pool frames to get single frame
-        snapshot = image.max(axis=0)  # (C, H, W)
-
-        # Step 2: Convert to grayscale using PIL method (matching training dataset)
-        # First transpose to (H, W, C) for PIL processing
-        snapshot = np.transpose(snapshot, (1, 2, 0))  # (H, W, C)
-
-        # Handle single channel case - squeeze if needed
-        if snapshot.shape[2] == 1:
-            snapshot_for_pil = snapshot.squeeze(axis=2)  # (H, W)
-        else:
-            snapshot_for_pil = snapshot
-
-        pil_image = Image.fromarray(snapshot_for_pil.astype(np.uint8))
-        grayscale_image = pil_image.convert('L')
-        snapshot = np.array(grayscale_image)  # (H, W)
-
-        # Step 3: Add channel dimension to get (H, W, C) format
-        snapshot = np.expand_dims(snapshot, axis=-1)  # (H, W, 1)
-
-        # Step 4: Apply Transposed transform [2, 0, 1] - this goes from (H, W, C) to (C, H, W)
-        snapshot = np.transpose(snapshot, (2, 0, 1))  # (1, H, W)
-
-        # Step 5: Apply Resized transform to spatial_size [240, 320]
-        # Since we have (1, H, W), we need to work with (H, W) for cv2.resize
-        resized = cv2.resize(snapshot[0], (target_size[1], target_size[0]), interpolation=cv2.INTER_LINEAR)  # (240, 320)
-
-        # Add channel dimension back: (H, W) -> (1, H, W)
-        resized = np.expand_dims(resized, axis=0)  # (1, 240, 320)
-
-        # Step 6: Convert to tensor and ensure float32 (EnsureTyped)
-        tensor = torch.from_numpy(resized).float()  # (1, 240, 320)
-
-        # Step 7: Add batch dimension to get (1, 1, 240, 320)
-        tensor = tensor.unsqueeze(0)
-
-        return tensor
-
     def downloadAndPrepareModel(self):
         """ Download the AI model and prepare it for inference """
-        # Set the Device to run the model on
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-
-        logging.info(f"The model will run on Device: {device}")
-
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        checkpoint_dir = os.path.join(script_dir, 'Resources/checkpoints/')
-        os.makedirs(os.path.dirname(checkpoint_dir), exist_ok=True)
-
-        model_path = os.path.join(checkpoint_dir, 'model_traced_unet_dsnt.pt')
-
-        model_url = "https://www.dropbox.com/scl/fi/mnu2k4n8fju6gy1glhieb/model_traced.pt?rlkey=eb0xmwzwsoesq3mp11s8xt9xd&dl=1"
-
-        if not os.path.exists(model_path):
+        if not os.path.exists(MODEL_PATH):
             logging.info(f"The AI model does not exist. Starting download...")
             dialog = AnonymizeUltrasoundWidget.createWaitDialog(self, "Downloading AI Model", "The AI model does not exist. Downloading...")
-            success = self.download_model(model_url, model_path)
+            success = self.download_model(MODEL_URL, MODEL_PATH)
             dialog.close()
             if not success:
                 return None, None
 
         # Check if the model loaded successfully
         try:
-            model = torch.jit.load(model_path).to(device).eval()
+            device = get_device()
+            model = load_model(MODEL_PATH, device)
         except Exception as e:
             logging.error(f"Failed to load the model: {e}")
             logging.error("Automatic mode is disabled. Please define the mask manually.")
@@ -1538,7 +1679,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             return True
         except requests.exceptions.RequestException as e:
             logging.error(f"Failed to download the file: {e}")
-            # TODO: Disable the button of Auto mask generation?
             return False
 
     def showMaskContour(self, show=True):
@@ -1840,7 +1980,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
             # Create a mask image
 
-            # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
             mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
             mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
 
@@ -1855,7 +1994,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             self.maskParameters["image_size_rows"] = image_size_rows
             self.maskParameters["image_size_cols"] = image_size_cols
 
-            # logging.debug(f"Radius1: {radius1}, Radius2: {radius2}, Angle1: {angle1}, Angle2: {angle2}, Center: ({center_cols_px}, {center_rows_px})")
             return mask_array
 
     def line_coefficients(self, p1, p2):
@@ -1989,7 +2127,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # Collect image data from sequence browser as a numpy array
         image_array = self._collect_image_data_from_sequence(parameterNode)
 
-        self.dicom_file_manager.save_anonymized_dicom(
+        self.dicom_manager.save_anonymized_dicom(
             image_array=image_array,
             output_path=dicomFilePath,
             new_patient_name=new_patient_name,
@@ -2058,7 +2196,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             - Optionally saves original DICOM headers with partial anonymization
         """
         # Record sequence information to a dictionary. This will be saved in the annotations JSON file.
-        current_dicom_record = self.dicom_file_manager.dicom_df.iloc[self.dicom_file_manager.current_dicom_index]
+        current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
         SOPInstanceUID = current_dicom_record.DICOMDataset.SOPInstanceUID if current_dicom_record is not None else "None"
         if SOPInstanceUID is None:
             SOPInstanceUID = "None"
@@ -2074,19 +2212,19 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Save DICOM image file
         if output_filename is None:
-            output_filename, _, _ = self.dicom_file_manager.generate_filename_from_dicom_dataset(current_dicom_record.DICOMDataset)
+            output_filename, _, _ = self.dicom_manager.generate_filename_from_dicom_dataset(current_dicom_record.DICOMDataset)
 
         if output_filename is None or output_filename == "":
             return None, None, None
 
         # Generate complete output path with directory structure consideration
-        dicom_file_path = self.dicom_file_manager.generate_output_filepath(
+        dicom_file_path = self.dicom_manager.generate_output_filepath(
             output_directory, current_dicom_record.OutputPath, preserve_directory_structure)
 
         self.saveDicomFile(dicom_file_path, new_patient_name, new_patient_id, labels)
 
         # Save original DICOM header to a json file. This may not be completely anonymized.
-        dicom_header_file_path = self.dicom_file_manager.save_anonymized_dicom_header(current_dicom_record, output_filename, headers_directory)
+        dicom_header_file_path = self.dicom_manager.save_anonymized_dicom_header(current_dicom_record, output_filename, headers_directory)
 
         # Add mask parameters to sequenceInfo
         for key, value in self.maskParameters.items():
@@ -2222,6 +2360,480 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """Clear all cached masks."""
         self.transducerMaskCache.clear()
         logging.info("Cleared all cached masks")
+
+    def batch_auto_anonymize(
+        self,
+        input_folder: str,
+        output_folder: str,
+        headers_folder: str,
+        model_path: str = MODEL_PATH,
+        device: str = "",
+        preserve_directory_structure: bool = True,
+        resume_anonymization: bool = False,
+        skip_single_frame: bool = False,
+        hash_patient_id: bool = True,
+        overview_dir: str = "",
+        no_mask_generation: bool = False,
+    ) -> Dict[str, str]:
+        """
+        In-process batch anonymization using shared logic:
+        - Scans DICOMs into dicom_df
+        - Optionally resumes at first missing output
+        - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
+        """
+        # Force matplotlib to not use a non-osx backend to avoid slicer crash
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        if device == "":
+            device = self.get_device()
+
+        # Scan directory (filenames reflect hash_patient_id)
+        num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
+        logging.info(f"Found {num_files} DICOM files in input folder")
+
+        # Save keys.csv (drop non-serializable column)
+        if self.dicom_manager.dicom_df is not None and headers_folder:
+            try:
+                df = self.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
+                os.makedirs(headers_folder, exist_ok=True)
+                df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
+            except Exception as e:
+                raise Exception(f"Failed to save keys.csv: {e}") from e
+
+        # Determine starting index on resume
+        start_index = 0
+        # TODO: Implement resume_anonymization
+        if resume_anonymization:
+            progressed = self.dicom_manager.update_progress_from_output(output_folder, preserve_directory_structure)
+            if progressed is None:
+                logging.info("All files already processed; nothing to do.")
+                return {"status": "All files already processed; nothing to do."}
+            start_index = self.dicom_manager.next_index or 0
+
+        # Load model if masking enabled
+        model = None
+        # TODO: remove no_mask_generation and use model instead
+        if not no_mask_generation:
+            try:
+                model = load_model(model_path, device)
+                logging.info(f"Model loaded on {device}")
+            except Exception as e:
+                raise Exception(f"Failed to load model: {e}") from e
+
+        # Optional overview
+        make_overview = bool(overview_dir)
+        if make_overview:
+            os.makedirs(overview_dir, exist_ok=True)
+
+        # Progress dialog
+        total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
+        progress = qt.QProgressDialog("Auto-anonymizing...", "Cancel", 0, total, slicer.util.mainWindow())
+        progress.setWindowModality(qt.Qt.WindowModal)
+        progress.show()
+
+        success = failed = skipped = 0
+        error_messages = []
+
+        try:
+            for idx in range(start_index, total):
+                if progress.wasCanceled:
+                    logging.info("Batch auto-anonymize canceled by user.")
+                    break
+                progress.setValue(idx)
+                slicer.app.processEvents()
+
+                self.dicom_manager.current_index = idx
+                row = self.dicom_manager.dicom_df.iloc[idx]
+
+                # Build output path and skip if resuming and exists
+                final_output_path = self.dicom_manager.generate_output_filepath(
+                    output_folder, row.OutputPath, preserve_directory_structure
+                )
+
+                # TODO: implement resume_anonymization; integrate with existing setting to skip if output file exists
+                # Skip if resuming and output file exists
+                if resume_anonymization and os.path.exists(final_output_path):
+                    skipped += 1
+                    continue
+
+                try:
+                    # Read frames (N, C, H, W) -> image_array (N, H, W, C)
+                    original_image = read_frames_from_dicom(row.InputPath)
+                    orig_dims = (original_image.shape[-2], original_image.shape[-1])  # (H, W)
+                    image_array = np.transpose(original_image, (0, 2, 3, 1))
+
+                    mask_config = None
+                    curvilinear_mask = None
+
+                    if not no_mask_generation:
+                        # Preprocess + inference
+                        input_tensor = preprocess_image(original_image)  # (1,1,240,320)
+                        with torch.no_grad():
+                            coords_normalized = model(input_tensor.to(device)).cpu().numpy()
+                        coords = coords_normalized.reshape(4, 2)
+                        coords[:, 0] *= orig_dims[1]  # width
+                        coords[:, 1] *= orig_dims[0]  # height
+                        predicted_corners = {
+                            "upper_left": tuple(coords[0]),
+                            "upper_right": tuple(coords[1]),
+                            "lower_left": tuple(coords[2]),
+                            "lower_right": tuple(coords[3]),
+                        }
+                        # Build mask config + binary mask (0/1)
+                        mask_config = corner_points_to_fan_mask_config(predicted_corners, image_size=orig_dims)
+                        curvilinear_mask = create_mask(mask_config, image_size=orig_dims, intensity=1)
+
+                        # Apply mask per frame and channel
+                        masked_image_array = image_array.copy()
+                        for f in range(masked_image_array.shape[0]):
+                            for c in range(masked_image_array.shape[3]):
+                                masked_image_array[f, :, :, c] = np.multiply(masked_image_array[f, :, :, c], curvilinear_mask)
+                    else:
+                        masked_image_array = image_array
+
+                    # Derive anonymized name/id from filename (consistent with CLI)
+                    anon_filename = row.AnonFilename
+                    new_patient_name = os.path.splitext(anon_filename)[0]
+                    new_patient_id = anon_filename.split('_')[0]
+
+                    # Save anonymized DICOM
+                    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+                    self.dicom_manager.save_anonymized_dicom(
+                        image_array=masked_image_array,
+                        output_path=final_output_path,
+                        new_patient_name=new_patient_name,
+                        new_patient_id=new_patient_id,
+                        # TODO: support add labels before or after auto-anonymization (e.g., UI table with edit/delete/add or csv file upload during data cleanup
+                        labels=None
+                    )
+
+                    # Save header JSON
+                    try:
+                        self.dicom_manager.save_anonymized_dicom_header(
+                            current_dicom_record=row,
+                            output_filename=anon_filename,
+                            headers_directory=headers_folder
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to save header for {row.InputPath}: {e}")
+                        raise Exception(f"Failed to save header for {row.InputPath}: {e}") from e
+
+                    # Save sequence JSON (mask config and SOPInstanceUID)
+                    try:
+                        sequence_info = {
+                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+                            'GrayscaleConversion': False
+                        }
+                        if mask_config is not None:
+                            sequence_info['MaskConfig'] = mask_config
+                        json_path = final_output_path.replace(".dcm", ".json")
+                        with open(json_path, 'w') as outfile:
+                            json.dump(sequence_info, outfile, indent=2)
+                    except Exception as e:
+                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
+                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
+
+                    # Optional overview (first frame)
+                    if make_overview and not no_mask_generation and masked_image_array.shape[0] > 0:
+                        try:
+                            fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
+                            orig_frame = image_array[0].squeeze()
+                            masked_frame = masked_image_array[0].squeeze()
+                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
+                            axes[1].imshow(orig_frame, cmap='gray')
+                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
+                            axes[1].axis('off')
+                            axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
+                            overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
+                            plt.tight_layout()
+                            plt.savefig(os.path.join(overview_dir, overview_filename))
+                            plt.close(fig)
+                        except Exception as e:
+                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
+
+                    success += 1
+
+                except Exception as e:
+                    error_messages.append(f"Failed to process {row.InputPath}: {e} {traceback.format_exc()}")
+                    failed += 1
+
+            progress.setValue(total)
+            slicer.app.processEvents()
+        finally:
+            progress.close()
+
+        logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped: {skipped}")
+        return {"status": f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped: {skipped}", "error_messages": error_messages}
+
+    def batch_auto_anonymize_new(
+        self,
+        input_folder: str,
+        output_folder: str,
+        headers_folder: str,
+        model_path: str = MODEL_PATH,
+        device: str = "",
+        preserve_directory_structure: bool = True,
+        resume_anonymization: bool = False,
+        skip_single_frame: bool = False,
+        hash_patient_id: bool = True,
+        overview_dir: str = "",
+        # ground_truth_dir: str = "",
+        # metrics_csv_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        In-process batch anonymization using shared logic:
+        - Scans DICOMs into dicom_df
+        - Optionally resumes at first missing output
+        - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
+        - Optionally, compare anonymized DICOMs with ground truth masks and save metrics to CSV
+        - Optionally, save overview images of original, mask, and anonymized DICOMs
+        - Optionally, save metrics to CSV
+        """
+
+        # Force matplotlib to not use a non-osx backend to avoid slicer crash
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        # Scan directory (filenames reflect hash_patient_id)
+        num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
+        logging.info(f"Found {num_files} DICOM files in input folder")
+
+        # Save keys.csv (drop non-serializable column)
+        if self.dicom_manager.dicom_df is not None and headers_folder:
+            try:
+                df = self.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
+                os.makedirs(headers_folder, exist_ok=True)
+                df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
+            except Exception as e:
+                raise Exception(f"Failed to save keys.csv: {e}") from e
+
+        # Determine starting index on resume
+        start_index = 0
+        if resume_anonymization:
+            progressed = self.dicom_manager.update_progress_from_output(output_folder, preserve_directory_structure)
+            if progressed is None:
+                logging.info("All files already processed; nothing to do.")
+                return {"status": "All files already processed; nothing to do."}
+            start_index = self.dicom_manager.next_index or 0
+
+        try:
+            device = get_device(device)
+            model = load_model(model_path, device)
+            logging.info(f"Model loaded on {device}")
+        except Exception as e:
+            raise Exception(f"Failed to load model: {e}") from e
+
+        # Optional overview
+        make_overview = bool(overview_dir)
+        if make_overview:
+            os.makedirs(overview_dir, exist_ok=True)
+
+        # Metrics CSV
+        metrics_fieldnames = [
+            "dicom_output_path","dicom_filename","ground_truth_config_path","predicted_config_json",
+            "dice_mean","iou_mean","pixel_accuracy_mean","precision_mean","recall_mean",
+            "f1_mean","hausdorff_mean","sensitivity_mean","specificity_mean"
+        ]
+        if not metrics_csv_path:
+            metrics_csv_path = os.path.join(headers_folder or output_folder, "metrics.csv")
+        os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
+        metrics_file = open(metrics_csv_path, "w", newline="")
+        metrics_writer = csv.DictWriter(metrics_file, fieldnames=metrics_fieldnames)
+        metrics_writer.writeheader()
+
+        # Progress dialog
+        total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
+        progress = qt.QProgressDialog("Auto-anonymizing...", "Cancel", 0, total, slicer.util.mainWindow())
+        progress.setWindowModality(qt.Qt.WindowModal)
+        progress.show()
+
+        success = failed = skipped = 0
+        error_messages = []
+
+        try:
+            for idx in range(start_index, total):
+                if progress.wasCanceled:
+                    logging.info("Batch auto-anonymize canceled by user.")
+                    break
+                progress.setValue(idx)
+                slicer.app.processEvents()
+
+                self.dicom_manager.current_index = idx
+                row = self.dicom_manager.dicom_df.iloc[idx]
+
+                # Build output path and skip if resuming and exists
+                final_output_path = self.dicom_manager.generate_output_filepath(
+                    output_folder, row.OutputPath, preserve_directory_structure
+                )
+
+                # Skip if resuming and output file exists
+                if resume_anonymization and os.path.exists(final_output_path):
+                    logging.info(f"Skipping {row.InputPath} because it already exists")
+                    skipped += 1
+                    continue
+
+                try:
+                    # Read frames (N, C, H, W) -> image_array (N, H, W, C)
+                    original_image = read_frames_from_dicom(row.InputPath)
+                    orig_dims = (original_image.shape[-2], original_image.shape[-1])  # (H, W)
+                    image_array = np.transpose(original_image, (0, 2, 3, 1))
+
+                    mask_config = None
+                    curvilinear_mask = None
+
+                    # Preprocess + inference
+                    input_tensor = preprocess_image(original_image)  # (1,1,240,320)
+                    with torch.no_grad():
+                        coords_normalized = model(input_tensor.to(device)).cpu().numpy()
+                    coords = coords_normalized.reshape(4, 2)
+                    coords[:, 0] *= orig_dims[1]  # width
+                    coords[:, 1] *= orig_dims[0]  # height
+                    predicted_corners = {
+                        "upper_left": tuple(coords[0]),
+                        "upper_right": tuple(coords[1]),
+                        "lower_left": tuple(coords[2]),
+                        "lower_right": tuple(coords[3]),
+                    }
+
+                    # Build mask config + binary mask (0/1)
+                    # curvilinear_mask, mask_config = compute_masks_and_configs(
+                    #     original_dims=orig_dims, 
+                    #     predicted_corners=predicted_corners
+                    # )        
+                    # Build mask config + binary mask (0/1)
+                    mask_config = corner_points_to_fan_mask_config(predicted_corners, image_size=orig_dims)
+                    curvilinear_mask = create_mask(mask_config, image_size=orig_dims, intensity=1)
+
+                    # Apply mask per frame and channel
+                    masked_image_array = image_array.copy()
+                    for f in range(masked_image_array.shape[0]):
+                        for c in range(masked_image_array.shape[3]):
+                            masked_image_array[f, :, :, c] = np.multiply(masked_image_array[f, :, :, c], curvilinear_mask)
+
+                    # Derive anonymized name/id from filename (consistent with CLI)
+                    anon_filename = row.AnonFilename
+                    new_patient_name = os.path.splitext(anon_filename)[0]
+                    new_patient_id = anon_filename.split('_')[0]
+
+                    # Save anonymized DICOM
+                    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+                    self.dicom_manager.save_anonymized_dicom(
+                        image_array=masked_image_array,
+                        output_path=final_output_path,
+                        new_patient_name=new_patient_name,
+                        new_patient_id=new_patient_id,
+                        labels=None # Labels not supported yet.
+                    )
+
+                    # Save header JSON
+                    try:
+                        self.dicom_manager.save_anonymized_dicom_header(
+                            current_dicom_record=row,
+                            output_filename=anon_filename,
+                            headers_directory=headers_folder
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to save header for {row.InputPath}: {e}")
+                        raise Exception(f"Failed to save header for {row.InputPath}: {e}") from e
+
+                    # Save sequence JSON (mask config and SOPInstanceUID)
+                    try:
+                        sequence_info = {
+                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+                            'GrayscaleConversion': False
+                        }
+                        if mask_config is not None:
+                            sequence_info['MaskConfig'] = mask_config
+                        json_path = final_output_path.replace(".dcm", ".json")
+                        with open(json_path, 'w') as outfile:
+                            json.dump(sequence_info, outfile, indent=2)
+                    except Exception as e:
+                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
+                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
+
+                    # Optional overview (first frame)
+                    if make_overview and masked_image_array.shape[0] > 0:
+                        try:
+                            fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
+                            orig_frame = image_array[0].squeeze()
+                            masked_frame = masked_image_array[0].squeeze()
+                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
+                            axes[1].imshow(orig_frame, cmap='gray')
+                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
+                            axes[1].axis('off')
+                            axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
+                            overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
+                            plt.tight_layout()
+                            plt.savefig(os.path.join(overview_dir, overview_filename))
+                            plt.close(fig)
+                        except Exception as e:
+                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
+
+                    # Optional metrics
+                    gt_config_path = ""
+                    metrics_payload = {}
+                    if ground_truth_dir:
+                        gt_config_path = os.path.join(ground_truth_dir, f"{os.path.splitext(anon_filename)[0]}.json")
+                        if os.path.exists(gt_config_path):
+                            try:
+                                gt_mask_config = load_mask_config(gt_config_path)
+                                metrics_payload = compare_masks(gt_mask_config, mask_config, orig_dims)
+                            except Exception as e:
+                                logging.warning(f"Failed to compute metrics for {gt_config_path}: {e}")
+                                raise Exception(f"Failed to compute metrics for {gt_config_path}: {e}") from e
+                        else:
+                            logging.warning(f"Ground truth config not found for {anon_filename} in {ground_truth_dir}")
+
+                    row_out = {
+                        "dicom_output_path": final_output_path,
+                        "dicom_filename": anon_filename,
+                        "ground_truth_config_path": gt_config_path,
+                        "predicted_config_json": json.dumps(mask_config) if mask_config is not None else "",
+                        "dice_mean": metrics_payload.get("dice_mean", ""),
+                        "iou_mean": metrics_payload.get("iou_mean", ""),
+                        "pixel_accuracy_mean": metrics_payload.get("pixel_accuracy_mean", ""),
+                        "precision_mean": metrics_payload.get("precision_mean", ""),
+                        "recall_mean": metrics_payload.get("recall_mean", ""),
+                        "f1_mean": metrics_payload.get("f1_mean", ""),
+                        "hausdorff_mean": metrics_payload.get("hausdorff_mean", ""),
+                        "sensitivity_mean": metrics_payload.get("sensitivity_mean", ""),
+                        "specificity_mean": metrics_payload.get("specificity_mean", ""),
+                    }
+                    metrics_writer.writerow(row_out)
+
+
+                    success += 1
+
+                except Exception as e:
+                    error_messages.append(f"Failed to process {row.InputPath}: {e} {traceback.format_exc()}")
+                    logging.error(f"Failed to process {row.InputPath}: {e}")
+                    failed += 1
+
+            progress.setValue(total)
+            slicer.app.processEvents()
+        finally:
+            progress.close()
+            metrics_file.close()
+
+        logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}")
+
+        if failed > 0:
+            status = f"Batch anonymization complete with errors. Success: {success}, Failed: {failed}, Skipped: {skipped}"
+        else:
+            status = f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}"
+
+        return {
+            "status": status,
+            "success": success, 
+            "failed": failed,
+            "skipped": skipped,
+            "error_messages": error_messages
+        }
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""
