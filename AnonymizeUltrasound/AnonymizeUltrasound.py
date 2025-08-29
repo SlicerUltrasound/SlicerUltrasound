@@ -12,10 +12,17 @@ from typing import Optional, Dict, List, Any
 import time
 import json
 import shutil
+from datetime import datetime
 
 import qt
 import vtk
 import traceback
+
+# Force matplotlib to not use a non-osx backend to avoid slicer crash
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 
 import slicer
 from slicer.i18n import tr as _
@@ -35,8 +42,10 @@ from DICOMLib import DICOMUtils
 
 from common.dicom_file_manager import DicomFileManager
 from common.create_frames import read_frames_from_dicom
-from common.dcm_inference import load_model, preprocess_image, get_device
 from common.create_masks import compute_masks_and_configs
+from common.dcm_inference import load_model, preprocess_image, get_device
+from common.compare_masks import compare_masks, load_mask_config
+from common.debug import save_frame_png
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
@@ -142,6 +151,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
     AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
     AUTO_ANON_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverviewDir"
+    AUTO_ANON_GT_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeGroundTruthDir"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -211,11 +221,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.autoAnonDeviceLineEdit.text = default_device
         default_overview = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING) or ""
         self.ui.autoAnonOverviewDirLineEdit.text = default_overview
+        default_gt = settings.value(self.AUTO_ANON_GT_DIR_SETTING) or ""
+        self.ui.autoAnonGroundTruthDirLineEdit.text = default_gt
 
         # Persist user edits
         self.ui.autoAnonModelPathLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_MODEL_PATH_SETTING, t))
         self.ui.autoAnonDeviceLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_DEVICE_SETTING, t))
         self.ui.autoAnonOverviewDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_OVERVIEW_DIR_SETTING, t))
+        self.ui.autoAnonGroundTruthDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_GT_DIR_SETTING, t))
 
         # Run button
         self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
@@ -793,6 +806,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         model_path = (self.ui.autoAnonModelPathLineEdit.text or MODEL_PATH).strip()
         device = (self.ui.autoAnonDeviceLineEdit.text or "").strip()
         overview_dir = (self.ui.autoAnonOverviewDirLineEdit.text or "").strip()
+        ground_truth_dir = (self.ui.autoAnonGroundTruthDirLineEdit.text or "").strip()
 
         skip_single = self.ui.skipSingleframeCheckBox.checked
         hash_pid = self.ui.hashPatientIdCheckBox.checked
@@ -814,10 +828,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 skip_single_frame=skip_single,
                 hash_patient_id=hash_pid,
                 overview_dir=overview_dir,
+                ground_truth_dir=ground_truth_dir,
+                metrics_csv_path=os.path.join(hdr_dir, f"{os.path.basename(in_dir)}_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"),
             )
             self.ui.statusLabel.text = result['status']
-            if result['failed'] > 0:
-                slicer.util.errorDisplay("Failed to anonymize some files. See log for details.\n" + "\n".join(result['error_messages']))
         except Exception as e:
             logging.error(f"Auto‑anonymize failed: {e} {traceback.format_exc()}")
             slicer.util.errorDisplay(str(e))
@@ -2366,18 +2380,18 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         skip_single_frame: bool = False,
         hash_patient_id: bool = True,
         overview_dir: str = "",
+        ground_truth_dir: str = "",
+        metrics_csv_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         In-process batch anonymization using shared logic:
         - Scans DICOMs into dicom_df
         - Optionally resumes at first missing output
         - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
+        - Optionally, compare anonymized DICOMs with ground truth masks and save metrics to CSV
+        - Optionally, save overview images of original, mask, and anonymized DICOMs
+        - Optionally, save metrics to CSV
         """
-        # Force matplotlib to not use a non-osx backend to avoid slicer crash
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-
         # Scan directory (filenames reflect hash_patient_id)
         num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
         logging.info(f"Found {num_files} DICOM files in input folder")
@@ -2412,6 +2426,19 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         if make_overview:
             os.makedirs(overview_dir, exist_ok=True)
 
+        # Metrics CSV
+        metrics_fieldnames = [
+            "dicom_output_path","dicom_filename","ground_truth_config_path","predicted_config_json",
+            "dice_mean","iou_mean","pixel_accuracy_mean","precision_mean","recall_mean",
+            "f1_mean","sensitivity_mean","specificity_mean"
+        ]
+        if not metrics_csv_path:
+            metrics_csv_path = os.path.join(headers_folder or output_folder, "metrics.csv")
+        os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
+        metrics_file = open(metrics_csv_path, "w", newline="")
+        metrics_writer = csv.DictWriter(metrics_file, fieldnames=metrics_fieldnames)
+        metrics_writer.writeheader()
+
         # Progress dialog
         total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
         progress = qt.QProgressDialog("Auto-anonymizing...", "Cancel", 0, total, slicer.util.mainWindow())
@@ -2444,6 +2471,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     continue
 
                 try:
+                    #TODO(ddinh) extract common code with getAutoMask
                     # Read frames (N, C, H, W) -> image_array (N, H, W, C)
                     original_image = read_frames_from_dicom(row.InputPath)
                     orig_dims = (original_image.shape[-2], original_image.shape[-1])  # (H, W)
@@ -2459,18 +2487,35 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     coords = coords_normalized.reshape(4, 2)
                     coords[:, 0] *= orig_dims[1]  # width
                     coords[:, 1] *= orig_dims[0]  # height
+
+                    top_left = np.array(coords[0])
+                    top_right = np.array(coords[1])
+                    bottom_left = np.array(coords[2])
+                    bottom_right = np.array(coords[3])
+                    # Merge top_left and top_right if very close
+                    norm = np.linalg.norm(top_left - top_right)
+                    if norm < 15.0:
+                        merged_top = (top_left + top_right) / 2
+                        logging.debug(f"Norm: {norm}, Merged Top: {merged_top}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
+                        coords_ras = np.array([merged_top, bottom_left, bottom_right])
+                    else:
+                        logging.debug(f"Norm: {norm}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
+                        coords_ras = np.array([top_left, top_right, bottom_left, bottom_right])
+
+                    logging.debug(f"Coords RAS: {coords_ras}")
+
                     predicted_corners = {
-                        "upper_left": tuple(coords[0]),
-                        "upper_right": tuple(coords[1]),
-                        "lower_left": tuple(coords[2]),
-                        "lower_right": tuple(coords[3]),
+                        "upper_left": tuple(coords_ras[0]),
+                        "upper_right": tuple(coords_ras[1]),
+                        "lower_left": tuple(coords_ras[2]),
+                        "lower_right": tuple(coords_ras[3]),
                     }
 
                     # Build mask config + binary mask (0/1)
                     curvilinear_mask, mask_config = compute_masks_and_configs(
-                        original_dims=orig_dims, 
+                        original_dims=orig_dims,
                         predicted_corners=predicted_corners
-                    )        
+                    )
 
                     # Apply mask per frame and channel
                     masked_image_array = image_array.copy()
@@ -2538,6 +2583,38 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         except Exception as e:
                             logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
 
+                    # Optional metrics
+                    gt_config_path = ""
+                    metrics_payload = {}
+                    if ground_truth_dir:
+                        gt_config_path = os.path.join(ground_truth_dir, f"{os.path.splitext(anon_filename)[0]}.json")
+                        if os.path.exists(gt_config_path):
+                            try:
+                                gt_mask_config = load_mask_config(gt_config_path)
+                                metrics_payload = compare_masks(gt_mask_config, mask_config, orig_dims)
+                            except Exception as e:
+                                logging.warning(f"Failed to compute metrics for {gt_config_path}: {e}")
+                                raise Exception(f"Failed to compute metrics for {gt_config_path}: {e}") from e
+                        else:
+                            logging.warning(f"Ground truth config not found for {anon_filename} in {ground_truth_dir}")
+
+                    row_out = {
+                        "dicom_output_path": final_output_path,
+                        "dicom_filename": anon_filename,
+                        "ground_truth_config_path": gt_config_path,
+                        "predicted_config_json": json.dumps(mask_config) if mask_config is not None else "",
+                        "dice_mean": metrics_payload.get("dice_mean", ""),
+                        "iou_mean": metrics_payload.get("iou_mean", ""),
+                        "pixel_accuracy_mean": metrics_payload.get("pixel_accuracy_mean", ""),
+                        "precision_mean": metrics_payload.get("precision_mean", ""),
+                        "recall_mean": metrics_payload.get("recall_mean", ""),
+                        "f1_mean": metrics_payload.get("f1_mean", ""),
+                        "sensitivity_mean": metrics_payload.get("sensitivity_mean", ""),
+                        "specificity_mean": metrics_payload.get("specificity_mean", ""),
+                    }
+                    logging.info(f"metrics: {row_out}")
+                    metrics_writer.writerow(row_out)
+
                     success += 1
 
                 except Exception as e:
@@ -2549,6 +2626,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             slicer.app.processEvents()
         finally:
             progress.close()
+            metrics_file.close()
 
         logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}")
 
