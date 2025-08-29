@@ -12,6 +12,7 @@ from typing import Optional, Dict, List, Any
 import time
 import json
 import shutil
+from datetime import datetime
 
 import qt
 import vtk
@@ -35,8 +36,9 @@ from DICOMLib import DICOMUtils
 
 from common.dicom_file_manager import DicomFileManager
 from common.create_frames import read_frames_from_dicom
+from common.create_masks import corner_points_to_fan_mask_config, create_mask
 from common.dcm_inference import load_model, preprocess_image, get_device
-from common.create_masks import compute_masks_and_configs
+from common.compare_masks import compare_masks, load_mask_config
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
@@ -142,6 +144,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
     AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
     AUTO_ANON_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverviewDir"
+    AUTO_ANON_GT_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeGroundTruthDir"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -211,11 +214,14 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.autoAnonDeviceLineEdit.text = default_device
         default_overview = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING) or ""
         self.ui.autoAnonOverviewDirLineEdit.text = default_overview
+        default_gt = settings.value(self.AUTO_ANON_GT_DIR_SETTING) or ""
+        self.ui.autoAnonGroundTruthDirLineEdit.text = default_gt
 
         # Persist user edits
         self.ui.autoAnonModelPathLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_MODEL_PATH_SETTING, t))
         self.ui.autoAnonDeviceLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_DEVICE_SETTING, t))
         self.ui.autoAnonOverviewDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_OVERVIEW_DIR_SETTING, t))
+        self.ui.autoAnonGroundTruthDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_GT_DIR_SETTING, t))
 
         # Run button
         self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
@@ -793,6 +799,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         model_path = (self.ui.autoAnonModelPathLineEdit.text or MODEL_PATH).strip()
         device = (self.ui.autoAnonDeviceLineEdit.text or "").strip()
         overview_dir = (self.ui.autoAnonOverviewDirLineEdit.text or "").strip()
+        ground_truth_dir = (self.ui.autoAnonGroundTruthDirLineEdit.text or "").strip()
 
         skip_single = self.ui.skipSingleframeCheckBox.checked
         hash_pid = self.ui.hashPatientIdCheckBox.checked
@@ -814,10 +821,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 skip_single_frame=skip_single,
                 hash_patient_id=hash_pid,
                 overview_dir=overview_dir,
+                # ground_truth_dir=ground_truth_dir,
+                # metrics_csv_path=os.path.join(hdr_dir, f"{os.path.basename(in_dir)}_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"),
             )
             self.ui.statusLabel.text = result['status']
-            if result['failed'] > 0:
-                slicer.util.errorDisplay("Failed to anonymize some files. See log for details.\n" + "\n".join(result['error_messages']))
         except Exception as e:
             logging.error(f"Auto‑anonymize failed: {e} {traceback.format_exc()}")
             slicer.util.errorDisplay(str(e))
@@ -2366,13 +2373,226 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         skip_single_frame: bool = False,
         hash_patient_id: bool = True,
         overview_dir: str = "",
-    ) -> Dict[str, Any]:
+        no_mask_generation: bool = False,
+    ) -> Dict[str, str]:
         """
         In-process batch anonymization using shared logic:
         - Scans DICOMs into dicom_df
         - Optionally resumes at first missing output
         - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
         """
+        # Force matplotlib to not use a non-osx backend to avoid slicer crash
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        if device == "":
+            device = self.get_device()
+
+        # Scan directory (filenames reflect hash_patient_id)
+        num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
+        logging.info(f"Found {num_files} DICOM files in input folder")
+
+        # Save keys.csv (drop non-serializable column)
+        if self.dicom_manager.dicom_df is not None and headers_folder:
+            try:
+                df = self.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
+                os.makedirs(headers_folder, exist_ok=True)
+                df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
+            except Exception as e:
+                raise Exception(f"Failed to save keys.csv: {e}") from e
+
+        # Determine starting index on resume
+        start_index = 0
+        # TODO: Implement resume_anonymization
+        if resume_anonymization:
+            progressed = self.dicom_manager.update_progress_from_output(output_folder, preserve_directory_structure)
+            if progressed is None:
+                logging.info("All files already processed; nothing to do.")
+                return {"status": "All files already processed; nothing to do."}
+            start_index = self.dicom_manager.next_index or 0
+
+        # Load model if masking enabled
+        model = None
+        # TODO: remove no_mask_generation and use model instead
+        if not no_mask_generation:
+            try:
+                model = load_model(model_path, device)
+                logging.info(f"Model loaded on {device}")
+            except Exception as e:
+                raise Exception(f"Failed to load model: {e}") from e
+
+        # Optional overview
+        make_overview = bool(overview_dir)
+        if make_overview:
+            os.makedirs(overview_dir, exist_ok=True)
+
+        # Progress dialog
+        total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
+        progress = qt.QProgressDialog("Auto-anonymizing...", "Cancel", 0, total, slicer.util.mainWindow())
+        progress.setWindowModality(qt.Qt.WindowModal)
+        progress.show()
+
+        success = failed = skipped = 0
+        error_messages = []
+
+        try:
+            for idx in range(start_index, total):
+                if progress.wasCanceled:
+                    logging.info("Batch auto-anonymize canceled by user.")
+                    break
+                progress.setValue(idx)
+                slicer.app.processEvents()
+
+                self.dicom_manager.current_index = idx
+                row = self.dicom_manager.dicom_df.iloc[idx]
+
+                # Build output path and skip if resuming and exists
+                final_output_path = self.dicom_manager.generate_output_filepath(
+                    output_folder, row.OutputPath, preserve_directory_structure
+                )
+
+                # TODO: implement resume_anonymization; integrate with existing setting to skip if output file exists
+                # Skip if resuming and output file exists
+                if resume_anonymization and os.path.exists(final_output_path):
+                    skipped += 1
+                    continue
+
+                try:
+                    # Read frames (N, C, H, W) -> image_array (N, H, W, C)
+                    original_image = read_frames_from_dicom(row.InputPath)
+                    orig_dims = (original_image.shape[-2], original_image.shape[-1])  # (H, W)
+                    image_array = np.transpose(original_image, (0, 2, 3, 1))
+
+                    mask_config = None
+                    curvilinear_mask = None
+
+                    if not no_mask_generation:
+                        # Preprocess + inference
+                        input_tensor = preprocess_image(original_image)  # (1,1,240,320)
+                        with torch.no_grad():
+                            coords_normalized = model(input_tensor.to(device)).cpu().numpy()
+                        coords = coords_normalized.reshape(4, 2)
+                        coords[:, 0] *= orig_dims[1]  # width
+                        coords[:, 1] *= orig_dims[0]  # height
+                        predicted_corners = {
+                            "upper_left": tuple(coords[0]),
+                            "upper_right": tuple(coords[1]),
+                            "lower_left": tuple(coords[2]),
+                            "lower_right": tuple(coords[3]),
+                        }
+                        # Build mask config + binary mask (0/1)
+                        mask_config = corner_points_to_fan_mask_config(predicted_corners, image_size=orig_dims)
+                        curvilinear_mask = create_mask(mask_config, image_size=orig_dims, intensity=1)
+
+                        # Apply mask per frame and channel
+                        masked_image_array = image_array.copy()
+                        for f in range(masked_image_array.shape[0]):
+                            for c in range(masked_image_array.shape[3]):
+                                masked_image_array[f, :, :, c] = np.multiply(masked_image_array[f, :, :, c], curvilinear_mask)
+                    else:
+                        masked_image_array = image_array
+
+                    # Derive anonymized name/id from filename (consistent with CLI)
+                    anon_filename = row.AnonFilename
+                    new_patient_name = os.path.splitext(anon_filename)[0]
+                    new_patient_id = anon_filename.split('_')[0]
+
+                    # Save anonymized DICOM
+                    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+                    self.dicom_manager.save_anonymized_dicom(
+                        image_array=masked_image_array,
+                        output_path=final_output_path,
+                        new_patient_name=new_patient_name,
+                        new_patient_id=new_patient_id,
+                        # TODO: support add labels before or after auto-anonymization (e.g., UI table with edit/delete/add or csv file upload during data cleanup
+                        labels=None
+                    )
+
+                    # Save header JSON
+                    try:
+                        self.dicom_manager.save_anonymized_dicom_header(
+                            current_dicom_record=row,
+                            output_filename=anon_filename,
+                            headers_directory=headers_folder
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to save header for {row.InputPath}: {e}")
+                        raise Exception(f"Failed to save header for {row.InputPath}: {e}") from e
+
+                    # Save sequence JSON (mask config and SOPInstanceUID)
+                    try:
+                        sequence_info = {
+                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+                            'GrayscaleConversion': False
+                        }
+                        if mask_config is not None:
+                            sequence_info['MaskConfig'] = mask_config
+                        json_path = final_output_path.replace(".dcm", ".json")
+                        with open(json_path, 'w') as outfile:
+                            json.dump(sequence_info, outfile, indent=2)
+                    except Exception as e:
+                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
+                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
+
+                    # Optional overview (first frame)
+                    if make_overview and not no_mask_generation and masked_image_array.shape[0] > 0:
+                        try:
+                            fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
+                            orig_frame = image_array[0].squeeze()
+                            masked_frame = masked_image_array[0].squeeze()
+                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
+                            axes[1].imshow(orig_frame, cmap='gray')
+                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
+                            axes[1].axis('off')
+                            axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
+                            overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
+                            plt.tight_layout()
+                            plt.savefig(os.path.join(overview_dir, overview_filename))
+                            plt.close(fig)
+                        except Exception as e:
+                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
+
+                    success += 1
+
+                except Exception as e:
+                    error_messages.append(f"Failed to process {row.InputPath}: {e} {traceback.format_exc()}")
+                    failed += 1
+
+            progress.setValue(total)
+            slicer.app.processEvents()
+        finally:
+            progress.close()
+
+        logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped: {skipped}")
+        return {"status": f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped: {skipped}", "error_messages": error_messages}
+
+    def batch_auto_anonymize_new(
+        self,
+        input_folder: str,
+        output_folder: str,
+        headers_folder: str,
+        model_path: str = MODEL_PATH,
+        device: str = "",
+        preserve_directory_structure: bool = True,
+        resume_anonymization: bool = False,
+        skip_single_frame: bool = False,
+        hash_patient_id: bool = True,
+        overview_dir: str = "",
+        # ground_truth_dir: str = "",
+        # metrics_csv_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        In-process batch anonymization using shared logic:
+        - Scans DICOMs into dicom_df
+        - Optionally resumes at first missing output
+        - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
+        - Optionally, compare anonymized DICOMs with ground truth masks and save metrics to CSV
+        - Optionally, save overview images of original, mask, and anonymized DICOMs
+        - Optionally, save metrics to CSV
+        """
+
         # Force matplotlib to not use a non-osx backend to avoid slicer crash
         import matplotlib
         matplotlib.use('Agg')
@@ -2411,6 +2631,19 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         make_overview = bool(overview_dir)
         if make_overview:
             os.makedirs(overview_dir, exist_ok=True)
+
+        # Metrics CSV
+        metrics_fieldnames = [
+            "dicom_output_path","dicom_filename","ground_truth_config_path","predicted_config_json",
+            "dice_mean","iou_mean","pixel_accuracy_mean","precision_mean","recall_mean",
+            "f1_mean","hausdorff_mean","sensitivity_mean","specificity_mean"
+        ]
+        if not metrics_csv_path:
+            metrics_csv_path = os.path.join(headers_folder or output_folder, "metrics.csv")
+        os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
+        metrics_file = open(metrics_csv_path, "w", newline="")
+        metrics_writer = csv.DictWriter(metrics_file, fieldnames=metrics_fieldnames)
+        metrics_writer.writeheader()
 
         # Progress dialog
         total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
@@ -2467,10 +2700,13 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     }
 
                     # Build mask config + binary mask (0/1)
-                    curvilinear_mask, mask_config = compute_masks_and_configs(
-                        original_dims=orig_dims, 
-                        predicted_corners=predicted_corners
-                    )        
+                    # curvilinear_mask, mask_config = compute_masks_and_configs(
+                    #     original_dims=orig_dims, 
+                    #     predicted_corners=predicted_corners
+                    # )        
+                    # Build mask config + binary mask (0/1)
+                    mask_config = corner_points_to_fan_mask_config(predicted_corners, image_size=orig_dims)
+                    curvilinear_mask = create_mask(mask_config, image_size=orig_dims, intensity=1)
 
                     # Apply mask per frame and channel
                     masked_image_array = image_array.copy()
@@ -2538,6 +2774,39 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         except Exception as e:
                             logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
 
+                    # Optional metrics
+                    gt_config_path = ""
+                    metrics_payload = {}
+                    if ground_truth_dir:
+                        gt_config_path = os.path.join(ground_truth_dir, f"{os.path.splitext(anon_filename)[0]}.json")
+                        if os.path.exists(gt_config_path):
+                            try:
+                                gt_mask_config = load_mask_config(gt_config_path)
+                                metrics_payload = compare_masks(gt_mask_config, mask_config, orig_dims)
+                            except Exception as e:
+                                logging.warning(f"Failed to compute metrics for {gt_config_path}: {e}")
+                                raise Exception(f"Failed to compute metrics for {gt_config_path}: {e}") from e
+                        else:
+                            logging.warning(f"Ground truth config not found for {anon_filename} in {ground_truth_dir}")
+
+                    row_out = {
+                        "dicom_output_path": final_output_path,
+                        "dicom_filename": anon_filename,
+                        "ground_truth_config_path": gt_config_path,
+                        "predicted_config_json": json.dumps(mask_config) if mask_config is not None else "",
+                        "dice_mean": metrics_payload.get("dice_mean", ""),
+                        "iou_mean": metrics_payload.get("iou_mean", ""),
+                        "pixel_accuracy_mean": metrics_payload.get("pixel_accuracy_mean", ""),
+                        "precision_mean": metrics_payload.get("precision_mean", ""),
+                        "recall_mean": metrics_payload.get("recall_mean", ""),
+                        "f1_mean": metrics_payload.get("f1_mean", ""),
+                        "hausdorff_mean": metrics_payload.get("hausdorff_mean", ""),
+                        "sensitivity_mean": metrics_payload.get("sensitivity_mean", ""),
+                        "specificity_mean": metrics_payload.get("specificity_mean", ""),
+                    }
+                    metrics_writer.writerow(row_out)
+
+
                     success += 1
 
                 except Exception as e:
@@ -2549,6 +2818,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             slicer.app.processEvents()
         finally:
             progress.close()
+            metrics_file.close()
 
         logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}")
 
