@@ -98,9 +98,9 @@ def main():
     ]
 
     # Run each test suite
-    # for directory, description in test_suites:
-    #     success = run_tests_in_directory(directory, description, pytest_args)
-    #     results.append((description, success))
+    for directory, description in test_suites:
+        success = run_tests_in_directory(directory, description, pytest_args)
+        results.append((description, success))
 
     # Run common tests separately
     success = run_common_tests(pytest_args)

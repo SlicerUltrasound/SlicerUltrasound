@@ -11,18 +11,8 @@ from unittest.mock import Mock, patch
 from pathlib import Path
 import json
 
-# Mock slicer module for testing
-sys.modules['slicer'] = Mock()
-sys.modules['slicer.app'] = Mock()
-sys.modules['slicer.util'] = Mock()
-sys.modules['slicer.mrmlScene'] = Mock()
-sys.modules['qt'] = Mock()
-sys.modules['vtk'] = Mock()
-sys.modules['DICOMLib'] = Mock()
-sys.modules['DICOMLib.DICOMUtils'] = Mock()
-
 # Import the module under test
-from common.dicom_file_manager import DicomFileManager
+from ..dicom_file_manager import DicomFileManager
 
 class TestDicomFileManager:
     """Test suite for DicomFileManager class"""
@@ -216,7 +206,6 @@ class TestDicomFileManager:
         """Test DicomFileManager initialization"""
         assert manager.dicom_df is None
         assert manager.next_index == 0
-        assert manager._temp_directories == []
 
     def test_get_transducer_model_valid(self, manager):
         """Test transducer model extraction with valid input"""
@@ -501,7 +490,7 @@ class TestDicomFileManager:
         manager.dicom_df = pd.DataFrame({'test': [1, 2, 3]})
         manager.next_index = 0
 
-        result = manager._increment_dicom_index()
+        result = manager.increment_dicom_index()
         assert result is True
         assert manager.next_index == 1
 
@@ -510,7 +499,7 @@ class TestDicomFileManager:
         manager.dicom_df = pd.DataFrame({'test': [1, 2]})
         manager.next_index = 1
 
-        result = manager._increment_dicom_index()
+        result = manager.increment_dicom_index()
         assert result is False
         assert manager.next_index == 2
 
@@ -529,19 +518,19 @@ class TestDicomFileManager:
         # file3.dcm and file4.dcm don't exist
 
         # Test increment with continue_progress=True
-        result = manager._increment_dicom_index(temp_dir, continue_progress=True)
+        result = manager.increment_dicom_index(temp_dir, continue_progress=True)
 
         # Should skip to file3.dcm (index 2) since file1.dcm and file2.dcm already exist
         assert result is True
         assert manager.next_index == 2
 
         # Test increment again - should go to file4.dcm (index 3)
-        result = manager._increment_dicom_index(temp_dir, continue_progress=True)
+        result = manager.increment_dicom_index(temp_dir, continue_progress=True)
         assert result is True
         assert manager.next_index == 3
 
         # Test increment again - should go beyond end (index 4)
-        result = manager._increment_dicom_index(temp_dir, continue_progress=True)
+        result = manager.increment_dicom_index(temp_dir, continue_progress=True)
         assert result is False
         assert manager.next_index == 4
 
@@ -558,7 +547,7 @@ class TestDicomFileManager:
         os.makedirs(os.path.join(temp_dir, 'dir2'))
         Path(os.path.join(temp_dir, 'dir2', 'file2.dcm')).touch()
 
-        result = manager._increment_dicom_index(
+        result = manager.increment_dicom_index(
             temp_dir,
             continue_progress=True,
             preserve_directory_structure=True
@@ -581,7 +570,7 @@ class TestDicomFileManager:
         os.makedirs(os.path.join(temp_dir, 'dir2'))
         Path(os.path.join(temp_dir, 'dir2', 'file2.dcm')).touch()
 
-        result = manager._increment_dicom_index(
+        result = manager.increment_dicom_index(
             temp_dir,
             continue_progress=True,
             preserve_directory_structure=False
@@ -591,65 +580,6 @@ class TestDicomFileManager:
         # second file in the input directory since the first file already exists in the output directory.
         assert manager.next_index == 1
         assert result is True
-
-    @patch('os.path.exists')
-    @patch('shutil.rmtree')
-    def test_cleanup_temp_directory(self, mock_rmtree, mock_exists, manager):
-        """Test temporary directory cleanup"""
-        temp_dir = "/tmp/test_dir"
-        manager._temp_directories = [temp_dir]
-        mock_exists.return_value = True
-
-        manager._cleanup_temp_directory(temp_dir)
-
-        mock_rmtree.assert_called_once_with(temp_dir)
-        assert temp_dir not in manager._temp_directories
-
-    @patch('os.path.exists')
-    @patch('shutil.rmtree')
-    def test_cleanup_temp_directory_not_exists(self, mock_rmtree, mock_exists, manager):
-        """Test cleanup of non-existent directory"""
-        temp_dir = "/tmp/nonexistent"
-        manager._temp_directories = [temp_dir]
-        mock_exists.return_value = False
-
-        manager._cleanup_temp_directory(temp_dir)
-
-        mock_rmtree.assert_not_called()
-        assert temp_dir not in manager._temp_directories
-
-    @patch('os.walk')
-    @patch.object(DicomFileManager, '_create_progress_dialog')
-    @patch.object(DicomFileManager, '_extract_dicom_info')
-    @patch.object(DicomFileManager, '_create_dataframe')
-    def test_scan_directory_integration(self, mock_create_df, mock_extract, mock_dialog, mock_walk, manager):
-        """Test the full scan_directory integration"""
-        # Mock os.walk to return test files
-        mock_walk.return_value = [
-            ("/test", [], ["file1.dcm", "file2.txt", "file3.dcm"])
-        ]
-
-        # Mock progress dialog
-        mock_progress = Mock()
-        mock_dialog.return_value = mock_progress
-
-        # Mock extract_dicom_info to return valid data for .dcm files only
-        def extract_side_effect(file_path, input_folder, skip_single_frame):
-            if file_path.endswith('.dcm'):
-                return ["mock", "data"]
-            return None
-
-        mock_extract.side_effect = extract_side_effect
-
-        # Mock create_dataframe
-        manager.dicom_df = pd.DataFrame({'test': [1, 2]})
-
-        result = manager.scan_directory("/test", False)
-
-        assert result == 2
-        assert mock_extract.call_count == 2  # Only called for .dcm files
-        mock_create_df.assert_called_once()
-        mock_progress.close.assert_called_once()
 
     @patch('pydicom.dcmread')
     def test_extract_dicom_info_read_error(self, mock_dcmread, manager, temp_dir):
@@ -661,19 +591,6 @@ class TestDicomFileManager:
 
         result = manager._extract_dicom_info(test_file, self.INPUT_FOLDER, False)
         assert result is None
-
-    @patch('shutil.rmtree')
-    def test_cleanup_temp_directory_error(self, mock_rmtree, manager):
-        """Test error handling in temp directory cleanup"""
-        mock_rmtree.side_effect = PermissionError("Cannot delete directory")
-        temp_dir = "/tmp/test_dir"
-        manager._temp_directories = [temp_dir]
-
-        # Should not raise exception
-        manager._cleanup_temp_directory(temp_dir)
-
-        # Directory should still be removed from tracking list
-        assert temp_dir not in manager._temp_directories
 
     def test_save_anonymized_dicom_no_dataframe(self, manager, sample_image_array_single_frame, temp_dir):
         """Test save_anonymized_dicom with no dataframe"""
@@ -1316,77 +1233,6 @@ class TestDicomFileManager:
 
         assert result_preserve == "/output/file.dcm"
         assert result_flatten == "/output/file.dcm"
-
-    def test_load_sequence_success_with_sequence_browser(self, manager_with_data):
-        """Test successful load_sequence with sequence browser found"""
-        parameter_node = Mock()
-        mock_sequence_browser = Mock()
-        mock_sequence_browser.IsA.return_value = True
-        temp_dir = "/tmp/test_dir"
-
-        with patch.object(manager_with_data, '_setup_temp_directory', return_value=temp_dir) as mock_setup, \
-            patch.object(manager_with_data, '_load_dicom_from_temp', return_value=['node1', 'node2']) as mock_load, \
-            patch.object(manager_with_data, '_find_sequence_browser', return_value=mock_sequence_browser) as mock_find, \
-            patch.object(manager_with_data, '_increment_dicom_index', return_value=True) as mock_increment, \
-            patch.object(manager_with_data, '_cleanup_temp_directory') as mock_cleanup, \
-            patch('shutil.copy') as mock_copy:
-
-            result = manager_with_data.load_sequence(parameter_node)
-
-            # Verify calls
-            mock_setup.assert_called_once()
-            mock_copy.assert_called_once_with(manager_with_data.dicom_df.iloc[0]['InputPath'], temp_dir)
-            mock_load.assert_called_once_with(temp_dir)
-            mock_find.assert_called_once_with(['node1', 'node2'])
-            mock_increment.assert_called_once_with(None, False, True)
-            mock_cleanup.assert_called_once_with(temp_dir)
-
-            # Verify parameter node is updated
-            assert parameter_node.ultrasoundSequenceBrowser == mock_sequence_browser
-
-            # Verify return value
-            assert result == (0, mock_sequence_browser)
-            assert manager_with_data.current_index == 0
-
-    def test_load_sequence_no_dataframe(self, manager):
-        """Test load_sequence with no dataframe returns None, None"""
-        parameter_node = Mock()
-
-        result = manager.load_sequence(parameter_node)
-
-        assert result == (None, None)
-
-    def test_load_sequence_none_next_index(self, manager_with_data):
-        """Test load_sequence with None next_index returns None, None"""
-        parameter_node = Mock()
-        manager_with_data.next_index = None
-
-        result = manager_with_data.load_sequence(parameter_node)
-
-        assert result == (None, None)
-
-    def test_load_sequence_index_out_of_bounds(self, manager_with_data):
-        """Test load_sequence with next_index >= dataframe length"""
-        parameter_node = Mock()
-        manager_with_data.next_index = len(manager_with_data.dicom_df)
-
-        result = manager_with_data.load_sequence(parameter_node)
-
-        assert result == (None, None)
-
-    def test_load_sequence_no_sequence_browser_found(self, manager_with_data):
-        parameter_node = Mock()
-        temp_dir = "/tmp/test_dir"
-
-        with patch.object(manager_with_data, '_setup_temp_directory', return_value=temp_dir), \
-            patch.object(manager_with_data, '_load_dicom_from_temp', return_value=['node1', 'node2']), \
-            patch.object(manager_with_data, '_find_sequence_browser', return_value=None), \
-            patch.object(manager_with_data, '_cleanup_temp_directory'), \
-            patch('shutil.copy'):
-
-            result = manager_with_data.load_sequence(parameter_node)
-
-            assert result == (None, None)
 
     def test_save_anonymized_dicom_creates_nested_directories(self, manager_with_data, sample_image_array_single_frame, temp_dir):
         nested_output_path = os.path.join(temp_dir, "patient", "study", "series", "output.dcm")
