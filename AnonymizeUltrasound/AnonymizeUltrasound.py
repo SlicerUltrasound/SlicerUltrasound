@@ -2447,6 +2447,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         success = failed = skipped = 0
         error_messages = []
+        overview_manifest = []
+        overview_pdf_path = ""
 
         try:
             for idx in range(start_index, total):
@@ -2549,41 +2551,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         logging.warning(f"Failed to save header for {row.InputPath}: {e}")
                         raise Exception(f"Failed to save header for {row.InputPath}: {e}") from e
 
-                    # Save sequence JSON (mask config and SOPInstanceUID)
-                    try:
-                        sequence_info = {
-                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
-                            'GrayscaleConversion': False
-                        }
-                        if mask_config is not None:
-                            sequence_info['MaskConfig'] = mask_config
-                        json_path = final_output_path.replace(".dcm", ".json")
-                        with open(json_path, 'w') as outfile:
-                            json.dump(sequence_info, outfile, indent=2)
-                    except Exception as e:
-                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
-                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
-
-                    # Optional overview (first frame)
-                    if make_overview and masked_image_array.shape[0] > 0:
-                        try:
-                            fig, axes = plt.subplots(1, 3, figsize=(18, 4))
-                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
-                            orig_frame = image_array[0].squeeze()
-                            masked_frame = masked_image_array[0].squeeze()
-                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
-                            axes[1].imshow(orig_frame, cmap='gray')
-                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
-                            axes[1].axis('off')
-                            axes[2].imshow(masked_frame, cmap='gray'); axes[2].axis('off')
-                            overview_filename = f"{os.path.splitext(anon_filename)[0]}_overview.png"
-                            plt.tight_layout()
-                            plt.savefig(os.path.join(overview_dir, overview_filename))
-                            plt.close(fig)
-                        except Exception as e:
-                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
-
-                    # Optional metrics
+                    # Compute metrics
                     gt_config_path = ""
                     metrics_payload = {}
                     if ground_truth_dir:
@@ -2615,6 +2583,85 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     logging.info(f"metrics: {row_out}")
                     metrics_writer.writerow(row_out)
 
+                    # Save sequence JSON (mask config and SOPInstanceUID)
+                    try:
+                        sequence_info = {
+                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+                            'GrayscaleConversion': False
+                        }
+                        if mask_config is not None:
+                            sequence_info['MaskConfig'] = mask_config
+                        json_path = final_output_path.replace(".dcm", ".json")
+                        with open(json_path, 'w') as outfile:
+                            json.dump(sequence_info, outfile, indent=2)
+                    except Exception as e:
+                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
+                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
+
+                    # Overview with metrics if Ground Truth is provided
+                    if make_overview and masked_image_array.shape[0] > 0:
+                        try:
+                            fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=300)
+                            fig.patch.set_facecolor('white')
+                            for ax in axes:
+                                ax.set_facecolor('white')
+
+                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
+
+                            orig_frame = image_array[0].squeeze()
+                            masked_frame = masked_image_array[0].squeeze()
+                            mask2d = (curvilinear_mask > 0)
+
+                            # Helper to apply white background outside the fan
+                            def _with_white_bg(frame, mask2d):
+                                if frame.ndim == 2:
+                                    out = frame.copy()
+                                    out[~mask2d] = 255
+                                    return out, 'gray'
+                                elif frame.ndim == 3 and frame.shape[2] == 3:
+                                    out = frame.copy()
+                                    m3 = np.repeat((~mask2d)[..., None], 3, axis=2)
+                                    out[m3] = 255
+                                    return out, None
+                                else:
+                                    # single-channel but kept as HxWx1
+                                    out = frame[..., 0].copy()
+                                    out[~mask2d] = 255
+                                    return out, 'gray'
+
+                            masked_disp, cmap2 = _with_white_bg(masked_frame, mask2d)
+
+                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
+                            axes[1].imshow(orig_frame, cmap='gray')
+                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
+                            axes[1].axis('off')
+                            axes[2].imshow(masked_disp, cmap=cmap2); axes[2].axis('off')
+
+                            dice_txt = self._fmt_metric(metrics_payload.get("dice_mean", None))
+                            iou_txt  = self._fmt_metric(metrics_payload.get("iou_mean", None))
+                            metrics_str = f"Dice: {dice_txt}  IoU: {iou_txt}"
+                            axes[1].text(
+                                0.02, 0.98, metrics_str,
+                                transform=axes[1].transAxes,
+                                fontsize=12, color='yellow', ha='left', va='top',
+                                bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.5)
+                            )
+
+                            overview_filename = f"{os.path.splitext(anon_filename)[0]}.png"
+                            overview_path = os.path.join(overview_dir, overview_filename)
+                            plt.tight_layout()
+                            plt.savefig(overview_path, dpi=300, bbox_inches='tight', pad_inches=0.05, facecolor='white')
+                            plt.close(fig)
+
+                            overview_manifest.append({
+                                "path": overview_path,
+                                "filename": anon_filename,
+                                "dice": metrics_payload.get("dice_mean", None),
+                                "iou": metrics_payload.get("iou_mean", None)
+                            })
+                        except Exception as e:
+                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
+
                     success += 1
 
                 except Exception as e:
@@ -2628,6 +2675,38 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             progress.close()
             metrics_file.close()
 
+        # Build high‑quality, low‑whitespace PDF (landscape; filename overlay, no table)
+        if make_overview and overview_manifest:
+            try:
+                from matplotlib.backends.backend_pdf import PdfPages
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                overview_pdf_path = os.path.join(overview_dir, f"overview_{ts}.pdf")
+
+                with PdfPages(overview_pdf_path) as pdf:
+                    for item in overview_manifest:
+                        img = plt.imread(item["path"])
+
+                        # Full-page image; minimal margins; high DPI (LANDSCAPE)
+                        fig = plt.figure(figsize=(11, 8.5), dpi=300)
+                        ax = fig.add_axes((0.01, 0.01, 0.98, 0.98))  # tuple to satisfy linter
+                        ax.imshow(img, interpolation='nearest')
+                        ax.axis('off')
+
+                        # Filename overlay at top-left; no table
+                        fig.text(
+                            0.012, 0.992,
+                            f"{item['filename']}",
+                            ha='left', va='top', fontsize=10,
+                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.7)
+                        )
+
+                        pdf.savefig(fig)  # no bbox to keep full-page image
+                        plt.close(fig)
+
+                logging.info(f"Saved overview report: {overview_pdf_path}")
+            except Exception as e:
+                logging.warning(f"Failed to create overview PDF: {e}")
+
         logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}")
 
         if failed > 0:
@@ -2637,11 +2716,19 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return {
             "status": status,
-            "success": success, 
+            "success": success,
             "failed": failed,
             "skipped": skipped,
-            "error_messages": error_messages
+            "error_messages": error_messages,
+            "overview_pdf_path": overview_pdf_path
         }
+
+    # Add metrics overlay (Dice / IoU)
+    def _fmt_metric(self, v) -> str:
+        try:
+            return f"{float(v):.3f}"
+        except Exception:
+            return "N/A"
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""
