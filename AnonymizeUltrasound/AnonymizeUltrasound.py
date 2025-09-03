@@ -829,7 +829,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 hash_patient_id=hash_pid,
                 overview_dir=overview_dir,
                 ground_truth_dir=ground_truth_dir,
-                metrics_csv_path=os.path.join(hdr_dir, f"{os.path.basename(in_dir)}_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"),
+                metrics_csv_path=os.path.join(overview_dir, f"{os.path.basename(in_dir)}_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"),
             )
             self.ui.statusLabel.text = result['status']
         except Exception as e:
@@ -1589,66 +1589,27 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         return out.transpose(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
 
     def getAutoMask(self):
-        start_time = time.time()
-        current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
+        start = time.time()
 
-        if current_dicom_record is None:
-            logging.error("No current DICOM dataset loaded")
-            return None
-        model, device = self.downloadAndPrepareModel()
-
-        if model is None:
-            return None
-
-        # 1. Read DICOM frames and preprocess image
-        read_dicom_time = time.time()
-
-        slicer.app.pauseRender()
-        parameterNode = self.getParameterNode()
-        currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
-        masterSequenceNode = currentSequenceBrowser.GetMasterSequenceNode()
-        orig_image_array = self.sequence_to_numpy(masterSequenceNode) # (N, C, H, W)
-        orig_image_dims = (orig_image_array.shape[-2], orig_image_array.shape[-1])  # (height, width)
-        slicer.app.resumeRender()
-
-        logging.info(f"Read DICOM frames in {time.time() - read_dicom_time} seconds")
-
+        # 1) Model
         try:
-            input_tensor = preprocess_image(orig_image_array)
+            model, device = self._ensure_model(MODEL_PATH)
         except Exception as e:
-            logging.error(f"Error preprocessing image: {e}")
+            logging.error(f"Model prepare failed: {e}")
             return None
 
-        # 2. Run AI inference for corner prediction
-        inference_time = time.time()
-        with torch.no_grad():
-            coords_normalized = model(input_tensor.to(device)).cpu().numpy()
-            logging.info(f"Inference time: {time.time() - inference_time} seconds")
+        # 2) Frames from current sequence (NCHW)
+        frames = self._get_frames_from_current_sequence()
+        if frames.size == 0:
+            logging.error("No frames in current sequence")
+            return None
 
-        # 3. Denormalize coordinates
-        coords = coords_normalized.reshape(4, 2)
-        coords[:, 0] *= orig_image_dims[1]  # width
-        coords[:, 1] *= orig_image_dims[0]  # height
+        # 3) Inference + denorm + optional 3-point merge
+        coords4 = self._infer_corners_px(frames, model, device)
+        coordsN = self._merge_top_corners_if_close(coords4, threshold_px=15.0)
 
-        top_left = np.array(coords[0])
-        top_right = np.array(coords[1])
-        bottom_left = np.array(coords[2])
-        bottom_right = np.array(coords[3])
-        # Merge top_left and top_right if very close
-        norm = np.linalg.norm(top_left - top_right)
-        if norm < 15.0:
-            merged_top = (top_left + top_right) / 2
-            logging.debug(f"Norm: {norm}, Merged Top: {merged_top}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
-            coords_ras = np.array([merged_top, bottom_left, bottom_right])
-        else:
-            logging.debug(f"Norm: {norm}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
-            coords_ras = np.array([top_left, top_right, bottom_left, bottom_right])
-
-        logging.debug(f"Coords RAS: {coords_ras}")
-
-        logging.info(f"Total time for auto mask generation: {time.time() - start_time} seconds")
-
-        return np.array(coords_ras)
+        logging.info(f"Auto mask infer in {time.time() - start:.3f}s")
+        return coordsN
 
     def downloadAndPrepareModel(self):
         """ Download the AI model and prepare it for inference """
@@ -2390,7 +2351,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
         - Optionally, compare anonymized DICOMs with ground truth masks and save metrics to CSV
         - Optionally, save overview images of original, mask, and anonymized DICOMs
-        - Optionally, save metrics to CSV
+        - Optionally, save metrics to CSV and PDF
         """
         # Scan directory (filenames reflect hash_patient_id)
         num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
@@ -2415,8 +2376,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             start_index = self.dicom_manager.next_index or 0
 
         try:
-            device = get_device(device)
-            model = load_model(model_path, device)
+            model, device = self._ensure_model(model_path, device)  # device is the user hint
             logging.info(f"Model loaded on {device}")
         except Exception as e:
             raise Exception(f"Failed to load model: {e}") from e
@@ -2433,11 +2393,27 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             "f1_mean","sensitivity_mean","specificity_mean"
         ]
         if not metrics_csv_path:
-            metrics_csv_path = os.path.join(headers_folder or output_folder, "metrics.csv")
+            metrics_csv_path = os.path.join(overview_dir, "metrics.csv")
         os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
         metrics_file = open(metrics_csv_path, "w", newline="")
         metrics_writer = csv.DictWriter(metrics_file, fieldnames=metrics_fieldnames)
         metrics_writer.writeheader()
+
+        # Index ground truth JSONs recursively for fast lookup by filename
+        gt_index = {}
+        if ground_truth_dir:
+            try:
+                for root, _, files in os.walk(ground_truth_dir):
+                    for f in files:
+                        if f.lower().endswith(".json"):
+                            full = os.path.join(root, f)
+                            if f not in gt_index:
+                                gt_index[f] = full
+                            else:
+                                logging.warning(f"Duplicate ground truth filename '{f}' found. "
+                                                f"Keeping '{gt_index[f]}', ignoring '{full}'.")
+            except Exception as e:
+                logging.warning(f"Failed to index ground truth directory '{ground_truth_dir}': {e}")
 
         # Progress dialog
         total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
@@ -2473,57 +2449,25 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     continue
 
                 try:
-                    #TODO(ddinh) extract common code with getAutoMask
-                    # Read frames (N, C, H, W) -> image_array (N, H, W, C)
-                    original_image = read_frames_from_dicom(row.InputPath)
-                    orig_dims = (original_image.shape[-2], original_image.shape[-1])  # (H, W)
-                    image_array = np.transpose(original_image, (0, 2, 3, 1))
+                    # Read frames (N,C,H,W) and NHWC view for masking/saving
+                    original_nchw = read_frames_from_dicom(row.InputPath)   # (N,C,H,W)
+                    H, W = original_nchw.shape[-2], original_nchw.shape[-1]
+                    image_nhwc = np.transpose(original_nchw, (0, 2, 3, 1))  # (N,H,W, C)
 
-                    mask_config = None
-                    curvilinear_mask = None
+                    # Inference + 3/4-point merge
+                    coords4 = self._infer_corners_px(original_nchw, model, device)
+                    coordsN = self._merge_top_corners_if_close(coords4, threshold_px=15.0)
 
-                    # Preprocess + inference
-                    input_tensor = preprocess_image(original_image)  # (1,1,240,320)
-                    with torch.no_grad():
-                        coords_normalized = model(input_tensor.to(device)).cpu().numpy()
-                    coords = coords_normalized.reshape(4, 2)
-                    coords[:, 0] *= orig_dims[1]  # width
-                    coords[:, 1] *= orig_dims[0]  # height
+                    # Corners → mask/config (0/1 mask)
+                    predicted_corners = self._corners_array_to_dict(coordsN)
+                    logging.debug(f"Coords RAS: {predicted_corners}")
 
-                    top_left = np.array(coords[0])
-                    top_right = np.array(coords[1])
-                    bottom_left = np.array(coords[2])
-                    bottom_right = np.array(coords[3])
-                    # Merge top_left and top_right if very close
-                    norm = np.linalg.norm(top_left - top_right)
-                    if norm < 15.0:
-                        merged_top = (top_left + top_right) / 2
-                        logging.debug(f"Norm: {norm}, Merged Top: {merged_top}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
-                        coords_ras = np.array([merged_top, bottom_left, bottom_right])
-                    else:
-                        logging.debug(f"Norm: {norm}, Top left: {top_left}, Top right: {top_right}, Bottom left: {bottom_left}, Bottom right: {bottom_right}")
-                        coords_ras = np.array([top_left, top_right, bottom_left, bottom_right])
+                    curvilinear_mask, mask_config = self._mask_from_corners((H, W), predicted_corners)
+                    logging.debug(f"Curvilinear mask: {curvilinear_mask}")
+                    logging.debug(f"Mask config: {mask_config}")
 
-                    logging.debug(f"Coords RAS: {coords_ras}")
-
-                    predicted_corners = {
-                        "upper_left": tuple(coords_ras[0]),
-                        "upper_right": tuple(coords_ras[1]),
-                        "lower_left": tuple(coords_ras[2]),
-                        "lower_right": tuple(coords_ras[3]),
-                    }
-
-                    # Build mask config + binary mask (0/1)
-                    curvilinear_mask, mask_config = compute_masks_and_configs(
-                        original_dims=orig_dims,
-                        predicted_corners=predicted_corners
-                    )
-
-                    # Apply mask per frame and channel
-                    masked_image_array = image_array.copy()
-                    for f in range(masked_image_array.shape[0]):
-                        for c in range(masked_image_array.shape[3]):
-                            masked_image_array[f, :, :, c] = np.multiply(masked_image_array[f, :, :, c], curvilinear_mask)
+                    # Apply mask across all frames/channels
+                    masked_image_array = self._apply_mask_nhwc(image_nhwc, curvilinear_mask)
 
                     # Derive anonymized name/id from filename (consistent with CLI)
                     anon_filename = row.AnonFilename
@@ -2555,16 +2499,17 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     gt_config_path = ""
                     metrics_payload = {}
                     if ground_truth_dir:
-                        gt_config_path = os.path.join(ground_truth_dir, f"{os.path.splitext(anon_filename)[0]}.json")
-                        if os.path.exists(gt_config_path):
+                        gt_basename = f"{os.path.splitext(anon_filename)[0]}.json"
+                        gt_config_path = gt_index.get(gt_basename, "")
+                        if gt_config_path:
                             try:
                                 gt_mask_config = load_mask_config(gt_config_path)
-                                metrics_payload = compare_masks(gt_mask_config, mask_config, orig_dims)
+                                metrics_payload = compare_masks(gt_mask_config, mask_config, (H, W))
                             except Exception as e:
                                 logging.warning(f"Failed to compute metrics for {gt_config_path}: {e}")
                                 raise Exception(f"Failed to compute metrics for {gt_config_path}: {e}") from e
                         else:
-                            logging.warning(f"Ground truth config not found for {anon_filename} in {ground_truth_dir}")
+                            logging.warning(f"Ground truth config not found for {anon_filename} (looked for '{gt_basename}') within '{ground_truth_dir}'")
 
                     row_out = {
                         "dicom_output_path": final_output_path,
@@ -2608,7 +2553,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
                             axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
 
-                            orig_frame = image_array[0].squeeze()
+                            orig_frame = image_nhwc[0].squeeze()
                             masked_frame = masked_image_array[0].squeeze()
                             mask2d = (curvilinear_mask > 0)
 
@@ -2716,11 +2661,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return {
             "status": status,
-            "success": success,
+            "success": success, 
             "failed": failed,
             "skipped": skipped,
-            "error_messages": error_messages,
-            "overview_pdf_path": overview_pdf_path
+            "error_messages": error_messages
         }
 
     # Add metrics overlay (Dice / IoU)
@@ -2729,6 +2673,89 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             return f"{float(v):.3f}"
         except Exception:
             return "N/A"
+
+    def _ensure_model(self, model_path: str = MODEL_PATH, device_hint: str = ""):
+        """
+        Ensure a model is available and loaded on a device.
+        Returns (model, device). Never shows a widget dialog (logic stays headless).
+        """
+        if not os.path.exists(model_path):
+            logging.info("Model missing; downloading...")
+            ok = self.download_model(MODEL_URL, model_path)
+            if not ok:
+                raise RuntimeError("Model download failed")
+        device = get_device(device_hint)
+        model = load_model(model_path, device)
+        return model, device
+
+    def _get_frames_from_current_sequence(self) -> np.ndarray:
+        """
+        Return NCHW array from current sequence (pauses rendering for speed).
+        Shape: (N, C, H, W), dtype: uint8
+        """
+        slicer.app.pauseRender()
+        try:
+            pnode = self.getParameterNode()
+            seq = pnode.ultrasoundSequenceBrowser.GetMasterSequenceNode()
+            return self.sequence_to_numpy(seq)  # already returns NCHW
+        finally:
+            slicer.app.resumeRender()
+
+    def _infer_corners_px(self, frames_nchw: np.ndarray, model, device: str) -> np.ndarray:
+        """
+        Predict corner coordinates (in pixels, x,y) at the original image resolution.
+        Returns array of shape (4, 2) in order [UL, UR, LL, LR] BEFORE merging.
+        """
+        h, w = frames_nchw.shape[-2], frames_nchw.shape[-1]
+        with torch.no_grad():
+            t = preprocess_image(frames_nchw)            # (1,1,240,320)
+            coords_norm = model(t.to(device)).cpu().numpy().reshape(4, 2)
+        coords = coords_norm.copy()
+        coords[:, 0] *= w  # x
+        coords[:, 1] *= h  # y
+        return coords
+
+    def _merge_top_corners_if_close(self, coords: np.ndarray, threshold_px: float = 15.0) -> np.ndarray:
+        """
+        If UL and UR are very close, merge to 3-point fan [apex, LL, LR]; else return 4 corners.
+        Input coords must be [UL, UR, LL, LR].
+        """
+        ul, ur, ll, lr = coords
+        if np.linalg.norm(ul - ur) < threshold_px:
+            merged_top = (ul + ur) / 2.0
+            return np.vstack([merged_top, ll, lr])  # 3-point fan
+        return coords  # 4 points
+
+    def _corners_array_to_dict(self, coords: np.ndarray) -> dict:
+        """
+        Convert array corners to a dictionary format for compute_masks_and_configs.
+        """
+        return {
+            "upper_left": tuple(coords[0]),
+            "upper_right": tuple(coords[1]),
+            "lower_left": tuple(coords[2]),
+            "lower_right": tuple(coords[3]),
+        }
+
+    def _mask_from_corners(self, original_dims: tuple[int, int], corners_dict: dict):
+        """
+        Build curvilinear mask and config from corners (0/1 mask).
+        """
+        return compute_masks_and_configs(
+            original_dims=original_dims,
+            predicted_corners=corners_dict
+        )
+
+    def _apply_mask_nhwc(self, image_nhwc: np.ndarray, mask_2d: np.ndarray) -> np.ndarray:
+        """
+        Multiply each frame/channel by the binary mask (0/1).
+        image_nhwc shape: (N, H, W, C); mask_2d shape: (H, W)
+        """
+        out = image_nhwc.copy()
+        for f in range(out.shape[0]):
+            for c in range(out.shape[3]):
+                out[f, :, :, c] = np.multiply(out[f, :, :, c], mask_2d)
+        return out
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""
