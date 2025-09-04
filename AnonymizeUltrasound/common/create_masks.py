@@ -1,10 +1,5 @@
-import json
-import os
-import re
 import cv2
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
 
 def create_rectangle_mask(config, edge_erosion=0.0, image_size=None) -> np.ndarray:
     """

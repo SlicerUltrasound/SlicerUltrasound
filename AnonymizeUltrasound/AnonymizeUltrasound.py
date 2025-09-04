@@ -108,6 +108,22 @@ def onSlicerStartupCompleted():
         slicer.util.pip_install('PyYAML')
         import yaml
 
+    global monai
+    try:
+        import monai
+    except ImportError:
+        logging.info("AnonymizeUltrasound: monai not found, installing...")
+        slicer.util.pip_install('monai')
+        import monai
+
+    global sklearn
+    try:
+        import sklearn
+    except ImportError:
+        logging.info("AnonymizeUltrasound: scikit-learn not found, installing...")
+        slicer.util.pip_install('scikit-learn')
+        import sklearn
+
 class AnonymizerStatus(Enum):
     INITIAL = 0               # No data loaded yet
     INPUT_READY = 1           # Valid input folder parsed
