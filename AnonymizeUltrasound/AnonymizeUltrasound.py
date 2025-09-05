@@ -1,6 +1,7 @@
 from collections import defaultdict
 import csv
 from enum import Enum
+from functools import cache
 import re
 import json
 import logging
@@ -23,7 +24,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-
 import slicer
 from slicer.i18n import tr as _
 from slicer.i18n import translate
@@ -41,11 +41,9 @@ from slicer import vtkMRMLMarkupsFiducialNode
 from DICOMLib import DICOMUtils
 
 from common.dicom_file_manager import DicomFileManager
-from common.create_frames import read_frames_from_dicom
-from common.create_masks import compute_masks_and_configs
-from common.dcm_inference import load_model, preprocess_image, get_device
-from common.compare_masks import compare_masks, load_mask_config
-from common.debug import save_frame_png
+from common.masking import compute_masks_and_configs
+from common.inference import load_model, preprocess_image, get_device
+from common.evaluation import compare_masks, load_mask_config
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
@@ -164,6 +162,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     ENABLE_MASK_CACHE_SETTING = "AnonymizeUltrasound/enableMaskCache"
     PRESERVE_DIRECTORY_STRUCTURE_SETTING = "AnonymizeUltrasound/preserveDirectoryStructure"
     AUTO_ANON_ENABLE_SETTING = "AnonymizeUltrasound/EnableAutoAnonymize"
+    AUTO_ANON_INPUT_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeInputFolder"
+    AUTO_ANON_OUTPUT_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeOutputFolder"
+    AUTO_ANON_HEADERS_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeHeadersFolder"
     AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
     AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
     AUTO_ANON_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverviewDir"
@@ -224,37 +225,16 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         settings = slicer.app.settings()
 
-        # Enable toggle
-        enable_val = settings.value(self.AUTO_ANON_ENABLE_SETTING)
-        self.ui.enableAutoAnonymizeCheckBox.checked = bool(enable_val and str(enable_val).lower() == "true")
-        self.ui.enableAutoAnonymizeCheckBox.toggled.connect(self._on_auto_anon_enable_toggled)
-        self._apply_auto_anon_visibility(self.ui.enableAutoAnonymizeCheckBox.checked)
-
-        # Defaults for inputs
-        default_model = settings.value(self.AUTO_ANON_MODEL_PATH_SETTING) or MODEL_PATH
-        self.ui.autoAnonModelPathLineEdit.text = default_model
-        default_device = settings.value(self.AUTO_ANON_DEVICE_SETTING) or "cpu"
-        self.ui.autoAnonDeviceLineEdit.text = default_device
-        default_overview = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING) or ""
-        self.ui.autoAnonOverviewDirLineEdit.text = default_overview
-        default_gt = settings.value(self.AUTO_ANON_GT_DIR_SETTING) or ""
-        self.ui.autoAnonGroundTruthDirLineEdit.text = default_gt
-
-        # Persist user edits
-        self.ui.autoAnonModelPathLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_MODEL_PATH_SETTING, t))
-        self.ui.autoAnonDeviceLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_DEVICE_SETTING, t))
-        self.ui.autoAnonOverviewDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_OVERVIEW_DIR_SETTING, t))
-        self.ui.autoAnonGroundTruthDirLineEdit.textChanged.connect(lambda t: settings.setValue(self.AUTO_ANON_GT_DIR_SETTING, t))
-
-        # Run button
-        self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
-
         inputFolder = settings.value(self.INPUT_FOLDER_SETTING)
         if inputFolder:
             if os.path.exists(inputFolder):
                 self.ui.inputDirectoryButton.directory = inputFolder
             else:
-                logging.info(f"Settings input folder {inputFolder} does not exist")
+                logging.error(f"Settings input folder {inputFolder} does not exist")
+                self.ui.inputDirectoryButton.directory = self.get_default_user_data_directory()
+        else:
+            self.ui.inputDirectoryButton.directory = self.get_default_user_data_directory()
+
         self.ui.inputDirectoryButton.connect("directoryChanged(QString)",
                                              lambda newValue: self.onSettingChanged(self.INPUT_FOLDER_SETTING, newValue))
 
@@ -263,7 +243,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             if os.path.exists(outputFolder):
                 self.ui.outputDirectoryButton.directory = outputFolder
             else:
-                logging.info(f"Settings output folder {outputFolder} does not exist")
+                logging.error(f"Settings output folder {outputFolder} does not exist")
+                self.ui.outputDirectoryButton.directory = self.get_default_user_data_directory()
+        else:
+            self.ui.outputDirectoryButton.directory = self.get_default_user_data_directory()
+
         self.ui.outputDirectoryButton.connect("directoryChanged(QString)",
                                               lambda newValue: self.onSettingChanged(self.OUTPUT_FOLDER_SETTING, newValue))
 
@@ -272,7 +256,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             if os.path.exists(headersFolder):
                 self.ui.headersDirectoryButton.directory = headersFolder
             else:
-                logging.info(f"Settings headers folder {headersFolder} does not exist")
+                logging.error(f"Settings headers folder {headersFolder} does not exist")
+                self.ui.headersDirectoryButton.directory = self.get_default_user_data_directory()
+        else:
+            self.ui.headersDirectoryButton.directory = self.get_default_user_data_directory()
+
         self.ui.headersDirectoryButton.connect("directoryChanged(QString)",
                                                lambda newValue: self.onSettingChanged(self.HEADERS_FOLDER_SETTING, newValue))
 
@@ -361,6 +349,101 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             labelsPath = self.resourcePath('default_labels.csv')
         self.ui.labelsFileSelector.currentPath = labelsPath
         self.ui.labelsCollapsibleButton.collapsed = True
+
+        # Auto anonymize settings
+        enable_val = settings.value(self.AUTO_ANON_ENABLE_SETTING)
+        self.ui.enableAutoAnonymizeCheckBox.checked = bool(enable_val and str(enable_val).lower() == "true")
+        self.ui.enableAutoAnonymizeCheckBox.toggled.connect(self._on_auto_anon_enable_toggled)
+        self._apply_auto_anon_visibility(self.ui.enableAutoAnonymizeCheckBox.checked)
+
+        auto_anon_input_folder = settings.value(self.AUTO_ANON_INPUT_FOLDER_SETTING)
+        if auto_anon_input_folder:
+            if os.path.exists(auto_anon_input_folder):
+                self.ui.inputDirectoryButtonBatch.directory = auto_anon_input_folder
+            else:
+                logging.error(f"Settings input folder {auto_anon_input_folder} does not exist")
+                self.ui.inputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
+        else:
+            # No setting saved, default to best user data directory
+            self.ui.inputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
+
+        self.ui.inputDirectoryButtonBatch.connect("directoryChanged(QString)",
+                                             lambda newValue: self.onSettingChanged(self.AUTO_ANON_INPUT_FOLDER_SETTING, newValue))
+
+        auto_anon_output_folder = settings.value(self.AUTO_ANON_OUTPUT_FOLDER_SETTING)
+        if auto_anon_output_folder:
+            if os.path.exists(auto_anon_output_folder):
+                self.ui.outputDirectoryButtonBatch.directory = auto_anon_output_folder
+            else:
+                logging.error(f"Settings output folder {auto_anon_output_folder} does not exist")
+                self.ui.outputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
+        else:
+            self.ui.outputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
+
+        self.ui.outputDirectoryButtonBatch.connect("directoryChanged(QString)",
+                                              lambda newValue: self.onSettingChanged(self.AUTO_ANON_OUTPUT_FOLDER_SETTING, newValue))
+
+        auto_anon_headers_folder = settings.value(self.AUTO_ANON_HEADERS_FOLDER_SETTING)
+        if auto_anon_headers_folder:
+            if os.path.exists(auto_anon_headers_folder):
+                self.ui.headersDirectoryButtonBatch.directory = auto_anon_headers_folder
+            else:
+                logging.error(f"Settings headers folder {auto_anon_headers_folder} does not exist")
+                self.ui.headersDirectoryButtonBatch.directory = self.get_default_user_data_directory()
+        else:
+            self.ui.headersDirectoryButtonBatch.directory = self.get_default_user_data_directory()
+
+        self.ui.headersDirectoryButtonBatch.connect("directoryChanged(QString)",
+                                               lambda newValue: self.onSettingChanged(self.AUTO_ANON_HEADERS_FOLDER_SETTING, newValue))
+
+        model_path = settings.value(self.AUTO_ANON_MODEL_PATH_SETTING)
+        if model_path:
+            if os.path.exists(model_path):
+                self.ui.autoAnonModelPathButton.currentPath = model_path
+            else:
+                logging.error(f"Settings model path {model_path} does not exist")
+                self.ui.autoAnonModelPathButton.currentPath = MODEL_PATH
+        else:
+            self.ui.autoAnonModelPathButton.currentPath = MODEL_PATH
+
+        target_device = settings.value(self.AUTO_ANON_DEVICE_SETTING)
+        if target_device:
+            device_index = self.ui.autoAnonDeviceComboBox.findText(target_device)
+            if device_index >= 0:
+                self.ui.autoAnonDeviceComboBox.setCurrentIndex(device_index)
+            else:
+                self.ui.autoAnonDeviceComboBox.setCurrentIndex(0)  # Default to CPU
+            
+        overview_dir = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING)
+        if overview_dir:
+            if os.path.exists(overview_dir):
+                self.ui.autoAnonOverviewDirButton.directory = overview_dir
+            else:
+                logging.error(f"Settings overview directory {overview_dir} does not exist")
+
+        gt_dir = settings.value(self.AUTO_ANON_GT_DIR_SETTING)
+        if gt_dir:
+            if os.path.exists(gt_dir):
+                self.ui.autoAnonGroundTruthDirButton.directory = gt_dir
+            else:
+                logging.error(f"Settings ground truth directory {gt_dir} does not exist")
+                self.ui.autoAnonGroundTruthDirButton.directory = self.get_default_user_data_directory()
+        else:
+            self.ui.autoAnonGroundTruthDirButton.directory = self.get_default_user_data_directory()
+
+        self.ui.autoAnonModelPathButton.connect("currentPathChanged(QString)",
+                                                lambda newValue: self.onSettingChanged(self.AUTO_ANON_MODEL_PATH_SETTING, newValue))
+        
+        self.ui.autoAnonDeviceComboBox.connect("currentTextChanged(QString)",
+                                                lambda newValue: self.onSettingChanged(self.AUTO_ANON_DEVICE_SETTING, newValue))
+
+        self.ui.autoAnonOverviewDirButton.connect("directoryChanged(QString)",
+                                                  lambda newValue: self.onSettingChanged(self.AUTO_ANON_OVERVIEW_DIR_SETTING, newValue))
+        self.ui.autoAnonGroundTruthDirButton.connect("directoryChanged(QString)",
+                                                     lambda newValue: self.onSettingChanged(self.AUTO_ANON_GT_DIR_SETTING, newValue))
+
+        # Run button
+        self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -497,6 +580,18 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 categoryLayout.addWidget(checkBox)
             categoryGroupBox.setLayout(categoryLayout)
             self.ui.labelsScrollAreaWidgetContents.layout().addWidget(categoryGroupBox)
+
+    def get_default_user_data_directory(self):
+        """Get the most appropriate default directory for user data across platforms."""
+        home_dir = os.path.expanduser("~")
+        
+        # Try Documents folder first (most user-friendly)
+        documents_dir = os.path.join(home_dir, "Documents")
+        if os.path.exists(documents_dir):
+            return documents_dir
+        
+        # Fall back to home directory if Documents doesn't exist
+        return home_dir
 
     def confirm_setting_change(self, message: str = "Are you sure you want to change this setting?") -> bool:
         """
@@ -806,9 +901,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.statusLabel.text = "No DICOM file loaded"
 
     def on_run_auto_anon_clicked(self):
-        in_dir = self.ui.inputDirectoryButton.directory
-        out_dir = self.ui.outputDirectoryButton.directory
-        hdr_dir = self.ui.headersDirectoryButton.directory
+        in_dir = self.ui.inputDirectoryButtonBatch.directory
+        out_dir = self.ui.outputDirectoryButtonBatch.directory
+        hdr_dir = self.ui.headersDirectoryButtonBatch.directory
         if not in_dir or not os.path.exists(in_dir):
             slicer.util.errorDisplay("Please select a valid input directory (Import DICOM folder).")
             return
@@ -819,10 +914,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             slicer.util.errorDisplay("Please select a valid headers directory (Import DICOM folder).")
             return
 
-        model_path = (self.ui.autoAnonModelPathLineEdit.text or MODEL_PATH).strip()
-        device = (self.ui.autoAnonDeviceLineEdit.text or "").strip()
-        overview_dir = (self.ui.autoAnonOverviewDirLineEdit.text or "").strip()
-        ground_truth_dir = (self.ui.autoAnonGroundTruthDirLineEdit.text or "").strip()
+        model_path = (self.ui.autoAnonModelPathButton.currentPath or MODEL_PATH).strip()
+        
+        # Get selected value from combo box instead of text input
+        device = self.ui.autoAnonDeviceComboBox.currentText or "cpu"
+        
+        overview_dir = (self.ui.autoAnonOverviewDirButton.directory or "").strip()
+        ground_truth_dir = (self.ui.autoAnonGroundTruthDirButton.directory or "").strip()
 
         skip_single = self.ui.skipSingleframeCheckBox.checked
         hash_pid = self.ui.hashPatientIdCheckBox.checked
@@ -2369,6 +2467,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         - Optionally, save overview images of original, mask, and anonymized DICOMs
         - Optionally, save metrics to CSV and PDF
         """
+        logging.info(f"Starting batch anonymization...")
+        batch_start_time = time.time()
+
         # Scan directory (filenames reflect hash_patient_id)
         num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
         logging.info(f"Found {num_files} DICOM files in input folder")
@@ -2466,7 +2567,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
                 try:
                     # Read frames (N,C,H,W) and NHWC view for masking/saving
-                    original_nchw = read_frames_from_dicom(row.InputPath)   # (N,C,H,W)
+                    original_nchw = self.dicom_manager.read_frames_from_dicom(row.InputPath)   # (N,C,H,W)
                     H, W = original_nchw.shape[-2], original_nchw.shape[-1]
                     image_nhwc = np.transpose(original_nchw, (0, 2, 3, 1))  # (N,H,W, C)
 
@@ -2668,6 +2769,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             except Exception as e:
                 logging.warning(f"Failed to create overview PDF: {e}")
 
+        batch_end_time = time.time()
+        logging.info(f"Batch anonymization complete in {batch_end_time - batch_start_time:.4f} seconds")
         logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}")
 
         if failed > 0:
@@ -2764,14 +2867,24 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
     def _apply_mask_nhwc(self, image_nhwc: np.ndarray, mask_2d: np.ndarray) -> np.ndarray:
         """
+        Apply a 2D binary mask to a 4D image array to anonymize ultrasound images by masking
+        out regions that contain patient information or other sensitive data.
         Multiply each frame/channel by the binary mask (0/1).
-        image_nhwc shape: (N, H, W, C); mask_2d shape: (H, W)
+        :param image_nhwc: 4D image array (N, H, W, C)
+        :param mask_2d: 2D binary mask (H, W)
+        :return: 4D image array (N, H, W, C)
         """
-        out = image_nhwc.copy()
-        for f in range(out.shape[0]):
-            for c in range(out.shape[3]):
-                out[f, :, :, c] = np.multiply(out[f, :, :, c], mask_2d)
-        return out
+        # Validate input shapes
+        if len(image_nhwc.shape) != 4:
+            raise ValueError(f"Expected 4D image array, got {len(image_nhwc.shape)}D")
+        if len(mask_2d.shape) != 2:
+            raise ValueError(f"Expected 2D mask array, got {len(mask_2d.shape)}D")
+        if image_nhwc.shape[1:3] != mask_2d.shape:
+            raise ValueError(f"Mask shape {mask_2d.shape} doesn't match image spatial dims {image_nhwc.shape[1:3]}")
+
+        # Reshape mask to enable broadcasting: (H, W) -> (1, H, W, 1)
+        mask_broadcast = mask_2d[np.newaxis, :, :, np.newaxis]
+        return image_nhwc.copy() * mask_broadcast
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""

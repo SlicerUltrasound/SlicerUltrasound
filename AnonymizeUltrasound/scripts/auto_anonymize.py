@@ -35,13 +35,13 @@ import shutil
 import json
 from common.dicom_file_manager import DicomFileManager
 
-from common.dcm_inference import (
+from common.inference import (
     load_model,
     preprocess_image,
-    compute_masks_and_configs
 )
-from common.create_frames import read_frames_from_dicom
-from common.logging_utils import setup_logging
+from common.logging import setup_logging
+from common.masking import compute_masks_and_configs
+
 
 def apply_mask_to_sequence(image_array: np.ndarray, mask: np.ndarray) -> np.ndarray:
     masked = image_array.copy()
@@ -114,7 +114,7 @@ def process_dicom_file(
         # 1. Read DICOM frames
         read_frames_start = time.time()
         try:
-            original_image = read_frames_from_dicom(input_path)
+            original_image = dicom_manager.read_frames_from_dicom(input_path)
             original_dims = (original_image.shape[-2], original_image.shape[-1])  # (height, width)
             if skip_single_frame and len(original_image.shape) == 3 and original_image.shape[0] == 1:
                 logger.info(f"Skipping single frame DICOM file: {input_path}")
@@ -455,6 +455,7 @@ def main():
     
     # 3. Process each DICOM file
     logger.info("Starting DICOM file processing...")
+    batch_start_time = time.time()
     successful_count = 0
     failed_count = 0
     skipped_count = 0
@@ -495,6 +496,8 @@ def main():
         })
     
     # 4. Summary
+    batch_end_time = time.time()
+    logger.info(f"Batch anonymization complete in {batch_end_time - batch_start_time:.4f} seconds")
     logger.info(f"Anonymization complete!")
     logger.info(f"Successfully processed: {successful_count} files")
     logger.info(f"Skipped: {skipped_count} files")

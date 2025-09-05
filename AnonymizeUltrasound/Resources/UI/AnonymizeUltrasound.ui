@@ -421,6 +421,60 @@
      </property>
      <layout class="QFormLayout" name="autoAnonFormLayout">
       <item row="0" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Input folder:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="ctkDirectoryButton" name="inputDirectoryButtonBatch">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>All DICOM files will be processed in this folder and all its subfolders</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_3">
+        <property name="text">
+         <string>Output folder: </string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="ctkDirectoryButton" name="outputDirectoryButtonBatch">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Deidentified DICOM files will be saved here</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_6">
+        <property name="text">
+         <string>Headers folder: </string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="ctkDirectoryButton" name="headersDirectoryButtonBatch">
+        <property name="toolTip">
+         <string>Original DICOM headers will be saved here. May contain PHI!</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
        <widget class="QLabel" name="autoAnonModelPathLabel">
         <property name="text"><string>Model path</string></property>
         <property name="toolTip">
@@ -428,10 +482,20 @@
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
-       <widget class="QLineEdit" name="autoAnonModelPathLineEdit"/>
+      <item row="4" column="1">
+       <widget class="ctkPathLineEdit" name="autoAnonModelPathButton">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Model path will be saved here. Select a model file.</string>
+        </property>
+       </widget>
       </item>
-      <item row="1" column="0">
+      <item row="5" column="0">
        <widget class="QLabel" name="autoAnonDeviceLabel">
         <property name="text"><string>Device</string></property>
         <property name="toolTip">
@@ -439,10 +503,35 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
-       <widget class="QLineEdit" name="autoAnonDeviceLineEdit"/>
+      <item row="5" column="1">
+       <widget class="QComboBox" name="autoAnonDeviceComboBox">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Device to run the model on. GPU requires CUDA, MPS requires Apple Silicon Mac.</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>cpu</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>mps</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>cuda</string>
+         </property>
+        </item>
+       </widget>
       </item>
-      <item row="2" column="0">
+      <item row="6" column="0">
        <widget class="QLabel" name="autoAnonOverviewLabel">
         <property name="text"><string>Overview dir</string></property>
         <property name="toolTip">
@@ -450,10 +539,20 @@
         </property>
         </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QLineEdit" name="autoAnonOverviewDirLineEdit"/>
+      <item row="6" column="1">
+       <widget class="ctkDirectoryButton" name="autoAnonOverviewDirButton">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Overview directory will be saved here</string>
+        </property>
+       </widget>
       </item>
-      <item row="3" column="0">
+      <item row="7" column="0">
        <widget class="QLabel" name="autoAnonGTLabel">
         <property name="text"><string>Ground truth dir</string></property>
         <property name="toolTip">
@@ -461,10 +560,20 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="1">
-       <widget class="QLineEdit" name="autoAnonGroundTruthDirLineEdit"/>
+      <item row="7" column="1">
+       <widget class="ctkDirectoryButton" name="autoAnonGroundTruthDirButton">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Ground truth directory will be saved here</string>
+        </property>
+       </widget>
       </item>
-      <item row="4" column="0" colspan="2">
+      <item row="8" column="0" colspan="2">
        <widget class="QPushButton" name="runAutoAnonymizeButton">
         <property name="text"><string>Run Auto‑Anonymize</string></property>
         <property name="toolTip">

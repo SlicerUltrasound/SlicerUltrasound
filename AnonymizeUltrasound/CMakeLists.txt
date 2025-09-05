@@ -6,9 +6,10 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
   common/__init__.py
   common/dicom_file_manager.py
-  common/create_masks.py
-  common/create_frames.py
-  common/dcm_inference.py
+  common/evaluation.py
+  common/inference.py
+  common/logging.py
+  common/masking.py
   )
 
 set(MODULE_PYTHON_RESOURCES

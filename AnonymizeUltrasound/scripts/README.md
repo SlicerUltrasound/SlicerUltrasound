@@ -67,7 +67,7 @@ Builds a Pandas dataframe of every ultrasound DICOM, gathering UIDs, frame count
 	2.	Filename & key generation: `<10-digit hash(PatientID)>_<8-digit hash(SOPInstanceUID)>.dcm`. The mapping is written to keys.csv.
 
     3. Inference
-        - preprocessing.lib.create_frames.read_frames_from_dicom extracts frames as N×C×H×W (uint8).
+        - read_frames_from_dicom extracts frames as N×C×H×W (uint8).
         - The Attention U-Net + DSNT model predicts four normalized corner points, denormalized to pixel space.
         - Mask creation & application
         - Converted to a fan-shaped binary mask via compute_masks_and_configs; mask is multiplied into every frame.

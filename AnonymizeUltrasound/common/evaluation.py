@@ -4,7 +4,7 @@ from monai.metrics.meaniou import MeanIoU
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
 import numpy as np
 import json
-from common.create_masks import create_mask
+from common.masking import create_mask
 
 def compare_masks(ground_truth_config: dict, predicted_config: dict, original_dims: tuple[int, int]) -> dict:
     """
