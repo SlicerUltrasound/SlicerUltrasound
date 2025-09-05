@@ -44,6 +44,10 @@ from common.dicom_file_manager import DicomFileManager
 from common.masking import compute_masks_and_configs
 from common.inference import load_model, preprocess_image, get_device
 from common.evaluation import compare_masks, load_mask_config
+from common.dicom_processor import DicomProcessor, ProcessingConfig
+from common.progress_reporter import SlicerProgressReporter
+from common.overview_generator import OverviewGenerator
+from common.logging import setup_logging
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
@@ -413,7 +417,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 self.ui.autoAnonDeviceComboBox.setCurrentIndex(device_index)
             else:
                 self.ui.autoAnonDeviceComboBox.setCurrentIndex(0)  # Default to CPU
-            
+
         overview_dir = settings.value(self.AUTO_ANON_OVERVIEW_DIR_SETTING)
         if overview_dir:
             if os.path.exists(overview_dir):
@@ -433,7 +437,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
         self.ui.autoAnonModelPathButton.connect("currentPathChanged(QString)",
                                                 lambda newValue: self.onSettingChanged(self.AUTO_ANON_MODEL_PATH_SETTING, newValue))
-        
+
         self.ui.autoAnonDeviceComboBox.connect("currentTextChanged(QString)",
                                                 lambda newValue: self.onSettingChanged(self.AUTO_ANON_DEVICE_SETTING, newValue))
 
@@ -584,12 +588,12 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     def get_default_user_data_directory(self):
         """Get the most appropriate default directory for user data across platforms."""
         home_dir = os.path.expanduser("~")
-        
+
         # Try Documents folder first (most user-friendly)
         documents_dir = os.path.join(home_dir, "Documents")
         if os.path.exists(documents_dir):
             return documents_dir
-        
+
         # Fall back to home directory if Documents doesn't exist
         return home_dir
 
@@ -915,10 +919,10 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             return
 
         model_path = (self.ui.autoAnonModelPathButton.currentPath or MODEL_PATH).strip()
-        
+
         # Get selected value from combo box instead of text input
         device = self.ui.autoAnonDeviceComboBox.currentText or "cpu"
-        
+
         overview_dir = (self.ui.autoAnonOverviewDirButton.directory or "").strip()
         ground_truth_dir = (self.ui.autoAnonGroundTruthDirButton.directory or "").strip()
 
@@ -2443,347 +2447,123 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         self.transducerMaskCache.clear()
         logging.info("Cleared all cached masks")
 
-    def batch_auto_anonymize(
-        self,
-        input_folder: str,
-        output_folder: str,
-        headers_folder: str,
-        model_path: str = MODEL_PATH,
-        device: str = "",
-        preserve_directory_structure: bool = True,
-        resume_anonymization: bool = False,
-        skip_single_frame: bool = False,
-        hash_patient_id: bool = True,
-        overview_dir: str = "",
-        ground_truth_dir: str = "",
-        metrics_csv_path: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        In-process batch anonymization using shared logic:
-        - Scans DICOMs into dicom_df
-        - Optionally resumes at first missing output
-        - For each row: read frames -> AI corners -> mask -> save anonymized DICOM + header + JSON
-        - Optionally, compare anonymized DICOMs with ground truth masks and save metrics to CSV
-        - Optionally, save overview images of original, mask, and anonymized DICOMs
-        - Optionally, save metrics to CSV and PDF
-        """
-        logging.info(f"Starting batch anonymization...")
-        batch_start_time = time.time()
+    def batch_auto_anonymize(self, input_folder: str, output_folder: str, headers_folder: str,
+                            model_path: str = MODEL_PATH, device: str = "", **kwargs) -> Dict[str, Any]:
+        start_time = time.time()
 
-        # Scan directory (filenames reflect hash_patient_id)
-        num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame, hash_patient_id)
-        logging.info(f"Found {num_files} DICOM files in input folder")
+        # Create processing configuration
+        config = ProcessingConfig(
+            model_path=model_path,
+            device=device,
+            preserve_directory_structure=kwargs.get('preserve_directory_structure', True),
+            resume_anonymization=kwargs.get('resume_anonymization', False),
+            skip_single_frame=kwargs.get('skip_single_frame', False),
+            hash_patient_id=kwargs.get('hash_patient_id', True),
+            overview_dir=kwargs.get('overview_dir', ''),
+            ground_truth_dir=kwargs.get('ground_truth_dir', '')
+        )
 
-        # Save keys.csv (drop non-serializable column)
+        # Initialize shared processor
+        processor = DicomProcessor(config, self.dicom_manager)
+        progress_reporter = SlicerProgressReporter(self)
+        overview_generator = OverviewGenerator(config.overview_dir) if config.overview_dir else None
+
+        # Scan directory
+        num_files = self.dicom_manager.scan_directory(input_folder, config.skip_single_frame, config.hash_patient_id)
+
+        # Save keys.csv
         if self.dicom_manager.dicom_df is not None and headers_folder:
-            try:
-                df = self.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
-                os.makedirs(headers_folder, exist_ok=True)
-                df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
-            except Exception as e:
-                raise Exception(f"Failed to save keys.csv: {e}") from e
+            df = self.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
+            os.makedirs(headers_folder, exist_ok=True)
+            df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
 
-        # Determine starting index on resume
-        start_index = 0
-        if resume_anonymization:
-            progressed = self.dicom_manager.update_progress_from_output(output_folder, preserve_directory_structure)
-            if progressed is None:
-                logging.info("All files already processed; nothing to do.")
-                return {"status": "All files already processed; nothing to do."}
-            start_index = self.dicom_manager.next_index or 0
+        # Initialize model
+        processor.initialize_model()
 
-        try:
-            model, device = self._ensure_model(model_path, device)  # device is the user hint
-            logging.info(f"Model loaded on {device}")
-        except Exception as e:
-            raise Exception(f"Failed to load model: {e}") from e
+        # Setup metrics CSV if ground truth provided
+        metrics_csv_path = kwargs.get('metrics_csv_path')
+        if not metrics_csv_path and config.ground_truth_dir:
+            metrics_csv_path = os.path.join(config.overview_dir or headers_folder, "metrics.csv")
 
-        # Optional overview
-        make_overview = bool(overview_dir)
-        if make_overview:
-            os.makedirs(overview_dir, exist_ok=True)
+        metrics_file = None
+        metrics_writer = None
+        if metrics_csv_path and config.ground_truth_dir:
+            os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
+            metrics_file = open(metrics_csv_path, "w", newline="")
+            metrics_writer = csv.DictWriter(metrics_file, fieldnames=processor.get_metrics_fieldnames())
+            metrics_writer.writeheader()
 
-        # Metrics CSV
-        metrics_fieldnames = [
-            "dicom_output_path","dicom_filename","ground_truth_config_path","predicted_config_json",
-            "dice_mean","iou_mean","pixel_accuracy_mean","precision_mean","recall_mean",
-            "f1_mean","sensitivity_mean","specificity_mean"
-        ]
-        if not metrics_csv_path:
-            metrics_csv_path = os.path.join(overview_dir, "metrics.csv")
-        os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
-        metrics_file = open(metrics_csv_path, "w", newline="")
-        metrics_writer = csv.DictWriter(metrics_file, fieldnames=metrics_fieldnames)
-        metrics_writer.writeheader()
-
-        # Index ground truth JSONs recursively for fast lookup by filename
-        gt_index = {}
-        if ground_truth_dir:
-            try:
-                for root, _, files in os.walk(ground_truth_dir):
-                    for f in files:
-                        if f.lower().endswith(".json"):
-                            full = os.path.join(root, f)
-                            if f not in gt_index:
-                                gt_index[f] = full
-                            else:
-                                logging.warning(f"Duplicate ground truth filename '{f}' found. "
-                                                f"Keeping '{gt_index[f]}', ignoring '{full}'.")
-            except Exception as e:
-                logging.warning(f"Failed to index ground truth directory '{ground_truth_dir}': {e}")
-
-        # Progress dialog
-        total = len(self.dicom_manager.dicom_df) if self.dicom_manager.dicom_df is not None else 0
-        progress = qt.QProgressDialog("Auto-anonymizing...", "Cancel", 0, total, slicer.util.mainWindow())
-        progress.setWindowModality(qt.Qt.WindowModal)
-        progress.show()
+        # Process files using shared logic
+        progress_reporter.start(num_files, "Auto-anonymizing...")
 
         success = failed = skipped = 0
         error_messages = []
         overview_manifest = []
-        overview_pdf_path = ""
 
         try:
-            for idx in range(start_index, total):
-                if progress.wasCanceled:
-                    logging.info("Batch auto-anonymize canceled by user.")
+            for idx in range(num_files):
+                if progress_reporter.progress_dialog and progress_reporter.progress_dialog.wasCanceled:
                     break
-                progress.setValue(idx)
-                slicer.app.processEvents()
 
-                self.dicom_manager.current_index = idx
                 row = self.dicom_manager.dicom_df.iloc[idx]
+                self.dicom_manager.current_index = idx
 
-                # Build output path and skip if resuming and exists
-                final_output_path = self.dicom_manager.generate_output_filepath(
-                    output_folder, row.OutputPath, preserve_directory_structure
+                # Define callbacks for overview generation
+                def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
+                    if overview_generator:
+                        # Get metrics from the most recent result for overview
+                        overview_path = overview_generator.generate_overview(filename, orig, masked, mask, metrics)
+                        overview_manifest.append({
+                            "path": overview_path,
+                            "filename": filename,
+                            "dice": metrics.get("dice_mean") if metrics else None,
+                            "iou": metrics.get("iou_mean") if metrics else None
+                        })
+
+                result = processor.process_single_dicom(
+                    row, output_folder, headers_folder,
+                    lambda msg: progress_reporter.update(idx, msg),
+                    overview_callback
                 )
 
-                # Skip if resuming and output file exists
-                if resume_anonymization and os.path.exists(final_output_path):
-                    logging.info(f"Skipping {row.InputPath} because it already exists")
-                    skipped += 1
-                    continue
-
-                try:
-                    # Read frames (N,C,H,W) and NHWC view for masking/saving
-                    original_nchw = self.dicom_manager.read_frames_from_dicom(row.InputPath)   # (N,C,H,W)
-                    H, W = original_nchw.shape[-2], original_nchw.shape[-1]
-                    image_nhwc = np.transpose(original_nchw, (0, 2, 3, 1))  # (N,H,W, C)
-
-                    # Inference + 3/4-point merge
-                    coords4 = self._infer_corners_px(original_nchw, model, device)
-                    coordsN = self._merge_top_corners_if_close(coords4, threshold_px=15.0)
-
-                    # Corners → mask/config (0/1 mask)
-                    predicted_corners = self._corners_array_to_dict(coordsN)
-                    logging.debug(f"Coords RAS: {predicted_corners}")
-
-                    curvilinear_mask, mask_config = self._mask_from_corners((H, W), predicted_corners)
-                    logging.debug(f"Curvilinear mask: {curvilinear_mask}")
-                    logging.debug(f"Mask config: {mask_config}")
-
-                    # Apply mask across all frames/channels
-                    masked_image_array = self._apply_mask_nhwc(image_nhwc, curvilinear_mask)
-
-                    # Derive anonymized name/id from filename (consistent with CLI)
-                    anon_filename = row.AnonFilename
-                    new_patient_name = os.path.splitext(anon_filename)[0]
-                    new_patient_id = anon_filename.split('_')[0]
-
-                    # Save anonymized DICOM
-                    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
-                    self.dicom_manager.save_anonymized_dicom(
-                        image_array=masked_image_array,
-                        output_path=final_output_path,
-                        new_patient_name=new_patient_name,
-                        new_patient_id=new_patient_id,
-                        labels=None # Labels not supported yet.
-                    )
-
-                    # Save header JSON
-                    try:
-                        self.dicom_manager.save_anonymized_dicom_header(
-                            current_dicom_record=row,
-                            output_filename=anon_filename,
-                            headers_directory=headers_folder
-                        )
-                    except Exception as e:
-                        logging.warning(f"Failed to save header for {row.InputPath}: {e}")
-                        raise Exception(f"Failed to save header for {row.InputPath}: {e}") from e
-
-                    # Compute metrics
-                    gt_config_path = ""
-                    metrics_payload = {}
-                    if ground_truth_dir:
-                        gt_basename = f"{os.path.splitext(anon_filename)[0]}.json"
-                        gt_config_path = gt_index.get(gt_basename, "")
-                        if gt_config_path:
-                            try:
-                                gt_mask_config = load_mask_config(gt_config_path)
-                                metrics_payload = compare_masks(gt_mask_config, mask_config, (H, W))
-                            except Exception as e:
-                                logging.warning(f"Failed to compute metrics for {gt_config_path}: {e}")
-                                raise Exception(f"Failed to compute metrics for {gt_config_path}: {e}") from e
-                        else:
-                            logging.warning(f"Ground truth config not found for {anon_filename} (looked for '{gt_basename}') within '{ground_truth_dir}'")
-
-                    row_out = {
-                        "dicom_output_path": final_output_path,
-                        "dicom_filename": anon_filename,
-                        "ground_truth_config_path": gt_config_path,
-                        "predicted_config_json": json.dumps(mask_config) if mask_config is not None else "",
-                        "dice_mean": metrics_payload.get("dice_mean", ""),
-                        "iou_mean": metrics_payload.get("iou_mean", ""),
-                        "pixel_accuracy_mean": metrics_payload.get("pixel_accuracy_mean", ""),
-                        "precision_mean": metrics_payload.get("precision_mean", ""),
-                        "recall_mean": metrics_payload.get("recall_mean", ""),
-                        "f1_mean": metrics_payload.get("f1_mean", ""),
-                        "sensitivity_mean": metrics_payload.get("sensitivity_mean", ""),
-                        "specificity_mean": metrics_payload.get("specificity_mean", ""),
-                    }
-                    logging.info(f"metrics: {row_out}")
-                    metrics_writer.writerow(row_out)
-
-                    # Save sequence JSON (mask config and SOPInstanceUID)
-                    try:
-                        sequence_info = {
-                            'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
-                            'GrayscaleConversion': False
-                        }
-                        if mask_config is not None:
-                            sequence_info['MaskConfig'] = mask_config
-                        json_path = final_output_path.replace(".dcm", ".json")
-                        with open(json_path, 'w') as outfile:
-                            json.dump(sequence_info, outfile, indent=2)
-                    except Exception as e:
-                        logging.warning(f"Failed to save sequence info for {final_output_path}: {e}")
-                        raise Exception(f"Failed to save sequence info for {final_output_path}: {e}") from e
-
-                    # Overview with metrics if Ground Truth is provided
-                    if make_overview and masked_image_array.shape[0] > 0:
-                        try:
-                            fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=300)
-                            fig.patch.set_facecolor('white')
-                            for ax in axes:
-                                ax.set_facecolor('white')
-
-                            axes[0].set_title('Original'); axes[1].set_title('Mask Outline'); axes[2].set_title('Anonymized')
-
-                            orig_frame = image_nhwc[0].squeeze()
-                            masked_frame = masked_image_array[0].squeeze()
-                            mask2d = (curvilinear_mask > 0)
-
-                            # Helper to apply white background outside the fan
-                            def _with_white_bg(frame, mask2d):
-                                if frame.ndim == 2:
-                                    out = frame.copy()
-                                    out[~mask2d] = 255
-                                    return out, 'gray'
-                                elif frame.ndim == 3 and frame.shape[2] == 3:
-                                    out = frame.copy()
-                                    m3 = np.repeat((~mask2d)[..., None], 3, axis=2)
-                                    out[m3] = 255
-                                    return out, None
-                                else:
-                                    # single-channel but kept as HxWx1
-                                    out = frame[..., 0].copy()
-                                    out[~mask2d] = 255
-                                    return out, 'gray'
-
-                            masked_disp, cmap2 = _with_white_bg(masked_frame, mask2d)
-
-                            axes[0].imshow(orig_frame, cmap='gray'); axes[0].axis('off')
-                            axes[1].imshow(orig_frame, cmap='gray')
-                            axes[1].contour(curvilinear_mask, levels=[0.5], colors='lime', linewidths=1.0)
-                            axes[1].axis('off')
-                            axes[2].imshow(masked_disp, cmap=cmap2); axes[2].axis('off')
-
-                            dice_txt = self._fmt_metric(metrics_payload.get("dice_mean", None))
-                            iou_txt  = self._fmt_metric(metrics_payload.get("iou_mean", None))
-                            metrics_str = f"Dice: {dice_txt}  IoU: {iou_txt}"
-                            axes[1].text(
-                                0.02, 0.98, metrics_str,
-                                transform=axes[1].transAxes,
-                                fontsize=12, color='yellow', ha='left', va='top',
-                                bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.5)
-                            )
-
-                            overview_filename = f"{os.path.splitext(anon_filename)[0]}.png"
-                            overview_path = os.path.join(overview_dir, overview_filename)
-                            plt.tight_layout()
-                            plt.savefig(overview_path, dpi=300, bbox_inches='tight', pad_inches=0.05, facecolor='white')
-                            plt.close(fig)
-
-                            overview_manifest.append({
-                                "path": overview_path,
-                                "filename": anon_filename,
-                                "dice": metrics_payload.get("dice_mean", None),
-                                "iou": metrics_payload.get("iou_mean", None)
-                            })
-                        except Exception as e:
-                            logging.warning(f"Failed to save overview for {row.InputPath}: {e}")
-
+                # Update counters
+                if result.success and not result.skipped:
                     success += 1
-
-                except Exception as e:
-                    error_messages.append(f"Failed to process {row.InputPath}: {e} {traceback.format_exc()}")
-                    logging.error(f"Failed to process {row.InputPath}: {e}")
+                elif result.skipped:
+                    skipped += 1
+                else:
                     failed += 1
+                    if result.error_message:
+                        error_messages.append(result.error_message)
 
-            progress.setValue(total)
-            slicer.app.processEvents()
+                # Write metrics to CSV
+                if metrics_writer and result.success and not result.skipped:
+                    csv_row = processor.format_metrics_for_csv(result)
+                    metrics_writer.writerow(csv_row)
+
         finally:
-            progress.close()
-            metrics_file.close()
+            progress_reporter.finish()
+            if metrics_file:
+                metrics_file.close()
+                logging.info(f"Metrics saved to: {metrics_csv_path}")
 
-        # Build high‑quality, low‑whitespace PDF (landscape; filename overlay, no table)
-        if make_overview and overview_manifest:
-            try:
-                from matplotlib.backends.backend_pdf import PdfPages
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                overview_pdf_path = os.path.join(overview_dir, f"overview_{ts}.pdf")
-
-                with PdfPages(overview_pdf_path) as pdf:
-                    for item in overview_manifest:
-                        img = plt.imread(item["path"])
-
-                        # Full-page image; minimal margins; high DPI (LANDSCAPE)
-                        fig = plt.figure(figsize=(11, 8.5), dpi=300)
-                        ax = fig.add_axes((0.01, 0.01, 0.98, 0.98))  # tuple to satisfy linter
-                        ax.imshow(img, interpolation='nearest')
-                        ax.axis('off')
-
-                        # Filename overlay at top-left; no table
-                        fig.text(
-                            0.012, 0.992,
-                            f"{item['filename']}",
-                            ha='left', va='top', fontsize=10,
-                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.7)
-                        )
-
-                        pdf.savefig(fig)  # no bbox to keep full-page image
-                        plt.close(fig)
-
-                logging.info(f"Saved overview report: {overview_pdf_path}")
-            except Exception as e:
-                logging.warning(f"Failed to create overview PDF: {e}")
-
-        batch_end_time = time.time()
-        logging.info(f"Batch anonymization complete in {batch_end_time - batch_start_time:.4f} seconds")
-        logging.info(f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}")
-
-        if failed > 0:
-            status = f"Batch anonymization complete with errors. Success: {success}, Failed: {failed}, Skipped: {skipped}"
+        # Generate overview PDF if requested (reuse existing PDF generation logic)
+        overview_pdf_path = ""
+        if config.overview_dir and overview_manifest:
+            overview_pdf_path = processor.generate_overview_pdf(overview_manifest, config.overview_dir)
         else:
-            status = f"Batch anonymization complete. Success: {success}, Failed: {failed}, Skipped existing: {skipped}"
+            logging.info("No overview PDF generated")
+
+        logging.info(f"Auto-anonymize completed in {time.time() - start_time:.2f} seconds")
 
         return {
-            "status": status,
-            "success": success, 
+            "status": f"Complete! Success: {success}, Failed: {failed}, Skipped: {skipped}",
+            "success": success,
             "failed": failed,
             "skipped": skipped,
-            "error_messages": error_messages
+            "error_messages": error_messages,
+            "metrics_csv_path": metrics_csv_path,
+            "overview_pdf_path": overview_pdf_path
         }
 
     # Add metrics overlay (Dice / IoU)

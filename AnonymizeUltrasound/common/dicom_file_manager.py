@@ -843,9 +843,9 @@ class DicomFileManager:
 
     def read_frames_from_dicom(self, dicom_file_path):
         """
-        Reads frames from a dicom file and returns a numpy array in the format of [Frames, Channels, Height, Width]. PyTorch convention is NCHW for image batches.
+        Reads frames from a dicom file and returns a numpy array in the format of [Frames, Height, Width, Channels]. PyTorch convention is NCHW for image batches.
         :param dicom_file_path: path to the dicom file
-        :return: numpy array [N,C,H,W]
+        :return: numpy array [N,H,W,C]
         """
         ds = pydicom.dcmread(dicom_file_path)
         width = ds.Columns
@@ -858,7 +858,7 @@ class DicomFileManager:
             num_frames = 1
             logging.warning(f"Warning: No NumberOfFrames found in {dicom_file_path}, trying to read with num_frames=1")
 
-        output = np.zeros((num_frames, channels, height, width), dtype=np.uint8)
+        output = np.zeros((num_frames, height, width, channels), dtype=np.uint8)
 
         try:
             logging.info(f"Trying `dicom.encaps.generate_pixel_data_frame`")
@@ -871,7 +871,6 @@ class DicomFileManager:
                 # If frame is grayscale, add a channel dimension
                 if len(frame.shape) == 2:
                     frame = np.expand_dims(frame, axis=2)
-                frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
                 output[i, :, :, :] = frame
         except Exception as e:
             try:
@@ -886,7 +885,6 @@ class DicomFileManager:
                     # If frame is grayscale, add a channel dimension
                     if len(frame.shape) == 2:
                         frame = np.expand_dims(frame, axis=2)
-                    frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
                     output[i, :, :, :] = frame
 
             except Exception as e:
@@ -902,7 +900,6 @@ class DicomFileManager:
                         frame = pixel_data_frames[i, :, :]
                         if len(frame.shape) == 2:
                             frame = np.expand_dims(frame, axis=2)
-                        frame = np.transpose(frame, (2, 0, 1))  # Convert from rows, cols, channels to channels, rows, cols
                         output[i, :, :, :] = frame
 
                 except Exception as e:

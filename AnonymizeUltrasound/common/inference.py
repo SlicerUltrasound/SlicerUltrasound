@@ -37,7 +37,7 @@ def load_model(model_path: str, device: str = 'cpu'):
     return model
         
 def preprocess_image(
-    image: np.ndarray, # (N, C, H, W)
+    image: np.ndarray, # (N, H, W, C)
     target_size: tuple[int, int] = (240, 320),  # (height, width) - matches training spatial_size
 ) -> torch.Tensor:
     """
@@ -51,11 +51,9 @@ def preprocess_image(
     This function replicates that exact sequence.
     """
     # Step 1: Max-pool frames to get single frame
-    snapshot = image.max(axis=0)  # (C, H, W)
+    snapshot = image.max(axis=0)  # (H, W, C)
 
     # Step 2: Convert to grayscale using PIL method (matching training dataset)
-    # First transpose to (H, W, C) for PIL processing
-    snapshot = np.transpose(snapshot, (1, 2, 0))  # (H, W, C)
 
     # Handle single channel case - squeeze if needed
     if snapshot.shape[2] == 1:
