@@ -103,5 +103,5 @@ def save_frame_png(frame_item: np.ndarray, out_path: str) -> bool:
     return cv2.imwrite(out_path, img)
 
 # Example usage:
-ok = save_frame_png(frame_item, os.path.expanduser("~/Downloads/frame_item.png"))
+save_frame_png(frame_item, os.path.expanduser("~/Downloads/frame_item.png"))
 ```

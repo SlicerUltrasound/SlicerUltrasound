@@ -1,13 +1,9 @@
 import os
 import hashlib
-import shutil
 import pydicom
 import pandas as pd
 import logging
 from typing import Optional, List
-import qt
-import slicer
-from DICOMLib import DICOMUtils
 import numpy as np
 from PIL import Image
 import io
@@ -15,6 +11,8 @@ import random
 import datetime
 import json
 from pydicom.dataset import FileMetaDataset
+from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
+
 
 class DicomFileManager:
     """
@@ -35,8 +33,8 @@ class DicomFileManager:
 
     Attributes:
         dicom_df (pd.DataFrame): DataFrame containing DICOM file metadata
-        next_dicom_index (int): Index of next file to process
-        current_dicom_index (int): Index of currently loaded file
+        next_index (int): Index of next file to process
+        current_index (int): Index of currently loaded file
         _temp_directories (List[str]): List of temporary directories for cleanup
     """
 
@@ -88,9 +86,8 @@ class DicomFileManager:
     def __init__(self):
         self.dicom_df = None
         self.input_folder = None
-        self.next_dicom_index = 0
-        self.current_dicom_index = 0
-        self._temp_directories = []
+        self.next_index = 0
+        self.current_index = 0
 
     def get_transducer_model(self, transducerType: str) -> str:
         """
@@ -102,110 +99,44 @@ class DicomFileManager:
 
         return transducerType.split(",")[0].lower()
 
-    def scan_directory(self, input_folder: str, skip_single_frame: bool = False) -> int:
+    def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
         """
         Scan directory for DICOM files and create dataframe
 
         Args:
             input_folder: Directory to scan
             skip_single_frame: Skip single frame DICOM files (AnonymizeUltrasound)
+            hash_patient_id: If True, hash the patient ID
 
         Returns:
             Number of DICOM files found
         """
         dicom_data = []
-        total_files = sum([len(files) for _, _, files in os.walk(input_folder)])
 
-        progress_dialog = self._create_progress_dialog("Parsing DICOM files...", total_files)
+        for root, dirs, files in os.walk(input_folder):
+            # Sort to ensure consistent processing order
+            dirs.sort()
+            files.sort()
+            for file in files:
+                file_path = os.path.join(root, file)
+                _, ext = os.path.splitext(file)
+                if ext.lower() not in self.DICOM_EXTENSIONS:
+                    logging.info(f"Skipping non-DICOM file: {file_path}")
+                    continue
 
-        try:
-            file_count = 0
-            for root, dirs, files in os.walk(input_folder):
-                # Sort to ensure consistent processing order
-                dirs.sort()
-                files.sort()
-                for file in files:
-                    progress_dialog.setValue(file_count)
-                    file_count += 1
-                    slicer.app.processEvents()
+                dicom_info = self._extract_dicom_info(file_path, input_folder, skip_single_frame, hash_patient_id)
+                if dicom_info:
+                    dicom_data.append(dicom_info)
 
-                    file_path = os.path.join(root, file)
-                    _, ext = os.path.splitext(file)
-                    if ext.lower() not in self.DICOM_EXTENSIONS:
-                        logging.info(f"Skipping non-DICOM file: {file_path}")
-                        continue
+        self._create_dataframe(dicom_data)
 
-                    dicom_info = self._extract_dicom_info(file_path, input_folder, skip_single_frame)
-                    if dicom_info:
-                        dicom_data.append(dicom_info)
-
-            self._create_dataframe(dicom_data)
-
-            return len(self.dicom_df) if self.dicom_df is not None else 0
-
-        finally:
-            progress_dialog.close()
-
-    def load_sequence(self, parameter_node, output_directory: Optional[str] = None,
-                     continue_progress: bool = False, preserve_directory_structure: bool = True):
-        """
-        Load next DICOM sequence from the dataframe.
-
-        This method loads the next DICOM file in the sequence, creates a temporary directory,
-        copies the DICOM file there, and loads it using Slicer's DICOM utilities. It then
-        finds the sequence browser node and updates the parameter node.
-
-        Args:
-            parameter_node: Parameter node to store the loaded sequence browser
-            output_directory: Optional output directory to check for existing files
-            continue_progress: If True, skip files that already exist in output directory
-            preserve_directory_structure: If True, the output filepath will be the same as the relative path.
-        Returns:
-            tuple: (current_dicom_df_index, sequence_browser) where:
-                - current_dicom_df_index: The index of the current DICOM file in the dataframe
-                - sequence_browser: The loaded sequence browser node
-                Returns (None, None) if no more sequences available or loading fails.
-        """
-        if self.dicom_df is None or self.next_dicom_index is None or self.next_dicom_index >= len(self.dicom_df):
-            return None, None
-
-        next_row = self.dicom_df.iloc[self.next_dicom_index]
-        temp_dicom_dir = self._setup_temp_directory()
-
-        # Copy DICOM file to temporary folder
-        shutil.copy(next_row['InputPath'], temp_dicom_dir)
-
-        # Load DICOM using Slicer's DICOM utilities
-        loaded_node_ids = self._load_dicom_from_temp(temp_dicom_dir)
-        logging.info(f"Loaded DICOM nodes: {loaded_node_ids}")
-
-        sequence_browser = self._find_sequence_browser(loaded_node_ids)
-
-        if sequence_browser:
-            parameter_node.ultrasoundSequenceBrowser = sequence_browser
-        else:
-            logging.error(f"Failed to find sequence browser node in {loaded_node_ids}")
-            return None, None
-
-        # Increment index
-        next_index_val = self._increment_dicom_index(output_directory, continue_progress, preserve_directory_structure)
-
-        # Cleanup
-        self._cleanup_temp_directory(temp_dicom_dir)
-
-        # Update current DICOM dataframe index
-        self.current_dicom_index = self.next_dicom_index - 1 if self.next_dicom_index is not None and self.next_dicom_index > 0 else 0
-
-        if next_index_val or self.next_dicom_index is not None:
-            return self.current_dicom_index, sequence_browser
-
-        return None, None
+        return len(self.dicom_df) if self.dicom_df is not None else 0
 
     def get_number_of_instances(self) -> int:
         """Get number of instances in dataframe"""
         return len(self.dicom_df) if self.dicom_df is not None else 0
 
-    def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool) -> Optional[dict]:
+    def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool, hash_patient_id: bool = True) -> Optional[dict]:
         """Extract DICOM information from file
 
         Reads a DICOM file and extracts relevant metadata for ultrasound processing.
@@ -216,6 +147,7 @@ class DicomFileManager:
             file_path: Path to the DICOM file to process
             input_folder: Path to the input folder
             skip_single_frame: If True, skip files with less than 2 frames
+            hash_patient_id: If True, hash the patient ID
 
         Returns:
             dict: Dictionary containing extracted DICOM metadata
@@ -245,7 +177,7 @@ class DicomFileManager:
                 return None
 
             physical_delta_x, physical_delta_y = self._extract_spacing_info(dicom_ds)
-            anon_filename = self._generate_filename_from_dicom(dicom_ds)
+            anon_filename = self._generate_filename_from_dicom(dicom_ds, hash_patient_id)
             content_date = getattr(dicom_ds, 'ContentDate', '19000101')
             content_time = getattr(dicom_ds, 'ContentTime', '000000')
             to_patch = physical_delta_x is None or physical_delta_y is None
@@ -301,7 +233,7 @@ class DicomFileManager:
 
         return physical_delta_x, physical_delta_y
 
-    def _generate_filename_from_dicom(self, dicom_ds, hashPatientId: bool = True):
+    def _generate_filename_from_dicom(self, dicom_ds, hash_patient_id: bool = True):
         """
         Generate an anonymized filename from a DICOM dataset.
 
@@ -310,7 +242,7 @@ class DicomFileManager:
 
         Args:
             dicom_ds: DICOM dataset containing patient and instance information
-            hashPatientId (bool): Whether to hash the patient ID (default: True)
+            hash_patient_id (bool): Whether to hash the patient ID (default: True)
                                 If True, creates a 10-digit hash of the patient ID
                                 If False, uses the original patient ID
 
@@ -335,7 +267,7 @@ class DicomFileManager:
             logging.error("SOPInstanceUID not found in DICOM header dict")
             return ""
 
-        if hashPatientId:
+        if hash_patient_id:
             hash_object = hashlib.sha256()
             hash_object.update(str(patientUID).encode())
             patientId = int(hash_object.hexdigest(), 16) % 10**self.PATIENT_ID_HASH_LENGTH
@@ -377,13 +309,13 @@ class DicomFileManager:
                                        .groupby('StudyUID')[spacing_cols]
                                        .transform(lambda x: x.ffill().bfill()))
 
-        self.next_dicom_index = 0
+        self.next_index = 0
 
     def update_progress_from_output(self, output_directory: str, preserve_directory_structure: bool) -> Optional[int]:
         """Update progress based on existing output files
 
         This method checks which anonymized DICOM files already exist in the output
-        directory and updates the next_dicom_index to skip over files that have
+        directory and updates the next_index to skip over files that have
         already been processed. This enables resuming processing from where it
         left off in case of interruption.
 
@@ -413,61 +345,8 @@ class DicomFileManager:
         first_missing = exists_mask.idxmin()
         num_done = exists_mask[:first_missing].sum()
 
-        self.next_dicom_index = num_done
+        self.next_index = num_done
         return num_done
-
-    def _create_progress_dialog(self, message: str, maximum: int) -> qt.QProgressDialog:
-        """Create progress dialog"""
-        dialog = qt.QProgressDialog(message, "Cancel", 0, maximum, slicer.util.mainWindow())
-        dialog.setWindowModality(qt.Qt.WindowModal)
-        dialog.show()
-        return dialog
-
-    def _setup_temp_directory(self) -> str:
-        """Setup temporary directory for DICOM files"""
-        temp_dir = os.path.join(slicer.app.temporaryPath, 'UltrasoundModules')
-        os.makedirs(temp_dir, exist_ok=True)
-
-        # Clean existing files with error handling
-        try:
-            for file in os.listdir(temp_dir):
-                file_path = os.path.join(temp_dir, file)
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
-        except OSError as e:
-            logging.warning(f"Failed to clean temp directory {temp_dir}: {e}")
-
-        self._temp_directories.append(temp_dir)
-        return temp_dir
-
-    def _load_dicom_from_temp(self, temp_dir: str) -> List[str]:
-        """Load DICOM files using Slicer's DICOM utilities
-
-        This method creates a temporary DICOM database and loads DICOM files
-        from the specified directory into Slicer. It returns a list of node IDs
-        for the loaded DICOM files.
-
-        Args:
-            temp_dir: Path to the temporary directory containing DICOM files
-
-        Returns:
-            List[str]: List of node IDs for the loaded DICOM files
-        """
-        loaded_node_ids = []
-        with DICOMUtils.TemporaryDICOMDatabase() as db:
-            DICOMUtils.importDicom(temp_dir, db)
-            patient_uids = db.patients()
-            for patient_uid in patient_uids:
-                loaded_node_ids.extend(DICOMUtils.loadPatientByUID(patient_uid))
-        return loaded_node_ids
-
-    def _find_sequence_browser(self, loaded_node_ids: List[str]):
-        """Find sequence browser node from loaded nodes"""
-        for node_id in loaded_node_ids:
-            node = slicer.mrmlScene.GetNodeByID(node_id)
-            if node and node.IsA("vtkMRMLSequenceBrowserNode"):
-                return node
-        return None
 
     def _get_file_for_instance_uid(self, instance_uid: str) -> Optional[str]:
         """Get file path for given instance UID"""
@@ -513,7 +392,7 @@ class DicomFileManager:
                 parent[elem.name] = elem.value
         return parent
 
-    def _increment_dicom_index(self, output_directory: Optional[str] = None,
+    def increment_dicom_index(self, output_directory: Optional[str] = None,
                               continue_progress: bool = False, preserve_directory_structure: bool = True) -> bool:
         """
         Increment the DICOM index to the next file to be processed.
@@ -534,41 +413,31 @@ class DicomFileManager:
                     False if all files have been processed or if dicom_df is None.
 
         Note:
-            This method modifies the internal next_dicom_index counter. When continue_progress
+            This method modifies the internal next_index counter. When continue_progress
             is True, it will skip over files that already exist in the output directory.
         """
         if self.dicom_df is None:
             return False
 
         # Increment the index to the next file to be processed.
-        self.next_dicom_index += 1
+        self.next_index += 1
 
         # If continue_progress is True, skip files that already exist in output.
         if continue_progress and output_directory:
-            while self.next_dicom_index < len(self.dicom_df):
-                row = self.dicom_df.iloc[self.next_dicom_index]
+            while self.next_index < len(self.dicom_df):
+                row = self.dicom_df.iloc[self.next_index]
                 output_path = self.generate_output_filepath(
                     output_directory, row['OutputPath'], preserve_directory_structure)
 
                 if not os.path.exists(output_path):
                     break
 
-                self.next_dicom_index += 1
+                self.next_index += 1
 
-        return self.next_dicom_index < len(self.dicom_df)
-
-    def _cleanup_temp_directory(self, temp_dir: str):
-        """Cleanup temporary directory"""
-        try:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            if temp_dir in self._temp_directories:
-                self._temp_directories.remove(temp_dir)
-        except Exception as e:
-            logging.warning(f"Failed to cleanup temporary directory {temp_dir}: {e}")
+        return self.next_index < len(self.dicom_df)
 
     def save_anonymized_dicom(self, image_array: np.ndarray, output_path: str,
-                            new_patient_name: str = '', new_patient_id: str = '', labels: List[str] = None) -> None:
+                            new_patient_name: str = '', new_patient_id: str = '', labels: Optional[List[str]] = None) -> None:
         """
         Save image array as anonymized DICOM file.
 
@@ -583,7 +452,7 @@ class DicomFileManager:
             logging.error("No DICOM dataframe available")
             return
 
-        if self.current_dicom_index >= len(self.dicom_df):
+        if self.current_index >= len(self.dicom_df):
             logging.error("No current DICOM record available")
             return
 
@@ -591,7 +460,7 @@ class DicomFileManager:
             logging.error("Image array is None")
             return
 
-        current_record = self.dicom_df.iloc[self.current_dicom_index]
+        current_record = self.dicom_df.iloc[self.current_index]
         source_dataset = current_record.DICOMDataset
 
         # Create new anonymized dataset
@@ -832,7 +701,7 @@ class DicomFileManager:
         if self.dicom_df is None:
             return '1'
 
-        current_record = self.dicom_df.iloc[self.current_dicom_index]
+        current_record = self.dicom_df.iloc[self.current_index]
         current_instance_uid = current_record.DICOMDataset.SOPInstanceUID
 
         matching_rows = self.dicom_df[self.dicom_df['InstanceUID'] == current_instance_uid]
@@ -971,3 +840,68 @@ class DicomFileManager:
         if isinstance(obj, bytes):
             return obj.decode('latin-1')
         raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
+
+    def read_frames_from_dicom(self, dicom_file_path):
+        """
+        Reads frames from a dicom file and returns a numpy array in the format of [Frames, Height, Width, Channels]. PyTorch convention is NCHW for image batches.
+        :param dicom_file_path: path to the dicom file
+        :return: numpy array [N,H,W,C]
+        """
+        ds = pydicom.dcmread(dicom_file_path)
+        width = ds.Columns
+        height = ds.Rows
+        channels = ds.SamplesPerPixel
+
+        try:
+            num_frames = ds.NumberOfFrames
+        except:
+            num_frames = 1
+            logging.warning(f"Warning: No NumberOfFrames found in {dicom_file_path}, trying to read with num_frames=1")
+
+        output = np.zeros((num_frames, height, width, channels), dtype=np.uint8)
+
+        try:
+            logging.info(f"Trying `dicom.encaps.generate_pixel_data_frame`")
+            pixel_data_frames = generate_pixel_data_frame(ds.PixelData)
+
+            for i in range(num_frames):
+                frame_item = next(pixel_data_frames)
+                image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
+                frame = np.array(image)
+                # If frame is grayscale, add a channel dimension
+                if len(frame.shape) == 2:
+                    frame = np.expand_dims(frame, axis=2)
+                output[i, :, :, :] = frame
+        except Exception as e:
+            try:
+                logging.info("Fallback to decode_data_sequence approach")
+                frame_data = decode_data_sequence(ds.PixelData)
+
+                for i, frame_item in enumerate(frame_data):
+                    if i >= num_frames:
+                        break
+                    image = Image.open(io.BytesIO(frame_item))  # jpeg uncompressed
+                    frame = np.array(image)
+                    # If frame is grayscale, add a channel dimension
+                    if len(frame.shape) == 2:
+                        frame = np.expand_dims(frame, axis=2)
+                    output[i, :, :, :] = frame
+
+            except Exception as e:
+                try:
+                    logging.info("Fallback to ds.pixel_array approach")
+                    pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower
+                    # ensure that the shape is (num_frames, height, width, channels).
+                    # it is sometimes (height, width, channels)
+                    if len(pixel_data_frames.shape) == 3 and num_frames == 1:
+                        pixel_data_frames = np.expand_dims(pixel_data_frames, axis=0)
+
+                    for i in range(num_frames):
+                        frame = pixel_data_frames[i, :, :]
+                        if len(frame.shape) == 2:
+                            frame = np.expand_dims(frame, axis=2)
+                        output[i, :, :, :] = frame
+
+                except Exception as e:
+                    raise e
+        return output
