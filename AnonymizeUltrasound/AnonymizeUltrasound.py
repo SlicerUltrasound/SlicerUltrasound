@@ -955,13 +955,16 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             slicer.util.errorDisplay(str(e))
 
     def onNextButton(self) -> None:
-        logging.info("Next button clicked")
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
         continueProgress = self.ui.continueProgressCheckBox.checked
 
         # If continue progress is checked and nextDicomDfIndex is None, there is nothing more to load
         if self.logic.dicom_manager.next_index is None and continueProgress:
             self.ui.statusLabel.text = "All files from input folder have been processed to output folder. No more files to load."
+            return
+
+        if self.logic.dicom_manager.next_index >= len(self.logic.dicom_manager.dicom_df):
+            slicer.util.mainWindow().statusBar().showMessage('⚠️ No more DICOM files', 5000)
             return
 
         # Remove observers for the mask markups node, because loading a new series will reset the scene and create a new markups node
