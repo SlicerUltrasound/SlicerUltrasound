@@ -1,95 +1,93 @@
-# *auto_anonymize.py* – Command-line Ultrasound-DICOM Anonymizer
+# auto_anonymize.py – Command-line Ultrasound DICOM Anonymizer
 
-Replicates the 3D Slicer AnonymizeUltrasound extension entirely from the shell, automating fan-masking and removing PHI from the DICOM headers.
+Automated fan-masking and PHI removal for ultrasound DICOM files, replicating the 3D Slicer AnonymizeUltrasound extension functionality.
 
-⸻
+## Quick Start
 
-1. Quick start
-
-First, install the dependencies.
-```python
+Install dependencies:
+```bash
 uv venv --python 3.9.10
 source .venv/bin/activate
 uv pip install -r requirements-cpu.txt
 ```
 
-To run the script, use the following command:
-```
-python -m auto_anonymize \
-    /path/to/input_dicoms \
-    /path/to/output_dicoms \
-    /path/to/headers_out \
-    --model-path /path/to/model_trace.pt \
+Basic anonymization:
+```bash
+python -m auto_anonymize input_dicoms/ output_dicoms/ headers_out/ \
+    --model-path model_trace.pt \
     --device cuda \
-    --overview-dir /tmp/overviews
+    --overview-dir overviews/
 ```
 
-At the end you will have:
+Header-only anonymization (no masking):
+```bash
+python -m auto_anonymize input_dicoms/ output_dicoms/ headers_out/ \
+    --no-mask-generation
+```
 
-- /path/to/output_dicoms	Fully-anonymized DICOMs (same tree as input unless you turn off preservation).
-- /path/to/headers_out/keys.csv	Lookup table mapping original → anonymized filenames / UIDs.
-- /path/to/headers_out/*_DICOMHeader.json	JSON copy of every header (patient name & DOB stripped).
-- /tmp/overviews	Side-by-side PNGs of original vs anonymized first frames, for manual QC.
+With ground truth evaluation:
+```bash
+python -m auto_anonymize input_dicoms/ output_dicoms/ headers_out/ \
+    --model-path model_trace.pt \
+    --ground-truth-dir ground_truth_masks/ \
+    --overview-dir overviews/
+```
 
+## Arguments
 
-⸻
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `input_folder` | ✓ | - | Root directory to scan for DICOM files (Modality == "US" only) |
+| `output_folder` | ✓ | - | Directory for anonymized DICOMs |
+| `headers_folder` | ✓ | - | Directory for headers/keys and the `keys.csv` mapping file |
+| `--model-path` | * | - | Path to `.pt` checkpoint for corner prediction model |
+| `--device` | | `cpu` | Inference device: `cpu`, `cuda`, or `mps` |
+| `--skip-single-frame` | | off | Skip single-frame studies |
+| `--no-hash-patient-id` | | off | **Dangerous**: Keep original PatientID instead of hashing |
+| `--filename-prefix` | | - | Prefix for output filenames |
+| `--no-preserve-directory-structure` | | off | Flatten output (don't mirror input tree) |
+| `--resume-anonymization` | | off | Skip existing output files |
+| `--overview-dir` | | - | Save before/after PNG comparisons for QC |
+| `--no-mask-generation` | | off | Header-only anonymization (skip masking) |
+| `--ground-truth-dir` | | - | Directory with ground truth masks for evaluation |
 
-2. Required arguments
+*Required unless using `--no-mask-generation`
 
-| Positional arg | Purpose |
-| --------------- | ------- |
-| input_folder | Root directory to scan for DICOM files (recursively). Only files with Modality == "US" are processed. |
-| output_folder | Where anonymized DICOMs are written. Sub-folders are copied 1-to-1 unless you disable that (see below). |
-| headers_folder | Separate store for headers/keys and the keys.csv de-identification map. Often in the same root as output_folder. |
-| model_path | *.pt checkpoint for the Attention U-Net + DSNT corner-regression model. |
+## Outputs
 
-⸻
+| Location | Content |
+|----------|---------|
+| `output_folder/` | Anonymized DICOM files with fan masking applied |
+| `headers_folder/keys.csv` | Mapping of original → anonymized filenames/UIDs |
+| `headers_folder/*_DICOMHeader.json` | Anonymized header copies (PHI removed) |
+| `overview_dir/` | Before/after PNG grids for manual QC |
+| `overview_dir/metrics.csv` | Quantitative evaluation metrics (with `--ground-truth-dir`) |
 
-3. Optional switches
+## Evaluation & Quality Control
 
-| Flag | Default | What it does |
-| --------------- | ------- | ------- |
-| --device {cpu,cuda,mps} | cpu | Where inference runs. Falls back to CPU if the requested accelerator (MPS, CUDA) is missing. |
-| --skip-single-frame | off | Ignores single-frame studies that don’t need masking. |
-| --no-hash-patient-id | off | **Dangerous** – keeps original PatientID instead of hashing the first 10 digits. |
-| --filename-prefix PREFIX | none | Prepends PREFIX_ to every output filename. Helpful when wanting to mark the source of the anonymized data. |
-| --no-preserve-directory-structure | off | Dumps all output files flat into output_folder instead of mirroring the input tree. |
-| --resume-anonymization | off | If the final .dcm already exists, the file is skipped; useful for interrupted runs. |
-| --overview-dir DIR | none | Saves PNG grids (original vs masked) for the first frame of each clip. **Highly recommended for PHI QC.** |
+When `--ground-truth-dir` is specified, the script computes segmentation metrics by comparing predicted masks against ground truth configurations:
 
+**Metrics included**: Dice coefficient, IoU, pixel accuracy, precision, recall, F1-score, sensitivity, specificity
 
-⸻
+**Ground truth format**: JSON files with mask configurations matching the anonymized filename structure.
 
-4. What actually happens
+## Processing Overview
 
-	1.	Directory scan
-Builds a Pandas dataframe of every ultrasound DICOM, gathering UIDs, frame count, spacing, etc.
-	2.	Filename & key generation: `<10-digit hash(PatientID)>_<8-digit hash(SOPInstanceUID)>.dcm`. The mapping is written to keys.csv.
+1. **Directory scan**: Build index of ultrasound DICOM files
+2. **Key generation**: Create `<hash(PatientID)>_<hash(SOPInstanceUID)>.dcm` filenames  
+3. **Inference**: Predict corner points using Attention U-Net + DSNT model (unless `--no-mask-generation`)
+4. **Masking**: Generate and apply fan-shaped masks to all frames
+5. **DICOM assembly**: Re-encode with JPEG baseline, anonymize headers, shift dates
+6. **Evaluation**: Compute metrics against ground truth (if provided)
 
-    3. Inference
-        - read_frames_from_dicom extracts frames as N×C×H×W (uint8).
-        - The Attention U-Net + DSNT model predicts four normalized corner points, denormalized to pixel space.
-        - Mask creation & application
-        - Converted to a fan-shaped binary mask via compute_masks_and_configs; mask is multiplied into every frame.
-	5.	DICOM re-assembly
-        - Pixel data re-encapsulated as JPEG baseline.
-        - Mandatory tags copied (BitsAllocated, Manufacturer, …).
-        - Fresh SeriesInstanceUID generated; other UIDs preserved unless missing.
-        - Dates randomly shifted ≤30 days (consistent per patient).
-        - Patient name/ID cleared (or hashed) and birth date truncated to year only.
-	6.	Outputs written
-        - .dcm, matching .json sequence info (mask metadata) and header JSON.
-        - Optional PNG overview.
+**Anonymization details**:
+- Patient name/ID cleared or hashed
+- Birth date truncated to year only  
+- Dates randomly shifted ≤30 days (consistent per patient)
+- Fresh SeriesInstanceUID generated
 
-Progress is shown with a TQDM bar and detailed timing blocks (read, inference, mask, save, etc.) in the log.
+## Logging & Resume
 
-⸻
+Logs saved to `auto_anonymize_*.log`. Use `--resume-anonymization` to skip completed files in interrupted runs.
 
-5. Logging & exit codes
-
-| Outcome | Log location | Exit status |
-| ------- | ------------ | ----------- |
-| All files succeed | auto_anonymize_*.log (created by utils.logging_utils) | 0 |
-| ≥ 1 file fails | Log highlights the failures | 1 |
-
-Pass --resume-anonymization to re-run later without re-processing finished files.
+**Exit codes**: 0 (success), 1 (≥1 failure)
