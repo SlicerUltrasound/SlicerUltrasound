@@ -6,9 +6,9 @@ import logging
 
 def get_device(device: str = 'cpu'):
     """ Set the Device to run the model on """
-    if device is not None and device != '': 
+    if device is not None and device != '':
         return device
-    
+
     if torch.cuda.is_available():
         device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -23,11 +23,11 @@ def get_device(device: str = 'cpu'):
 def load_model(model_path: str, device: str = 'cpu'):
     """
     Loads a PyTorch model, handling both traced and non-traced checkpoints.
-    
+
     Args:
         model_path (str): Path to the model file
         device (str): Device to load the model on
-        
+
     Returns:
         torch.nn.Module or torch.jit.ScriptModule: Loaded model
     """
@@ -35,7 +35,41 @@ def load_model(model_path: str, device: str = 'cpu'):
     model.eval()  # Set model to evaluation mode
     model.to(device)  # Move model to device (GPU if available)
     return model
-        
+
+def validate_image_shape(image: np.ndarray) -> np.ndarray:
+    """
+    Validate the shape of the image to be (N, H, W, C)
+    If the shape is not (N, H, W, C), it will be converted to (N, H, W, C)
+    :param image: np.ndarray
+    :return: np.ndarray
+    """
+    logging.info(f"Validating image shape: {image.shape}")
+
+    # Validate input shape
+    if image.ndim != 4:
+        raise ValueError(f"Expected 4D array (N, H, W, C), got {image.ndim}D array with shape {image.shape}")
+
+    # Check if it's (N, C, H, W) format and convert to (N, H, W, C)
+    if image.shape[1] in (1, 3, 4) and image.shape[2] > image.shape[1] and image.shape[3] > image.shape[1]:
+        logging.info(f"Converting from (N, C, H, W) to (N, H, W, C) format")
+        image = image.transpose(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
+
+    N, H, W, C = image.shape
+
+    # Validate dimensions make sense
+    if N < 1:
+        raise ValueError(f"Number of frames must be >= 1, got {N}")
+    if H < 1 or W < 1:
+        raise ValueError(f"Height and width must be >= 1, got H={H}, W={W}")
+    if C not in (1, 3, 4):  # grayscale, RGB, or RGBA
+        raise ValueError(f"Number of channels must be 1, 3, or 4, got {C}")
+
+    # Additional sanity checks
+    if H > 10000 or W > 10000:  # reasonable upper bounds
+        logging.warning(f"Unusually large image dimensions: {H}×{W}")
+
+    return image
+
 def preprocess_image(
     image: np.ndarray, # (N, H, W, C)
     target_size: tuple[int, int] = (240, 320),  # (height, width) - matches training spatial_size
@@ -50,14 +84,17 @@ def preprocess_image(
 
     This function replicates that exact sequence.
     """
+    pil_image = validate_image_shape(image)
+
     # Step 1: Max-pool frames to get single frame
-    snapshot = image.max(axis=0)  # (H, W, C)
+    snapshot = pil_image.max(axis=0)  # (H, W, C)
 
     # Step 2: Convert to grayscale using PIL method (matching training dataset)
 
-    # Handle single channel case - squeeze if needed
+    # Handle single channel case.
+    # PIL expects 2D arrays for grayscale images, not 3D arrays with a single channel (H, W)
     if snapshot.shape[2] == 1:
-        snapshot_for_pil = snapshot.squeeze(axis=2)  # (H, W)
+        snapshot_for_pil = snapshot.squeeze(axis=2)
     else:
         snapshot_for_pil = snapshot
 
