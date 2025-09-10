@@ -37,6 +37,25 @@ def load_mask_config(config_path: str) -> dict:
             "image_size_cols": 1290
         }
     }
+
+    or
+
+    {
+        "SOPInstanceUID": "1.2.156",
+        "GrayscaleConversion": false,
+        "mask_type": "fan",
+        "angle1": 120.740816880876,
+        "angle2": 59.46198675207232,
+        "center_rows_px": -113,
+        "center_cols_px": 877,
+        "radius1": 270,
+        "radius2": 1024,
+        "image_size_rows": 920,
+        "image_size_cols": 1590,
+        "AnnotationLabels": [
+            "1- R1 T-H"
+        ]
+    }
     """
     try:
         with open(config_path, 'r') as f:
@@ -44,13 +63,13 @@ def load_mask_config(config_path: str) -> dict:
 
         mask_config = config.get("MaskConfig")
         if mask_config is None:
-            raise ValueError(f"MaskConfig not found in {config_path}")
+            mask_config = config
 
         return mask_config
 
     except Exception as e:
         raise ValueError(f"Error loading {config_path}: {e}")
-    
+
 def calculate_segmentation_metrics(
     ground_truth_mask: np.ndarray,
     predicted_mask: np.ndarray,
