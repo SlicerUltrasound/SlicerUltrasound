@@ -9,7 +9,7 @@ import torch
 
 from .dicom_file_manager import DicomFileManager
 from .inference import load_model, preprocess_image
-from .masking import compute_masks_and_configs
+from .masking import compute_masks_and_configs, mask_config_to_corner_points
 from .evaluation import compare_masks, load_mask_config
 
 @dataclass
@@ -96,6 +96,60 @@ class DicomProcessor:
             self.model = load_model(self.config.model_path, self.config.device)
             self.device = self.config.device
             self.logger.info(f"Model loaded on {self.device}")
+
+    def evaluate_single_dicom(
+        self,
+        row,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        overview_callback: Optional[Callable[[str, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[Dict[str, Any]]], None]] = None
+    ) -> ProcessingResult:
+        start_time = time.time()
+        input_path = row.InputPath
+        try:
+            if progress_callback:
+                progress_callback(f"Evaluating: {input_path}")
+
+            # Read frames [N,H,W,C]
+            original_image = self.dicom_manager.read_frames_from_dicom(input_path)
+            original_dims = (original_image.shape[1], original_image.shape[2])
+
+            # Load ground truth mask configuration
+            dicom_basename = os.path.basename(input_path)
+            gt_config_path = self.gt_manager.get_ground_truth_path(dicom_basename)
+            gt_mask_config = load_mask_config(gt_config_path)if gt_config_path else None
+            gt_corners = mask_config_to_corner_points(gt_mask_config) if gt_mask_config else None
+
+            # Run AI
+            coords_norm = self._run_inference(original_image)
+            predicted_corners = self._denormalize_coords(coords_norm, original_dims)
+
+            # Predicted mask and config
+            predicted_mask_2d, predicted_mask_config = compute_masks_and_configs(
+                original_dims=original_dims, predicted_corners=predicted_corners
+            )
+
+            # For overview, produce a masked visualization
+            masked_image = self._apply_mask(original_image, predicted_mask_2d)
+
+            # Metrics: match GT by DICOM filename
+            metrics = self._compute_metrics_with_ground_truth(dicom_basename, gt_mask_config, original_dims, gt_corners, predicted_mask_config, predicted_corners)
+
+            # Overview callback
+            if overview_callback and original_image.shape[0] > 0:
+                overview_callback(dicom_basename, original_image, masked_image, predicted_mask_2d, metrics)
+
+            return ProcessingResult(
+                success=True, skipped=False, input_path=input_path,
+                output_path="", processing_time=time.time() - start_time,
+                metrics=metrics
+            )
+        except Exception as e:
+            err = f"Failed to evaluate {input_path}: {e}"
+            self.logger.error(err)
+            return ProcessingResult(
+                success=False, skipped=False, input_path=input_path,
+                output_path="", error_message=err, processing_time=time.time() - start_time
+            )
 
     def process_single_dicom(
         self,
@@ -194,12 +248,13 @@ class DicomProcessor:
             # 7. Save sequence info JSON
             self._save_sequence_info(final_output_path, row, mask_config)
 
-            # 8. Compute metrics if ground truth available
-            metrics = self._compute_metrics(anon_filename, mask_config, original_dims)
+            # 8. Load ground truth mask config if available
+            metrics = {}
+            gt_mask_config = self._load_ground_truth_mask_config(anon_filename, mask_config, original_dims)
+            if gt_mask_config is not None:
+                metrics['ground_truth_config_json'] = json.dumps(gt_mask_config)
 
             # 9. Add predicted corners to metrics for CSV export
-            if metrics is None:
-                metrics = {}
             if isinstance(predicted_corners, dict):
                 metrics['predicted_corners_json'] = json.dumps(self._convert_numpy_float_to_python_float(predicted_corners))
 
@@ -298,7 +353,7 @@ class DicomProcessor:
             with open(json_path, 'w') as f:
                 json.dump(sequence_info, f, indent=2)
 
-    def _compute_metrics(self, anon_filename: str, predicted_mask_config: Optional[dict],
+    def _load_ground_truth_mask_config(self, anon_filename: str, predicted_mask_config: Optional[dict],
                         original_dims: Tuple[int, int]) -> Optional[Dict[str, Any]]:
         """
         Compute segmentation metrics by comparing predicted mask with ground truth.
@@ -329,22 +384,83 @@ class DicomProcessor:
             # Load ground truth mask configuration using existing function
             gt_mask_config = load_mask_config(gt_config_path)
 
+            return gt_mask_config
+        except Exception as e:
+            self.logger.warning(f"Failed to load ground truth mask configuration for {anon_filename}: {e}")
+            return None 
+
+    def _compute_metrics_with_ground_truth(self, 
+                        anon_filename: str, gt_mask_config: Optional[dict], original_dims: Tuple[int, int],
+                        gt_corners: Optional[dict] = None, predicted_mask_config: Optional[dict] = None, 
+                        predicted_corners: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+        """
+        Compute segmentation metrics by comparing predicted mask with ground truth.
+
+        This method leverages the existing evaluation functions to compute comprehensive
+        segmentation metrics including Dice coefficient, IoU, precision, recall, etc.
+
+        Args:
+            anon_filename: Anonymized filename to find corresponding ground truth
+            predicted_mask_config: Predicted mask configuration from AI model
+            original_dims: Original image dimensions (height, width)
+            gt_corners: Ground truth corners
+            predicted_corners: Predicted corners
+
+        Returns:
+            Dictionary containing computed metrics or None if no ground truth available
+        """
+        # Early return if missing any required parameters
+        if not self.gt_manager.gt_index or not predicted_mask_config or not original_dims or not gt_corners or not predicted_corners:
+            return None
+
+        try:
+            # Find ground truth file for this anonymized filename
+            gt_config_path = self.gt_manager.get_ground_truth_path(anon_filename)
+
+            if not gt_config_path:
+                self.logger.debug(f"No ground truth found for {anon_filename}")
+                return None
+
+            # Load ground truth mask configuration using existing function
+            gt_mask_config = load_mask_config(gt_config_path)
+
             # Compute metrics using existing comparison function
-            metrics = compare_masks(gt_mask_config, predicted_mask_config, original_dims)
+            metrics = compare_masks(gt_mask_config, predicted_mask_config, gt_corners, predicted_corners, original_dims)
 
             # Add ground truth path to metrics for tracking
             metrics['ground_truth_path'] = gt_config_path
+            metrics['ground_truth_config_json'] = json.dumps(gt_mask_config)
+            metrics['ground_truth_corners_json'] = json.dumps(self._convert_numpy_float_to_python_float(gt_corners)) if gt_corners else None
             metrics['predicted_config_json'] = json.dumps(predicted_mask_config)
-
-            self.logger.debug(f"Computed metrics for {anon_filename}: "
-                            f"Dice={metrics.get('dice_mean', 'N/A'):.3f}, "
-                            f"IoU={metrics.get('iou_mean', 'N/A'):.3f}")
+            metrics['predicted_corners_json'] = json.dumps(self._convert_numpy_float_to_python_float(predicted_corners)) if predicted_corners else None
 
             return metrics
 
         except Exception as e:
             self.logger.warning(f"Failed to compute metrics for {anon_filename}: {e}")
             return None
+
+    def get_evaluate_fieldnames(self) -> List[str]:
+        """
+        Get standard fieldnames for metrics CSV output.
+
+        This provides a consistent set of field names that can be used
+        across different implementations (CLI vs Slicer).
+
+        Returns:
+            List of field names for metrics CSV
+        """
+        return [
+            "dicom_input_path",
+            "ground_truth_config_path",
+            "ground_truth_config_json",
+            "ground_truth_corners_json",
+            "predicted_config_json",
+            "predicted_corners_json",
+            "dice_mean",
+            "iou_mean",
+            "pixel_accuracy_mean"
+        ]
 
     def get_metrics_fieldnames(self) -> List[str]:
         """
@@ -359,17 +475,8 @@ class DicomProcessor:
         return [
             "dicom_output_path",
             "dicom_filename",
-            "ground_truth_config_path",
             "predicted_config_json",
             "predicted_corners_json",
-            "dice_mean",
-            "iou_mean",
-            "pixel_accuracy_mean",
-            "precision_mean",
-            "recall_mean",
-            "f1_mean",
-            "sensitivity_mean",
-            "specificity_mean",
         ]
 
     def format_metrics_for_csv(self, result: ProcessingResult) -> Dict[str, Any]:
@@ -387,17 +494,25 @@ class DicomProcessor:
         return {
             "dicom_output_path": result.output_path,
             "dicom_filename": os.path.basename(result.output_path) if result.output_path else "",
+            "predicted_config_json": metrics.get("predicted_config_json", ""),
+            "predicted_corners_json": metrics.get("predicted_corners_json", ""),
+        }
+
+    def format_evaluate_metrics_for_csv(self, result: ProcessingResult) -> Dict[str, Any]:
+        """
+        Format ProcessingResult metrics for CSV output.
+        """
+        metrics = result.metrics or {}
+        return {
+            "dicom_input_path": result.input_path,
             "ground_truth_config_path": metrics.get("ground_truth_path", ""),
+            "ground_truth_config_json": metrics.get("ground_truth_config_json", ""),
+            "ground_truth_corners_json": metrics.get("ground_truth_corners_json", ""),
             "predicted_config_json": metrics.get("predicted_config_json", ""),
             "predicted_corners_json": metrics.get("predicted_corners_json", ""),
             "dice_mean": metrics.get("dice_mean", ""),
             "iou_mean": metrics.get("iou_mean", ""),
             "pixel_accuracy_mean": metrics.get("pixel_accuracy_mean", ""),
-            "precision_mean": metrics.get("precision_mean", ""),
-            "recall_mean": metrics.get("recall_mean", ""),
-            "f1_mean": metrics.get("f1_mean", ""),
-            "sensitivity_mean": metrics.get("sensitivity_mean", ""),
-            "specificity_mean": metrics.get("specificity_mean", ""),
         }
 
     def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str) -> str:

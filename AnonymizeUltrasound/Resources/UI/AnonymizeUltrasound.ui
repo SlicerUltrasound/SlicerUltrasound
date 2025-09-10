@@ -531,16 +531,120 @@
         </item>
        </widget>
       </item>
-      <item row="6" column="0">
-       <widget class="QLabel" name="autoAnonOverviewLabel">
+      <item row="8" column="0" colspan="2">
+       <widget class="QPushButton" name="runAutoAnonymizeButton">
+        <property name="text"><string>Run Auto‑Anonymize</string></property>
+        <property name="toolTip">
+          <string>Run Auto‑Anonymize (Batch) for all DICOM files in the input folder</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="enableModelEvaluationCheckBox">
+    <property name="text">
+      <string>Enable Model Evaluation (Batch)</string>
+    </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="modelEvaluationGroupBox">
+     <property name="title">
+      <string>Model Evaluation</string>
+     </property>
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <layout class="QFormLayout" name="modelEvaluationFormLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="modelEvaluationInputLabel">
+        <property name="text">
+         <string>Input folder:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="ctkDirectoryButton" name="inputDirectoryButtonEval">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>All DICOM files will be processed in this folder and all its subfolders</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="modelEvaluationModelPathLabel">
+        <property name="text"><string>Model path</string></property>
+        <property name="toolTip">
+          <string>Path to the model file</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="ctkPathLineEdit" name="modelEvaluationModelPathButton">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Model path will be saved here. Select a model file.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="modelEvaluationDeviceLabel">
+        <property name="text"><string>Device</string></property>
+        <property name="toolTip">
+          <string>Device to run the model on</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QComboBox" name="modelEvaluationDeviceComboBox">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Device to run the model on. GPU requires CUDA, MPS requires Apple Silicon Mac.</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>cpu</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>mps</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>cuda</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="modelEvaluationOverviewLabel">
         <property name="text"><string>Overview dir</string></property>
         <property name="toolTip">
           <string>Directory to save the overview files</string>
         </property>
         </widget>
       </item>
-      <item row="6" column="1">
-       <widget class="ctkDirectoryButton" name="autoAnonOverviewDirButton">
+      <item row="4" column="1">
+       <widget class="ctkDirectoryButton" name="modelEvaluationOverviewDirButton">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
           <horstretch>0</horstretch>
@@ -552,16 +656,16 @@
         </property>
        </widget>
       </item>
-      <item row="7" column="0">
-       <widget class="QLabel" name="autoAnonGTLabel">
+      <item row="5" column="0">
+       <widget class="QLabel" name="modelEvaluationGroundTruthLabel">
         <property name="text"><string>Ground truth dir</string></property>
         <property name="toolTip">
           <string>Directory of JSON mask configs matching anonymized DICOM filenames</string>
         </property>
        </widget>
       </item>
-      <item row="7" column="1">
-       <widget class="ctkDirectoryButton" name="autoAnonGroundTruthDirButton">
+      <item row="5" column="1">
+       <widget class="ctkDirectoryButton" name="modelEvaluationGroundTruthButton">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
           <horstretch>0</horstretch>
@@ -573,11 +677,11 @@
         </property>
        </widget>
       </item>
-      <item row="8" column="0" colspan="2">
-       <widget class="QPushButton" name="runAutoAnonymizeButton">
-        <property name="text"><string>Run Auto‑Anonymize</string></property>
+      <item row="6" column="0" colspan="2">
+       <widget class="QPushButton" name="runModelEvaluationButton">
+        <property name="text"><string>Run Model Evaluation</string></property>
         <property name="toolTip">
-          <string>Run Auto‑Anonymize (Batch) for all DICOM files in the input folder</string>
+          <string>Run Model Evaluation (Batch) for all DICOM files in the input folder</string>
         </property>
        </widget>
       </item>

@@ -267,6 +267,127 @@ def corner_points_to_fan_mask_config(corner_points, image_size=None) -> dict:
         }
     return fan_config_dict
 
+def mask_config_to_corner_points(config: dict) -> dict:
+    """
+    Inverse of corner_points_to_fan_mask_config.
+    Given a mask config, return corner points as:
+      {
+        "upper_left": (x, y),
+        "upper_right": (x, y) or None (for 3-point fan),
+        "lower_left": (x, y),
+        "lower_right": (x, y),
+      }
+
+    Supports:
+    - mask_type == "rectangle": uses rectangle_left/right/top/bottom
+    - mask_type == "fan": uses angles, center, and radii. Accepts legacy keys:
+      angle_min_degrees/angle_max_degrees, radius_min_px/radius_max_px, center_coordinate_pixel.
+    """
+    mask_type = config.get("mask_type", "fan")
+
+    if mask_type == "rectangle":
+        left = int(round(config["rectangle_left"]))
+        right = int(round(config["rectangle_right"]))
+        top = int(round(config["rectangle_top"]))
+        bottom = int(round(config["rectangle_bottom"]))
+        return {
+            "upper_left": (left, top),
+            "upper_right": (right, top),
+            "lower_left": (left, bottom),
+            "lower_right": (right, bottom),
+        }
+
+    if mask_type == "fan":
+        # Angles (degrees)
+        angle1 = config.get("angle1", config.get("angle_min_degrees"))
+        angle2 = config.get("angle2", config.get("angle_max_degrees"))
+        if angle1 is None or angle2 is None:
+            raise ValueError("Fan config must provide angle1/angle2 or angle_min_degrees/angle_max_degrees.")
+        angle1 = float(angle1)
+        angle2 = float(angle2)
+
+        # Center (row, col) or (y, x)
+        if "center_rows_px" in config and "center_cols_px" in config:
+            cy = int(config["center_rows_px"])
+            cx = int(config["center_cols_px"])
+        elif "center_coordinate_pixel" in config and config["center_coordinate_pixel"] is not None:
+            cy = int(config["center_coordinate_pixel"][0])
+            cx = int(config["center_coordinate_pixel"][1])
+        else:
+            raise ValueError("Fan config must provide center_rows_px/center_cols_px or center_coordinate_pixel.")
+
+        # Radii
+        r1 = config.get("radius1", config.get("radius_min_px", 0))
+        r2 = config.get("radius2", config.get("radius_max_px"))
+        if r2 is None:
+            raise ValueError("Fan config must provide radius2 or radius_max_px.")
+        r1 = int(round(float(r1)))
+        r2 = int(round(float(r2)))
+
+        t1 = np.deg2rad(angle1)
+        t2 = np.deg2rad(angle2)
+
+        def pt(theta, r):
+            x = cx + r * np.cos(theta)
+            y = cy + r * np.sin(theta)
+            return (int(round(x)), int(round(y)))
+
+        top1 = pt(t1, r1)
+        top2 = pt(t2, r1)
+        bot1 = pt(t1, r2)
+        bot2 = pt(t2, r2)
+
+        # 3-point fan: apex at center, r1 == 0
+        if r1 == 0:
+            apex = (cx, cy)
+            if bot1[0] <= bot2[0]:
+                lower_left, lower_right = bot1, bot2
+            else:
+                lower_left, lower_right = bot2, bot1
+            # Return None for upper_right so corner_points_to_fan_mask_config uses its 3-point branch
+            result = {
+                "upper_left": apex,
+                "upper_right": None,
+                "lower_left": lower_left,
+                "lower_right": lower_right,
+            }
+        else:
+            # Keep angle pairing consistent when deciding left/right using x of the top points
+            if top1[0] <= top2[0]:
+                upper_left, lower_left = top1, bot1
+                upper_right, lower_right = top2, bot2
+            else:
+                upper_left, lower_left = top2, bot2
+                upper_right, lower_right = top1, bot1
+            result = {
+                "upper_left": upper_left,
+                "upper_right": upper_right,
+                "lower_left": lower_left,
+                "lower_right": lower_right,
+            }
+
+        # Optional: clip to image bounds if available
+        rows = config.get("image_size_rows")
+        cols = config.get("image_size_cols")
+        if rows is not None and cols is not None:
+            rows = int(rows)
+            cols = int(cols)
+
+            def clip(p):
+                if p is None:
+                    return None
+                x, y = p
+                x = max(0, min(cols - 1, x))
+                y = max(0, min(rows - 1, y))
+                return (x, y)
+
+            for k in ("upper_left", "upper_right", "lower_left", "lower_right"):
+                result[k] = clip(result[k])
+
+        return result
+
+    raise ValueError(f"Unsupported mask type: {mask_type}. Supported types are 'rectangle' and 'fan'.")
+
 def compute_masks_and_configs(original_dims: tuple[int, int], predicted_corners: dict) -> tuple[np.ndarray, dict]:
     """
     Compute curvilinear mask and fan mask configuration from predicted corners.
