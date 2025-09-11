@@ -6,17 +6,20 @@ import numpy as np
 import json
 from common.masking import create_mask
 
-def compare_masks(ground_truth_config: dict, predicted_config: dict, original_dims: tuple[int, int]) -> dict:
+def compare_masks(ground_truth_config: dict, predicted_config: dict, ground_truth_corners: dict, predicted_corners: dict, original_dims: tuple[int, int]) -> dict:
     """
     Compares two mask configurations and returns segmentation metrics.
     :param ground_truth_config: path to the ground truth mask configuration
     :param predicted_config: path to the predicted mask configuration
+    :param ground_truth_corners: ground truth corners
+    :param predicted_corners: predicted corners
+    :param original_dims: original dimensions
     :return: dictionary with segmentation metrics
     """
     gt_mask = create_mask(ground_truth_config, image_size=original_dims)
     pred_mask = create_mask(predicted_config, image_size=original_dims)
 
-    return calculate_segmentation_metrics(gt_mask, pred_mask)
+    return calculate_segmentation_metrics(gt_mask, pred_mask, ground_truth_corners, predicted_corners)
 
 def load_mask_config(config_path: str) -> dict:
     """
@@ -73,6 +76,8 @@ def load_mask_config(config_path: str) -> dict:
 def calculate_segmentation_metrics(
     ground_truth_mask: np.ndarray,
     predicted_mask: np.ndarray,
+    ground_truth_corners: dict,
+    predicted_corners: dict,
     include_background_for_dice: bool = True,
     include_background_for_iou: bool = True,
 ) -> dict:
@@ -80,6 +85,8 @@ def calculate_segmentation_metrics(
     Calculates segmentation metrics for two mask pairs.
     :param ground_truth_mask: numpy array of the ground truth mask
     :param predicted_mask: numpy array of the predicted mask
+    :param ground_truth_corners: ground truth corners
+    :param predicted_corners: predicted corners
     :param include_background_for_dice: whether to include background in Dice calculation
     :param include_background_for_iou: whether to include background in IoU calculation
     :return: dictionary with segmentation metrics
@@ -91,6 +98,28 @@ def calculate_segmentation_metrics(
     gt_bin = (ground_truth_mask > 0).astype(np.uint8)
     pred_bin = (predicted_mask > 0).astype(np.uint8)
 
+    # Convert corners to numpy arrays
+    gt_corners = np.array(ground_truth_corners)
+    pred_corners = np.array(predicted_corners)
+
+    # Reshape to [batch_size, 4, 2] for easier calculation
+    pred_coords = pred_corners.view(-1, 4, 2)
+    target_coords = gt_corners.view(-1, 4, 2)
+    
+    # Calculate Euclidean distance for each corner
+    distances = torch.norm(pred_coords - target_coords, dim=2)  # [batch_size, 4]
+    
+    # Calculate mean distance error across all corners and samples
+    mean_distance_error = torch.mean(distances).item()
+    
+    # Calculate per-corner mean distance error
+    per_corner_errors = torch.mean(distances, dim=0).cpu().numpy()
+    
+    # Calculate percentage of predictions within certain thresholds
+    threshold_10 = torch.mean((distances < 0.1).float()).item()  # Within 10% of image size
+    threshold_05 = torch.mean((distances < 0.05).float()).item()  # Within 5% of image size
+    threshold_01 = torch.mean((distances < 0.01).float()).item()  # Within 1% of image size
+    
     # Dice & IoU
     gt_tensor = torch.from_numpy(gt_bin.astype(np.float32)).unsqueeze(0).unsqueeze(0)
     pred_tensor = torch.from_numpy(pred_bin.astype(np.float32)).unsqueeze(0).unsqueeze(0)
@@ -125,4 +154,12 @@ def calculate_segmentation_metrics(
         'f1_mean': f1,
         'sensitivity_mean': sensitivity,
         'specificity_mean': specificity,
+        'mean_distance_error': mean_distance_error,
+        'corner_0_error': per_corner_errors[0],
+        'corner_1_error': per_corner_errors[1], 
+        'corner_2_error': per_corner_errors[2],
+        'corner_3_error': per_corner_errors[3],
+        'accuracy_10pct': threshold_10,
+        'accuracy_5pct': threshold_05,
+        'accuracy_1pct': threshold_01
     }
