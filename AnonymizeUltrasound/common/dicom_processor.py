@@ -387,11 +387,11 @@ class DicomProcessor:
             return gt_mask_config
         except Exception as e:
             self.logger.warning(f"Failed to load ground truth mask configuration for {anon_filename}: {e}")
-            return None 
+            return None
 
-    def _compute_metrics_with_ground_truth(self, 
+    def _compute_metrics_with_ground_truth(self,
                         anon_filename: str, gt_mask_config: Optional[dict], original_dims: Tuple[int, int],
-                        gt_corners: Optional[dict] = None, predicted_mask_config: Optional[dict] = None, 
+                        gt_corners: Optional[dict] = None, predicted_mask_config: Optional[dict] = None,
                         predicted_corners: Optional[dict] = None) -> Optional[Dict[str, Any]]:
         """
         Compute segmentation metrics by comparing predicted mask with ground truth.
@@ -459,7 +459,42 @@ class DicomProcessor:
             "predicted_corners_json",
             "dice_mean",
             "iou_mean",
-            "pixel_accuracy_mean"
+            "pixel_accuracy_mean",
+
+            "mean_distance_error",
+            "corner_0_error",
+            "corner_1_error",
+            "corner_2_error",
+            "corner_3_error",
+
+            "image_height",
+            "image_width",
+            "image_diagonal",
+
+            "accuracy_0.5_px",
+            "accuracy_1_px",
+            "accuracy_2_px",
+            "accuracy_3_px",
+            "accuracy_4_px",
+            "accuracy_5_px",
+            "threshold_0.5_px_px",
+            "threshold_1_px_px",
+            "threshold_2_px_px",
+            "threshold_3_px_px",
+            "threshold_4_px_px",
+            "threshold_5_px_px",
+            "accuracy_10pct_min_dim",
+            "accuracy_10pct_max_dim",
+            "accuracy_10pct_diagonal",
+            "threshold_10pct_min_dim_px",
+            "threshold_10pct_max_dim_px",
+            "threshold_10pct_diagonal_px",
+            "accuracy_25pct_min_dim",
+            "accuracy_25pct_max_dim",
+            "accuracy_25pct_diagonal",
+            "threshold_25pct_min_dim_px",
+            "threshold_25pct_max_dim_px",
+            "threshold_25pct_diagonal_px",
         ]
 
     def get_metrics_fieldnames(self) -> List[str]:
@@ -513,16 +548,48 @@ class DicomProcessor:
             "dice_mean": metrics.get("dice_mean", ""),
             "iou_mean": metrics.get("iou_mean", ""),
             "pixel_accuracy_mean": metrics.get("pixel_accuracy_mean", ""),
+            "mean_distance_error": metrics.get("mean_distance_error", ""),
+            "corner_0_error": metrics.get("corner_0_error", ""),
+            "corner_1_error": metrics.get("corner_1_error", ""),
+            "corner_2_error": metrics.get("corner_2_error", ""),
+            "corner_3_error": metrics.get("corner_3_error", ""),
+            "image_height": metrics.get("image_height", ""),
+            "image_width": metrics.get("image_width", ""),
+            "image_diagonal": metrics.get("image_diagonal", ""),
+            "accuracy_0.5_px": metrics.get("accuracy_0.5_px", ""),
+            "accuracy_1_px": metrics.get("accuracy_1_px", ""),
+            "accuracy_2_px": metrics.get("accuracy_2_px", ""),
+            "accuracy_3_px": metrics.get("accuracy_3_px", ""),
+            "accuracy_4_px": metrics.get("accuracy_4_px", ""),
+            "accuracy_5_px": metrics.get("accuracy_5_px", ""),
+            "threshold_0.5_px_px": metrics.get("threshold_0.5_px_px", ""),
+            "threshold_1_px_px": metrics.get("threshold_1_px_px", ""),
+            "threshold_2_px_px": metrics.get("threshold_2_px_px", ""),
+            "threshold_3_px_px": metrics.get("threshold_3_px_px", ""),
+            "threshold_4_px_px": metrics.get("threshold_4_px_px", ""),
+            "threshold_5_px_px": metrics.get("threshold_5_px_px", ""),
+            "accuracy_10pct_min_dim": metrics.get("accuracy_10pct_min_dim", ""),
+            "accuracy_10pct_max_dim": metrics.get("accuracy_10pct_max_dim", ""),
+            "accuracy_10pct_diagonal": metrics.get("accuracy_10pct_diagonal", ""),
+            "threshold_10pct_min_dim_px": metrics.get("threshold_10pct_min_dim_px", ""),
+            "threshold_10pct_max_dim_px": metrics.get("threshold_10pct_max_dim_px", ""),
+            "threshold_10pct_diagonal_px": metrics.get("threshold_10pct_diagonal_px", ""),
+            "accuracy_25pct_min_dim": metrics.get("accuracy_25pct_min_dim", ""),
+            "accuracy_25pct_max_dim": metrics.get("accuracy_25pct_max_dim", ""),
+            "accuracy_25pct_diagonal": metrics.get("accuracy_25pct_diagonal", ""),
+            "threshold_25pct_min_dim_px": metrics.get("threshold_25pct_min_dim_px", ""),
+            "threshold_25pct_max_dim_px": metrics.get("threshold_25pct_max_dim_px", ""),
+            "threshold_25pct_diagonal_px": metrics.get("threshold_25pct_diagonal_px", ""),
         }
 
     def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str) -> str:
         """Generate overview PDF using OverviewGenerator"""
         from .overview_generator import OverviewGenerator
-        
+
         if not overview_manifest:
             self.logger.warning("No overview images to include in PDF")
             return ""
-            
+
         try:
             generator = OverviewGenerator(output_dir)
             pdf_path = generator.generate_overview_pdf(overview_manifest, output_dir)
