@@ -12,7 +12,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from .dicom_file_manager import DicomFileManager
 from .inference import load_model, preprocess_image, download_model
-from .masking import compute_masks_and_configs, mask_config_to_corner_points
+from .masking import compute_masks_and_configs, mask_config_to_corner_points, corner_points_to_fan_mask_config
 from .evaluation import compare_masks, load_mask_config
 
 @dataclass
@@ -191,7 +191,7 @@ class DicomProcessor:
         input_path = row.InputPath
 
         try:
-            # 1. Check if should skip (resume mode)
+            # Check if should skip (resume mode)
             final_output_path = self.dicom_manager.generate_output_filepath(
                 output_folder, row.OutputPath, self.config.preserve_directory_structure
             )
@@ -210,7 +210,7 @@ class DicomProcessor:
             if progress_callback:
                 progress_callback(f"Processing: {input_path}")
 
-            # 2. Read DICOM frames and returns numpy array (N, H, W, C)
+            # Read DICOM frames and returns numpy array (N, H, W, C)
             original_image = self.dicom_manager.read_frames_from_dicom(input_path)
             original_dims = (original_image.shape[1], original_image.shape[2]) # (height, width)
 
@@ -223,7 +223,7 @@ class DicomProcessor:
                     output_path=final_output_path, processing_time=time.time() - start_time
                 )
 
-            # 3. Generate mask and get predicted corners (if enabled)
+            # Generate mask (if enabled)
             curvilinear_mask = None
             mask_config = None
             predicted_corners = None
@@ -240,7 +240,7 @@ class DicomProcessor:
                         predicted_corners=predicted_corners
                     )
 
-            # 4. Apply mask to image (only if both PHI-only mode and remove_phi_from_image are enabled)
+            # Apply mask to image (only if both PHI-only mode and remove_phi_from_image are enabled)
             if self.config.phi_only_mode and self.config.remove_phi_from_image:
                 # In PHI-only mode, start with original image (no fan mask)
                 masked_image_array = original_image.copy()
@@ -251,7 +251,7 @@ class DicomProcessor:
                 # PHI-only mode is enabled but remove_phi_from_image is disabled - use original image
                 masked_image_array = original_image.copy()
 
-            # 4.5. Apply top redaction if enabled (only in PHI-only mode with remove_phi_from_image enabled)
+            # Apply top redaction if enabled (only in PHI-only mode with remove_phi_from_image enabled)
             if (self.config.phi_only_mode and self.config.remove_phi_from_image and
                 self.config.top_ratio > 0 and predicted_corners is not None):
                 masked_image_array = self._apply_top_redaction(
@@ -293,7 +293,7 @@ class DicomProcessor:
                         'top_ratio': self.config.top_ratio
                     })
 
-            # 5. Save anonymized DICOM
+            # Save anonymized DICOM
             anon_filename = row.AnonFilename
             new_patient_name = os.path.splitext(anon_filename)[0]
             new_patient_id = anon_filename.split('_')[0]
@@ -307,7 +307,7 @@ class DicomProcessor:
                 labels=None
             )
 
-            # 6. Save header
+            # Save header
             if headers_folder:
                 self.dicom_manager.save_anonymized_dicom_header(
                     current_dicom_record=row,
@@ -315,22 +315,12 @@ class DicomProcessor:
                     headers_directory=headers_folder
                 )
 
-            # 7. Save sequence info JSON
+            # Save sequence info JSON
             self._save_sequence_info(final_output_path, row, mask_config)
 
-            # 8. Load ground truth mask config if available
-            metrics = {}
-            gt_mask_config = self._load_ground_truth_mask_config(anon_filename, mask_config, original_dims)
-            if gt_mask_config is not None:
-                metrics['ground_truth_config_json'] = json.dumps(gt_mask_config)
-
-            # 9. Add predicted corners to metrics for CSV export
-            if isinstance(predicted_corners, dict):
-                metrics['predicted_corners_json'] = json.dumps(self._convert_numpy_float_to_python_float(predicted_corners))
-
-            # 10. Generate overview if callback provided
+            # Generate overview if callback provided
             if overview_callback and original_image.shape[0] > 0:
-                overview_callback(row.AnonFilename, original_image, masked_image_array, curvilinear_mask, metrics)
+                overview_callback(row.AnonFilename, original_image, masked_image_array, curvilinear_mask, None)
 
             processing_time = time.time() - start_time
             self.logger.info(f"Successfully processed: {input_path} -> {final_output_path} ({processing_time:.2f}s)")
@@ -338,7 +328,7 @@ class DicomProcessor:
             return ProcessingResult(
                 success=True, skipped=False, input_path=input_path,
                 output_path=final_output_path, processing_time=processing_time,
-                metrics=metrics
+                metrics=None
             )
 
         except Exception as e:
@@ -387,18 +377,24 @@ class DicomProcessor:
         # Clear the PDF data after generation
         self._pdf_data = {}
 
-    def _convert_numpy_float_to_python_float(self, coords: Dict[str, Tuple[np.float32, np.float32]]) -> Dict[str, Tuple[float, float]]:
+    def _convert_numpy_float_to_python_float(self, coords: Dict[str, float]) -> Dict[str, float]:
         """
-        Convert numpy float to python float
+        Convert numpy float to python float and round to 2 decimal places
         :param coords: dictionary of predicted corners with numpy floats
         :return: dictionary of predicted corners with python float
         """
-        return {
-            "upper_left": (float(coords['upper_left'][0]), float(coords['upper_left'][1])),
-            "upper_right": (float(coords['upper_right'][0]), float(coords['upper_right'][1])),
-            "lower_left": (float(coords['lower_left'][0]), float(coords['lower_left'][1])),
-            "lower_right": (float(coords['lower_right'][0]), float(coords['lower_right'][1])),
+        coords_dict = {
+            "upper_left_x": float(coords['upper_left'][0]),
+            "upper_left_y": float(coords['upper_left'][1]),
+            "upper_right_x": float(coords['upper_right'][0]),
+            "upper_right_y": float(coords['upper_right'][1]),
+            "lower_left_x": float(coords['lower_left'][0]),
+            "lower_left_y": float(coords['lower_left'][1]),
+            "lower_right_x": float(coords['lower_right'][0]),
+            "lower_right_y": float(coords['lower_right'][1]),
         }
+
+        return self._round_metrics_to_decimal_places(coords_dict, 2)
 
     def _run_inference(self, original_image: np.ndarray) -> np.ndarray:
         """
@@ -683,6 +679,62 @@ class DicomProcessor:
         except Exception as e:
             self.logger.warning(f"Failed to load ground truth mask configuration for {anon_filename}: {e}")
             return None
+    def _json_to_csv_columns(self, json_data: dict, prefix: str) -> dict:
+        """
+        Convert JSON object to CSV columns with prefix.
+        
+        Args:
+            json_data: Dictionary containing JSON data to convert
+            prefix: Prefix to add to column names (e.g., 'gt', 'predicted')
+            
+        Returns:
+            Dictionary with flattened keys and processed values
+        """
+        csv_columns = {}
+        
+        # Handle nested MaskConfig if present (for backward compatibility)
+        if "MaskConfig" in json_data:
+            # Flatten MaskConfig into parent level
+            mask_config = json_data.pop("MaskConfig")
+            json_data.update(mask_config)
+        
+        for key, value in json_data.items():
+            # Convert key to snake_case and add prefix
+            csv_key = f"{prefix}_{self._camel_to_snake(key)}"
+            
+            # Process different value types
+            if isinstance(value, (float, np.floating)):
+                # Round floats to 2 decimal places
+                csv_columns[csv_key] = round(float(value), 2)
+            elif isinstance(value, (int, np.integer)):
+                # Keep integers as-is
+                csv_columns[csv_key] = int(value)
+            elif isinstance(value, bool):
+                # Convert boolean to lowercase string
+                csv_columns[csv_key] = str(value).lower()
+            elif isinstance(value, list):
+                # Convert lists to comma-separated strings
+                csv_columns[csv_key] = ", ".join(str(item) for item in value)
+            else:
+                # Keep strings and other types as-is
+                csv_columns[csv_key] = str(value)
+        
+        return csv_columns
+
+    def _camel_to_snake(self, camel_str: str) -> str:
+        """
+        Convert CamelCase to snake_case.
+        
+        Args:
+            camel_str: String in CamelCase format
+            
+        Returns:
+            String in snake_case format
+        """
+        # Insert underscore before uppercase letters and convert to lowercase
+        import re
+        snake_str = re.sub('([a-z0-9])([A-Z])', r'\1_\2', camel_str)
+        return snake_str.lower()
 
     def _compute_metrics_with_ground_truth(self,
                         anon_filename: str, gt_mask_config: Optional[dict], original_dims: Tuple[int, int],
@@ -722,12 +774,35 @@ class DicomProcessor:
             # Compute metrics using existing comparison function
             metrics = compare_masks(gt_mask_config, predicted_mask_config, gt_corners, predicted_corners, original_dims)
 
-            # Add ground truth path to metrics for tracking
+            # Round floating point values to 2 decimal places
+            metrics = self._round_metrics_to_decimal_places(metrics, decimal_places=2)
+
+            metrics['filename'] = anon_filename
+            metrics['ground_truth_filename'] = os.path.basename(gt_config_path)
+            metrics['dicom_input_path'] = self.dicom_manager.dicom_df.loc[self.dicom_manager.current_index, 'InputPath']
             metrics['ground_truth_path'] = gt_config_path
-            metrics['ground_truth_config_json'] = json.dumps(gt_mask_config)
-            metrics['ground_truth_corners_json'] = json.dumps(self._convert_numpy_float_to_python_float(gt_corners)) if gt_corners else None
-            metrics['predicted_config_json'] = json.dumps(predicted_mask_config)
-            metrics['predicted_corners_json'] = json.dumps(self._convert_numpy_float_to_python_float(predicted_corners)) if predicted_corners else None
+            
+            # Convert JSON objects to CSV columns with prefixes
+            if gt_mask_config:
+                gt_csv_columns = self._json_to_csv_columns(gt_mask_config.copy(), 'gt')
+                metrics.update(gt_csv_columns)
+            
+            if predicted_mask_config:
+                predicted_csv_columns = self._json_to_csv_columns(predicted_mask_config.copy(), 'pred')
+                metrics.update(predicted_csv_columns)
+            
+            # Handle corners data
+            if gt_corners:
+                gt_corners_csv = self._json_to_csv_columns(
+                    self._convert_numpy_float_to_python_float(gt_corners), 'gt_corners'
+                )
+                metrics.update(gt_corners_csv)
+            
+            if predicted_corners:
+                predicted_corners_csv = self._json_to_csv_columns(
+                    self._convert_numpy_float_to_python_float(predicted_corners), 'pred_corners'
+                )
+                metrics.update(predicted_corners_csv)
 
             return metrics
 
@@ -735,147 +810,80 @@ class DicomProcessor:
             self.logger.warning(f"Failed to compute metrics for {anon_filename}: {e}")
             return None
 
+    def _round_metrics_to_decimal_places(self, metrics: Dict[str, Any], decimal_places: int = 2) -> Dict[str, Any]:
+        """
+        Round floating point values in metrics dictionary to specified decimal places.
+        
+        Args:
+            metrics: Dictionary containing metrics with potential floating point values
+            decimal_places: Number of decimal places to round to (default: 2)
+            
+        Returns:
+            Dictionary with floating point values rounded to specified decimal places
+        """
+        rounded_metrics = {}
+        
+        for key, value in metrics.items():
+            if isinstance(value, (float, np.floating)):
+                # Round floating point numbers to specified decimal places
+                rounded_metrics[key] = round(float(value), decimal_places)
+            elif isinstance(value, (int, np.integer)):
+                # Keep integers as-is (like image_height, image_width)
+                rounded_metrics[key] = int(value)
+            else:
+                # Keep non-numeric values as-is (strings, etc.)
+                rounded_metrics[key] = value
+                
+        return rounded_metrics
+
     def get_evaluate_fieldnames(self) -> List[str]:
         """
-        Get standard fieldnames for metrics CSV output.
-
-        This provides a consistent set of field names that can be used
-        across different implementations (CLI vs Slicer).
-
-        Returns:
-            List of field names for metrics CSV
+        Get standard fieldnames for metrics CSV output including flattened JSON columns.
         """
-        return [
+        base_fields = [
+            "filename",
+            "ground_truth_filename",
             "dicom_input_path",
-            "ground_truth_config_path",
-            "ground_truth_config_json",
-            "ground_truth_corners_json",
-            "predicted_config_json",
-            "predicted_corners_json",
+            "ground_truth_path",
+        ]
+        
+        # Ground truth config fields
+        gt_config_fields = [
+            "gt_sopinstance_uid",
+            "gt_grayscale_conversion", 
+            "gt_mask_type",
+            "gt_angle1",
+            "gt_angle2", 
+            "gt_center_rows_px",
+            "gt_center_cols_px",
+            "gt_radius1", 
+            "gt_radius2",
+            "gt_image_size_rows",
+            "gt_image_size_cols",
+            "gt_annotation_labels",
+        ]
+        
+        # Predicted config fields (same structure with different prefix)
+        predicted_config_fields = [field.replace("gt_", "pred_") for field in gt_config_fields]
+        
+        # Corner fields (if needed)
+        corner_fields = [
+            "gt_corners_upper_left_x", "gt_corners_upper_left_y", "gt_corners_upper_right_x", "gt_corners_upper_right_y", "gt_corners_lower_left_x", "gt_corners_lower_left_y", "gt_corners_lower_right_x", "gt_corners_lower_right_y",
+            "pred_corners_upper_left_x", "pred_corners_upper_left_y", "pred_corners_upper_right_x", "pred_corners_upper_right_y", "pred_corners_lower_left_x", "pred_corners_lower_left_y", "pred_corners_lower_right_x", "pred_corners_lower_right_y",
+        ]
+        
+        # Metric fields  
+        metric_fields = [
             "dice_mean",
-            "iou_mean",
-            "pixel_accuracy_mean",
-
+            "iou_mean", 
             "mean_distance_error",
             "corner_0_error",
-            "corner_1_error",
+            "corner_1_error", 
             "corner_2_error",
             "corner_3_error",
-
-            "image_height",
-            "image_width",
-            "image_diagonal",
-
-            "accuracy_0.5_px",
-            "accuracy_1_px",
-            "accuracy_2_px",
-            "accuracy_3_px",
-            "accuracy_4_px",
-            "accuracy_5_px",
-            "threshold_0.5_px_px",
-            "threshold_1_px_px",
-            "threshold_2_px_px",
-            "threshold_3_px_px",
-            "threshold_4_px_px",
-            "threshold_5_px_px",
-            "accuracy_10pct_min_dim",
-            "accuracy_10pct_max_dim",
-            "accuracy_10pct_diagonal",
-            "threshold_10pct_min_dim_px",
-            "threshold_10pct_max_dim_px",
-            "threshold_10pct_diagonal_px",
-            "accuracy_25pct_min_dim",
-            "accuracy_25pct_max_dim",
-            "accuracy_25pct_diagonal",
-            "threshold_25pct_min_dim_px",
-            "threshold_25pct_max_dim_px",
-            "threshold_25pct_diagonal_px",
         ]
-
-    def get_metrics_fieldnames(self) -> List[str]:
-        """
-        Get standard fieldnames for metrics CSV output.
-
-        This provides a consistent set of field names that can be used
-        across different implementations (CLI vs Slicer).
-
-        Returns:
-            List of field names for metrics CSV
-        """
-        return [
-            "dicom_output_path",
-            "dicom_filename",
-            "predicted_config_json",
-            "predicted_corners_json",
-        ]
-
-    def format_metrics_for_csv(self, result: ProcessingResult) -> Dict[str, Any]:
-        """
-        Format ProcessingResult metrics for CSV output.
-
-        Args:
-            result: ProcessingResult containing metrics data
-
-        Returns:
-            Dictionary formatted for CSV writing
-        """
-        metrics = result.metrics or {}
-
-        return {
-            "dicom_output_path": result.output_path,
-            "dicom_filename": os.path.basename(result.output_path) if result.output_path else "",
-            "predicted_config_json": metrics.get("predicted_config_json", ""),
-            "predicted_corners_json": metrics.get("predicted_corners_json", ""),
-        }
-
-    def format_evaluate_metrics_for_csv(self, result: ProcessingResult) -> Dict[str, Any]:
-        """
-        Format ProcessingResult metrics for CSV output.
-        """
-        metrics = result.metrics or {}
-        return {
-            "dicom_input_path": result.input_path,
-            "ground_truth_config_path": metrics.get("ground_truth_path", ""),
-            "ground_truth_config_json": metrics.get("ground_truth_config_json", ""),
-            "ground_truth_corners_json": metrics.get("ground_truth_corners_json", ""),
-            "predicted_config_json": metrics.get("predicted_config_json", ""),
-            "predicted_corners_json": metrics.get("predicted_corners_json", ""),
-            "dice_mean": metrics.get("dice_mean", ""),
-            "iou_mean": metrics.get("iou_mean", ""),
-            "pixel_accuracy_mean": metrics.get("pixel_accuracy_mean", ""),
-            "mean_distance_error": metrics.get("mean_distance_error", ""),
-            "corner_0_error": metrics.get("corner_0_error", ""),
-            "corner_1_error": metrics.get("corner_1_error", ""),
-            "corner_2_error": metrics.get("corner_2_error", ""),
-            "corner_3_error": metrics.get("corner_3_error", ""),
-            "image_height": metrics.get("image_height", ""),
-            "image_width": metrics.get("image_width", ""),
-            "image_diagonal": metrics.get("image_diagonal", ""),
-            "accuracy_0.5_px": metrics.get("accuracy_0.5_px", ""),
-            "accuracy_1_px": metrics.get("accuracy_1_px", ""),
-            "accuracy_2_px": metrics.get("accuracy_2_px", ""),
-            "accuracy_3_px": metrics.get("accuracy_3_px", ""),
-            "accuracy_4_px": metrics.get("accuracy_4_px", ""),
-            "accuracy_5_px": metrics.get("accuracy_5_px", ""),
-            "threshold_0.5_px_px": metrics.get("threshold_0.5_px_px", ""),
-            "threshold_1_px_px": metrics.get("threshold_1_px_px", ""),
-            "threshold_2_px_px": metrics.get("threshold_2_px_px", ""),
-            "threshold_3_px_px": metrics.get("threshold_3_px_px", ""),
-            "threshold_4_px_px": metrics.get("threshold_4_px_px", ""),
-            "threshold_5_px_px": metrics.get("threshold_5_px_px", ""),
-            "accuracy_10pct_min_dim": metrics.get("accuracy_10pct_min_dim", ""),
-            "accuracy_10pct_max_dim": metrics.get("accuracy_10pct_max_dim", ""),
-            "accuracy_10pct_diagonal": metrics.get("accuracy_10pct_diagonal", ""),
-            "threshold_10pct_min_dim_px": metrics.get("threshold_10pct_min_dim_px", ""),
-            "threshold_10pct_max_dim_px": metrics.get("threshold_10pct_max_dim_px", ""),
-            "threshold_10pct_diagonal_px": metrics.get("threshold_10pct_diagonal_px", ""),
-            "accuracy_25pct_min_dim": metrics.get("accuracy_25pct_min_dim", ""),
-            "accuracy_25pct_max_dim": metrics.get("accuracy_25pct_max_dim", ""),
-            "accuracy_25pct_diagonal": metrics.get("accuracy_25pct_diagonal", ""),
-            "threshold_25pct_min_dim_px": metrics.get("threshold_25pct_min_dim_px", ""),
-            "threshold_25pct_max_dim_px": metrics.get("threshold_25pct_max_dim_px", ""),
-            "threshold_25pct_diagonal_px": metrics.get("threshold_25pct_diagonal_px", ""),
-        }
+        
+        return base_fields + gt_config_fields + predicted_config_fields + corner_fields + metric_fields
 
     def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str) -> str:
         """Generate overview PDF using OverviewGenerator"""

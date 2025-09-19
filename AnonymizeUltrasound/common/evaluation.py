@@ -1,7 +1,6 @@
 import torch
 from monai.metrics.meandice import DiceMetric
 from monai.metrics.meaniou import MeanIoU
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
 import numpy as np
 import json
 from common.masking import create_mask
@@ -144,21 +143,15 @@ def calculate_segmentation_metrics(
     dice_score = float(dice_val[0]) if hasattr(dice_val, '__getitem__') else float(dice_val)
     iou_score = float(iou_val[0]) if hasattr(iou_val, '__getitem__') else float(iou_val)
 
-    # Pixel accuracy
-    pixel_acc = (gt_bin == pred_bin).sum() / gt_bin.size
-
     return {
-        # Image data
-        'image_height': original_dims[0],
-        'image_width': original_dims[1],
-
-          # Basic metrics
+        # Basic metrics
+        'dice_mean': dice_score,
+        'iou_mean': iou_score,
         'mean_distance_error': mean_distance_error,
         'corner_0_error': per_corner_errors[0],
         'corner_1_error': per_corner_errors[1],
         'corner_2_error': per_corner_errors[2],
         'corner_3_error': per_corner_errors[3],
         'dice_mean': dice_score,
-        'iou_mean': iou_score,
-        'pixel_accuracy_mean': pixel_acc,
+        'iou_mean': iou_score
     }

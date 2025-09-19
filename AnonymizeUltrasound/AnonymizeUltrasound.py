@@ -154,7 +154,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     AUTO_ANON_HEADERS_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeHeadersFolder"
     AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
     AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
-    AUTO_ANON_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverviewDir"
     AUTO_ANON_GT_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeGroundTruthDir"
     AUTO_ANON_TOP_RATIO_SETTING = "AnonymizeUltrasound/AutoAnonymizeTopRatio"
     AUTO_ANON_PHI_ONLY_MODE_SETTING = "AnonymizeUltrasound/AutoAnonymizePhiOnlyMode"
@@ -1493,11 +1492,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.autoAnonGroupBox.setVisible(bool(enabled))
 
     def _on_model_evaluation_enable_toggled(self, enabled: bool):
+        logging.info(f"Model evaluation enable toggled: {enabled}")
         settings = slicer.app.settings()
         settings.setValue(self.EVAL_ENABLE_SETTING, str(enabled))
         self._apply_model_evaluation_visibility(enabled)
 
     def _apply_model_evaluation_visibility(self, enabled: bool):
+        logging.info(f"Applying model evaluation visibility: {enabled}")
         if hasattr(self.ui, "modelEvaluationGroupBox"):
             self.ui.modelEvaluationGroupBox.setVisible(bool(enabled))
 
@@ -2556,7 +2557,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         # Scan input recursively; skip_single_frame choice is optional (can reuse UI setting)
         skip_single = True
-        _ = self.dicom_manager.scan_directory(input_folder, skip_single_frame=skip_single, hash_patient_id=True)
+        num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame=skip_single, hash_patient_id=True)
 
         # Prepare processor with GT; we won't save DICOMs, only evaluate
         config = ProcessingConfig(
@@ -2570,23 +2571,21 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             overview_dir=overview_dir or None,
             ground_truth_dir=ground_truth_folder or None
         )
+
+        # Initialize processor
         processor = DicomProcessor(config, self.dicom_manager)
         processor.initialize_model()
 
         metrics_file = None
         metrics_writer = None
+        overview_manifest = []
         if overview_dir:
             os.makedirs(overview_dir, exist_ok=True)
             metrics_file = open(os.path.join(overview_dir, f"metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), "w", newline="")
             metrics_writer = csv.DictWriter(metrics_file, fieldnames=processor.get_evaluate_fieldnames())
             metrics_writer.writeheader()
 
-        overview_manifest = []
-        if overview_dir:
-            os.makedirs(overview_dir, exist_ok=True)
-
         # Progress reporter
-        num_files = self.dicom_manager.get_number_of_instances()
         progress = SlicerProgressReporter(self)
         progress.start(num_files, f"Evaluating {model_path.split('/')[-1]} on {device} for {num_files} files...")
 
@@ -2621,7 +2620,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 if result.success and not result.skipped:
                     success += 1
                     if metrics_writer and result.metrics:
-                        metrics_writer.writerow(processor.format_evaluate_metrics_for_csv(result))
+                        metrics_writer.writerow(result.metrics)
                 elif result.skipped:
                     skipped += 1
                 else:
@@ -2648,7 +2647,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         }
 
     def batch_auto_anonymize(self, input_folder: str, output_folder: str, headers_folder: str,
-                            model_path: str = MODEL_PATH, device: str = "", **kwargs) -> Dict[str, Any]:
+                            model_path: str = MODEL_PATH, device: str = "", overview_dir: str = "", **kwargs) -> Dict[str, Any]:
         start_time = time.time()
 
         # Create processing configuration
@@ -2666,9 +2665,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             overwrite_files=kwargs.get('overwrite_files', False),
         )
 
-        # Initialize shared processor
+        # Initialize processor
         processor = DicomProcessor(config, self.dicom_manager)
-        progress_reporter = SlicerProgressReporter(self)
+        processor.initialize_model()
 
         # Scan directory
         num_files = self.dicom_manager.scan_directory(input_folder, config.skip_single_frame, config.hash_patient_id)
@@ -2679,36 +2678,45 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             os.makedirs(headers_folder, exist_ok=True)
             df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
 
-        # Initialize model
-        processor.initialize_model()
 
-        metrics_file = None
-        metrics_writer = None
-        if headers_folder:
-            metrics_csv_path = os.path.join(headers_folder, f"metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-            os.makedirs(os.path.dirname(metrics_csv_path), exist_ok=True)
-            metrics_file = open(metrics_csv_path, "w", newline="")
-            metrics_writer = csv.DictWriter(metrics_file, fieldnames=processor.get_metrics_fieldnames())
-            metrics_writer.writeheader()
+        overview_manifest = []
+        if overview_dir:
+            os.makedirs(overview_dir, exist_ok=True)
 
         # Process files using shared logic
-        progress_reporter.start(num_files, "Auto-anonymizing...")
+        progress = SlicerProgressReporter(self)
+        progress.start(num_files, f"Auto-anonymizing {model_path.split('/')[-1]} on {device} for {num_files} files...")
 
         success = failed = skipped = 0
         error_messages = []
 
         try:
             for idx in range(num_files):
-                if progress_reporter.progress_dialog and progress_reporter.progress_dialog.wasCanceled:
+                if progress.progress_dialog and progress.progress_dialog.wasCanceled:
                     break
 
                 row = self.dicom_manager.dicom_df.iloc[idx]
                 self.dicom_manager.current_index = idx
 
+                def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
+                    if not overview_dir:
+                        return
+                    og = OverviewGenerator(overview_dir)
+                    p = og.generate_overview(filename, orig, masked, mask, metrics or {})
+                    overview_manifest.append({
+                        "path": p,
+                        "filename": filename,
+                        "dice": metrics.get("dice_mean") if metrics else None,
+                        "iou": metrics.get("iou_mean") if metrics else None,
+                        "pixel_accuracy": metrics.get("pixel_accuracy_mean") if metrics else None
+                    })
+
                 result = processor.process_single_dicom(
                     row, output_folder, headers_folder,
-                    lambda msg: progress_reporter.update(idx, msg),
-                    None
+                    lambda msg: progress.update(idx, msg),
+                    overview_callback,
+                    None,
+                    overview_dir=overview_dir or None
                 )
 
                 # Update counters
@@ -2730,9 +2738,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             processor.generate_all_pdfs()
 
         finally:
-            progress_reporter.finish()
-            if metrics_file:
-                metrics_file.close()
+            progress.finish()
 
         logging.info(f"Auto-anonymize completed in {time.time() - start_time:.2f} seconds")
 
@@ -2742,7 +2748,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             "failed": failed,
             "skipped": skipped,
             "error_messages": error_messages,
-            "metrics_csv_path": os.path.join(headers_folder, f"metrics.csv"),
         }
 
     # Add metrics overlay (Dice / IoU)

@@ -257,7 +257,7 @@
                       <height>60</height>
                     </rect>
                   </property>
-                  <layout class="QVBoxLayout" name="verticalLayout_5" />
+                  <layout class="QVBoxLayout" name="verticalLayout_5"/>
                 </widget>
               </widget>
             </item>
@@ -329,7 +329,7 @@
                   <string>Use cached mask</string>
                 </property>
                 <property name="invertThreshold" stdset="0">
-                  <string />
+                  <string/>
                 </property>
               </widget>
             </item>
@@ -343,7 +343,7 @@
                   <string>Automatically suggest mask</string>
                 </property>
                 <property name="invertThreshold" stdset="0">
-                  <string />
+                  <string/>
                 </property>
               </widget>
             </item>
@@ -402,14 +402,21 @@
                   </widget>
                 </item>
                 <item>
-                  <widget class="ctkPathLineEdit" name="labelsFileSelector" />
+                  <widget class="ctkPathLineEdit" name="labelsFileSelector"/>
                 </item>
               </layout>
             </item>
             <item>
               <widget class="QCheckBox" name="enableAutoAnonymizeCheckBox">
                 <property name="text">
-                  <string>Enable Auto‑Anonymize (Batch)</string>
+                  <string>Enable Auto‑Anonymize</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QCheckBox" name="enableModelEvaluationCheckBox">
+                <property name="text">
+                  <string>Enable Model Evaluation</string>
                 </property>
               </widget>
             </item>
@@ -658,13 +665,6 @@
               </widget>
             </item>
           </layout>
-        </widget>
-      </item>
-      <item>
-        <widget class="QCheckBox" name="enableModelEvaluationCheckBox">
-          <property name="text">
-            <string>Enable Model Evaluation (Batch)</string>
-          </property>
         </widget>
       </item>
       <item>
