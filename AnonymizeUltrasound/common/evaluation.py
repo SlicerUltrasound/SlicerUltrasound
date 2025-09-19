@@ -96,142 +96,6 @@ def corners_to_array(corners_dict):
     return np.array([[float(corners_dict[corner][0]), float(corners_dict[corner][1])]
                     for corner in corner_order], dtype=np.float32)
 
-def calculate_pixel_thresholds(pixel_distances: np.ndarray, original_dims: tuple[int, int]) -> dict:
-    """
-    Calculate pixel thresholds for ultrasound corner detection.
-
-    Based on typical ultrasound image analysis requirements:
-    - Sub-pixel: < 0.5px (research-grade precision)
-    - 1-5px (clinical diagnostic quality)
-
-    Example:
-    {
-        "accuracy_0.5_px": 0.5,
-        "accuracy_1_px": 1.0,
-        "accuracy_2_px": 2.0,
-        "accuracy_3_px": 3.0,
-    }
-    """
-
-    # Pixel precision categories
-    thresholds = {
-        '0.5_px': 0.5,
-        '1_px': 1.0,
-        '2_px': 2.0,
-        '3_px': 3.0,
-        '4_px': 4.0,
-        '5_px': 5.0,
-    }
-
-    results = {}
-    for category, threshold in thresholds.items():
-        accuracy = float(np.mean(pixel_distances < threshold))
-        results[f'accuracy_{category}'] = accuracy
-
-    return results
-
-def calculate_percentage_thresholds(pixel_distances: np.ndarray, original_dims: tuple[int, int]) -> dict:
-    """
-    Calculate percentage thresholds for ultrasound corner detection.
-
-    Uses percentage of image dimensions to create scale-invariant thresholds.
-    :param pixel_distances: numpy array of pixel distances
-    :param original_dims: original dimensions
-    :return: dictionary with percentage thresholds
-    Example:
-    {
-        "accuracy_10pct_min_dim_0.1": 0.1,
-        "accuracy_10pct_max_dim_0.1": 0.1,
-        "accuracy_10pct_diagonal_0.1": 0.1,
-        "threshold_10pct_min_dim_px": 0.1,
-        "threshold_10pct_max_dim_px": 0.1,
-        "threshold_10pct_diagonal_px": 0.1,
-    }
-    {
-        "accuracy_10pct_min_dim_0.25": 0.25,
-        "accuracy_10pct_max_dim_0.25": 0.25,
-        "accuracy_10pct_diagonal_0.25": 0.25,
-        "threshold_10pct_min_dim_px": 0.25,
-        "threshold_10pct_max_dim_px": 0.25,
-        "threshold_10pct_diagonal_px": 0.25,
-    }
-    """
-    height, width = original_dims
-    min_dim = min(height, width)
-    max_dim = max(height, width)
-    diagonal = np.sqrt(height**2 + width**2)
-
-    # Define percentage-based thresholds
-    percentages = [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]  # Percentages
-
-    results = {}
-
-    for pct in percentages:
-        pct_label = f"{pct:.1f}pct".replace('.', '_')
-
-        # Calculate thresholds based on different dimension references
-        threshold_min = min_dim * (pct / 100.0)
-        threshold_max = max_dim * (pct / 100.0)
-        threshold_diag = diagonal * (pct / 100.0)
-
-        # Calculate accuracies
-        results[f'accuracy_{pct_label}_min_dim'] = float(np.mean(pixel_distances < threshold_min))
-        results[f'accuracy_{pct_label}_max_dim'] = float(np.mean(pixel_distances < threshold_max))
-        results[f'accuracy_{pct_label}_diagonal'] = float(np.mean(pixel_distances < threshold_diag))
-
-        # Store actual pixel thresholds for reference
-        results[f'threshold_{pct_label}_min_dim_px'] = float(threshold_min)
-        results[f'threshold_{pct_label}_max_dim_px'] = float(threshold_max)
-        results[f'threshold_{pct_label}_diagonal_px'] = float(threshold_diag)
-
-    return results
-
-def calculate_statistical_thresholds(pixel_distances: np.ndarray) -> dict:
-    """
-    Calculate thresholds based on statistical distribution of distances.
-
-    Provides percentile-based thresholds and distribution statistics.
-    """
-    # Statistical measures
-    mean_dist = float(np.mean(pixel_distances))
-    median_dist = float(np.median(pixel_distances))
-    std_dist = float(np.std(pixel_distances))
-    min_dist = float(np.min(pixel_distances))
-    max_dist = float(np.max(pixel_distances))
-
-    # Percentile-based thresholds
-    percentiles = [10, 25, 50, 75, 90, 95, 99]
-    percentile_values = np.percentile(pixel_distances, percentiles)
-
-    # Standard deviation based thresholds
-    std_multipliers = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
-
-    results = {
-        # Basic statistics
-        'mean_distance': mean_dist,
-        'median_distance': median_dist,
-        'std_distance': std_dist,
-        'min_distance': min_dist,
-        'max_distance': max_dist,
-        'range_distance': max_dist - min_dist,
-    }
-
-    # Percentile thresholds
-    for i, pct in enumerate(percentiles):
-        threshold = float(percentile_values[i])
-        accuracy = float(np.mean(pixel_distances <= threshold))
-        results[f'percentile_{pct}th'] = threshold
-        results[f'accuracy_p{pct}'] = accuracy
-
-    # Standard deviation based thresholds
-    for mult in std_multipliers:
-        threshold = mean_dist + mult * std_dist
-        accuracy = float(np.mean(pixel_distances < threshold))
-        results[f'threshold_{mult:.1f}std'] = float(threshold)
-        results[f'accuracy_{mult:.1f}std'] = accuracy
-
-    return results
-
 def calculate_segmentation_metrics(
     ground_truth_mask: np.ndarray,
     predicted_mask: np.ndarray,
@@ -283,35 +147,18 @@ def calculate_segmentation_metrics(
     # Pixel accuracy
     pixel_acc = (gt_bin == pred_bin).sum() / gt_bin.size
 
-    # Precision, recall, F1
-    precision = precision_score(gt_bin.flatten(), pred_bin.flatten(), zero_division='warn')
-    recall = recall_score(gt_bin.flatten(), pred_bin.flatten(), zero_division='warn')
-    f1 = f1_score(gt_bin.flatten(), pred_bin.flatten(), zero_division='warn')
-
-    # Sensitivity, specificity
-    tn, fp, fn, tp = confusion_matrix(gt_bin.flatten(), pred_bin.flatten(), labels=[0,1]).ravel()
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-
     return {
+        # Image data
+        'image_height': original_dims[0],
+        'image_width': original_dims[1],
+
           # Basic metrics
         'mean_distance_error': mean_distance_error,
         'corner_0_error': per_corner_errors[0],
         'corner_1_error': per_corner_errors[1],
         'corner_2_error': per_corner_errors[2],
         'corner_3_error': per_corner_errors[3],
-
-        # Image metadata
-        'image_height': original_dims[0],
-        'image_width': original_dims[1],
-        'image_diagonal': float(np.sqrt(sum(d**2 for d in original_dims))),
-
         'dice_mean': dice_score,
         'iou_mean': iou_score,
         'pixel_accuracy_mean': pixel_acc,
-        'precision_mean': precision,
-        'recall_mean': recall,
-        'f1_mean': f1,
-        'sensitivity_mean': sensitivity,
-        'specificity_mean': specificity,
     }
