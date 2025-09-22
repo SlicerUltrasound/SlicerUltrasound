@@ -54,7 +54,6 @@ class DicomFileManager:
         "StationName",
         "StudyDate",
         "StudyDescription",
-        "StudyID",
         "StudyTime",
         "TransducerType",
         "Manufacturer"

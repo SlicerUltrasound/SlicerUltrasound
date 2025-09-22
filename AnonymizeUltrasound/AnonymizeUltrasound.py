@@ -7,7 +7,6 @@ import logging
 import numpy as np
 import math
 import os
-import requests
 from typing import Optional, Dict, List, Any
 import time
 import json
@@ -17,11 +16,6 @@ from datetime import datetime
 import qt
 import vtk
 import traceback
-
-# Force matplotlib to not use a non-osx backend to avoid slicer crash
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 import slicer
 from slicer.i18n import tr as _
@@ -39,6 +33,56 @@ from slicer import vtkMRMLSequenceBrowserNode
 from slicer import vtkMRMLMarkupsFiducialNode
 from DICOMLib import DICOMUtils
 
+try:
+    import pandas as pd
+except ImportError:
+    logging.info("AnonymizeUltrasound: Pandas not found, installing...")
+    slicer.util.pip_install('pandas')
+    import pandas as pd
+
+try:
+    import cv2
+except ImportError:
+    slicer.util.pip_install('opencv-python')
+    import cv2
+
+try:
+    import torch
+except ImportError:
+    logging.info("AnonymizeUltrasound: torch not found, installing...")
+    slicer.util.pip_install('torch')
+    import torch
+
+try:
+    import yaml
+except ImportError:
+    logging.info("AnonymizeUltrasound: yaml not found, installing...")
+    slicer.util.pip_install('PyYAML')
+    import yaml
+
+try:
+    import monai
+except ImportError:
+    logging.info("AnonymizeUltrasound: monai not found, installing...")
+    slicer.util.pip_install('monai')
+    import monai
+
+try:
+    import sklearn
+except ImportError:
+    logging.info("AnonymizeUltrasound: scikit-learn not found, installing...")
+    slicer.util.pip_install('scikit-learn')
+    import sklearn
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+except ImportError:
+    logging.info("AnonymizeUltrasound: matplotlib not found, installing...")
+    slicer.util.pip_install('matplotlib')
+    import matplotlib
+    matplotlib.use('Agg')
+
 from common.dicom_file_manager import DicomFileManager
 from common.masking import compute_masks_and_configs
 from common.inference import load_model, preprocess_image, get_device, download_model, MODEL_PATH
@@ -46,7 +90,6 @@ from common.dicom_processor import DicomProcessor, ProcessingConfig
 from common.progress_reporter import SlicerProgressReporter
 from common.overview_generator import OverviewGenerator
 from common.logging import setup_logging
-
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -65,61 +108,6 @@ class AnonymizeUltrasound(ScriptedLoadableModule):
             This file was originally developed by Jean-Christophe Fillion-Robin, Kitware Inc., Andras Lasso, PerkLab,
             and Steve Pieper, Isomics, Inc. and was partially funded by NIH grant 3P41RR013218-12S1.
             """)
-
-        slicer.app.connect("startupCompleted()", onSlicerStartupCompleted)
-
-def onSlicerStartupCompleted():
-    """
-    Perform some initialization tasks that require the application to be fully started up.
-    """
-    # Install required packages
-
-    global pd
-    try:
-        import pandas as pd
-    except ImportError:
-        logging.info("AnonymizeUltrasound: Pandas not found, installing...")
-        slicer.util.pip_install('pandas')
-        import pandas as pd
-
-    global cv2
-    try:
-        import cv2
-    except ImportError:
-        slicer.util.pip_install('opencv-python')
-        import cv2
-
-    global torch
-    try:
-        import torch
-    except ImportError:
-        logging.info("AnonymizeUltrasound: torch not found, installing...")
-        slicer.util.pip_install('torch')
-        import torch
-
-    global yaml
-    try:
-        import yaml
-    except ImportError:
-        logging.info("AnonymizeUltrasound: yaml not found, installing...")
-        slicer.util.pip_install('PyYAML')
-        import yaml
-
-    global monai
-    try:
-        import monai
-    except ImportError:
-        logging.info("AnonymizeUltrasound: monai not found, installing...")
-        slicer.util.pip_install('monai')
-        import monai
-
-    global sklearn
-    try:
-        import sklearn
-    except ImportError:
-        logging.info("AnonymizeUltrasound: scikit-learn not found, installing...")
-        slicer.util.pip_install('scikit-learn')
-        import sklearn
 
 class AnonymizerStatus(Enum):
     INITIAL = 0               # No data loaded yet

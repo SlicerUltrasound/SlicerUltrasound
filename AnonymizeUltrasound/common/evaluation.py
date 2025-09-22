@@ -268,9 +268,6 @@ def calculate_segmentation_metrics(
     mean_distance_error = float(np.mean(pixel_distances))
     per_corner_errors = pixel_distances.astype(float)
 
-    # Enhanced threshold calculations
-    clinical_thresholds = calculate_clinical_thresholds(pixel_distances, original_dims)
-
     # Dice & IoU
     gt_tensor = torch.from_numpy(gt_bin.astype(np.float32)).unsqueeze(0).unsqueeze(0)
     pred_tensor = torch.from_numpy(pred_bin.astype(np.float32)).unsqueeze(0).unsqueeze(0)
@@ -308,9 +305,6 @@ def calculate_segmentation_metrics(
         'image_height': original_dims[0],
         'image_width': original_dims[1],
         'image_diagonal': float(np.sqrt(sum(d**2 for d in original_dims))),
-
-        # Enhanced threshold results
-        **clinical_thresholds,
 
         'dice_mean': dice_score,
         'iou_mean': iou_score,
