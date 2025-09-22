@@ -1,4 +1,5 @@
 from typing import Optional, Dict, Any, Tuple, Callable, List
+import math
 import logging
 import numpy as np
 import os
@@ -682,26 +683,26 @@ class DicomProcessor:
     def _json_to_csv_columns(self, json_data: dict, prefix: str) -> dict:
         """
         Convert JSON object to CSV columns with prefix.
-        
+
         Args:
             json_data: Dictionary containing JSON data to convert
             prefix: Prefix to add to column names (e.g., 'gt', 'predicted')
-            
+
         Returns:
             Dictionary with flattened keys and processed values
         """
         csv_columns = {}
-        
+
         # Handle nested MaskConfig if present (for backward compatibility)
         if "MaskConfig" in json_data:
             # Flatten MaskConfig into parent level
             mask_config = json_data.pop("MaskConfig")
             json_data.update(mask_config)
-        
+
         for key, value in json_data.items():
             # Convert key to snake_case and add prefix
             csv_key = f"{prefix}_{self._camel_to_snake(key)}"
-            
+
             # Process different value types
             if isinstance(value, (float, np.floating)):
                 # Round floats to 2 decimal places
@@ -718,16 +719,16 @@ class DicomProcessor:
             else:
                 # Keep strings and other types as-is
                 csv_columns[csv_key] = str(value)
-        
+
         return csv_columns
 
     def _camel_to_snake(self, camel_str: str) -> str:
         """
         Convert CamelCase to snake_case.
-        
+
         Args:
             camel_str: String in CamelCase format
-            
+
         Returns:
             String in snake_case format
         """
@@ -781,28 +782,34 @@ class DicomProcessor:
             metrics['ground_truth_filename'] = os.path.basename(gt_config_path)
             metrics['dicom_input_path'] = self.dicom_manager.dicom_df.loc[self.dicom_manager.current_index, 'InputPath']
             metrics['ground_truth_path'] = gt_config_path
-            
+
             # Convert JSON objects to CSV columns with prefixes
             if gt_mask_config:
                 gt_csv_columns = self._json_to_csv_columns(gt_mask_config.copy(), 'gt')
                 metrics.update(gt_csv_columns)
-            
+
             if predicted_mask_config:
                 predicted_csv_columns = self._json_to_csv_columns(predicted_mask_config.copy(), 'pred')
                 metrics.update(predicted_csv_columns)
-            
+
             # Handle corners data
             if gt_corners:
                 gt_corners_csv = self._json_to_csv_columns(
                     self._convert_numpy_float_to_python_float(gt_corners), 'gt_corners'
                 )
                 metrics.update(gt_corners_csv)
-            
+
             if predicted_corners:
                 predicted_corners_csv = self._json_to_csv_columns(
                     self._convert_numpy_float_to_python_float(predicted_corners), 'pred_corners'
                 )
                 metrics.update(predicted_corners_csv)
+
+            if gt_corners and predicted_corners:
+                metrics['angle_upper_left'] = self.calculate_angle_degrees(gt_corners['upper_left'][0], gt_corners['upper_left'][1], predicted_corners['upper_left'][0], predicted_corners['upper_left'][1])
+                metrics['angle_upper_right'] = self.calculate_angle_degrees(gt_corners['upper_right'][0], gt_corners['upper_right'][1], predicted_corners['upper_right'][0], predicted_corners['upper_right'][1])
+                metrics['angle_lower_left'] = self.calculate_angle_degrees(gt_corners['lower_left'][0], gt_corners['lower_left'][1], predicted_corners['lower_left'][0], predicted_corners['lower_left'][1])
+                metrics['angle_lower_right'] = self.calculate_angle_degrees(gt_corners['lower_right'][0], gt_corners['lower_right'][1], predicted_corners['lower_right'][0], predicted_corners['lower_right'][1])
 
             return metrics
 
@@ -810,19 +817,52 @@ class DicomProcessor:
             self.logger.warning(f"Failed to compute metrics for {anon_filename}: {e}")
             return None
 
+    def calculate_angle_degrees(self, ground_truth_x: float, ground_truth_y: float, predicted_x: float, predicted_y: float, cv_convention: bool = False) -> float:
+        """
+        Calculate the angle between two points in degrees.
+        :param ground_truth_x: x coordinate of the ground truth point
+        :param ground_truth_y: y coordinate of the ground truth point
+        :param predicted_x: x coordinate of the predicted point
+        :param predicted_y: y coordinate of the predicted point
+        :param cv_convention: whether to apply computer vision convention (Y-axis flipped)
+        :return: angle in degrees
+        """
+
+        # Translate coordinates to make ground truth the origin
+        dx = predicted_x - ground_truth_x
+        dy = predicted_y - ground_truth_y
+
+        if dx == 0 and dy == 0:
+            return 0.0
+
+        # Apply computer vision convention if needed (Y-axis flipped)
+        if cv_convention:
+            dy = -dy
+
+        # Calculate angle in radians
+        angle_rad = math.atan2(dy, dx)
+
+        # Convert to degrees
+        angle_deg = math.degrees(angle_rad)
+
+        if angle_deg < 0:
+            angle_deg += 360
+
+        return round(angle_deg, 2)
+
     def _round_metrics_to_decimal_places(self, metrics: Dict[str, Any], decimal_places: int = 2) -> Dict[str, Any]:
         """
         Round floating point values in metrics dictionary to specified decimal places.
-        
+
         Args:
             metrics: Dictionary containing metrics with potential floating point values
             decimal_places: Number of decimal places to round to (default: 2)
-            
+
         Returns:
             Dictionary with floating point values rounded to specified decimal places
         """
         rounded_metrics = {}
-        
+
         for key, value in metrics.items():
             if isinstance(value, (float, np.floating)):
                 # Round floating point numbers to specified decimal places
@@ -833,7 +873,7 @@ class DicomProcessor:
             else:
                 # Keep non-numeric values as-is (strings, etc.)
                 rounded_metrics[key] = value
-                
+
         return rounded_metrics
 
     def get_evaluate_fieldnames(self) -> List[str]:
@@ -846,44 +886,48 @@ class DicomProcessor:
             "dicom_input_path",
             "ground_truth_path",
         ]
-        
+
         # Ground truth config fields
         gt_config_fields = [
             "gt_sopinstance_uid",
-            "gt_grayscale_conversion", 
+            "gt_grayscale_conversion",
             "gt_mask_type",
             "gt_angle1",
-            "gt_angle2", 
+            "gt_angle2",
             "gt_center_rows_px",
             "gt_center_cols_px",
-            "gt_radius1", 
+            "gt_radius1",
             "gt_radius2",
             "gt_image_size_rows",
             "gt_image_size_cols",
             "gt_annotation_labels",
         ]
-        
+
         # Predicted config fields (same structure with different prefix)
         predicted_config_fields = [field.replace("gt_", "pred_") for field in gt_config_fields]
-        
+
         # Corner fields (if needed)
         corner_fields = [
             "gt_corners_upper_left_x", "gt_corners_upper_left_y", "gt_corners_upper_right_x", "gt_corners_upper_right_y", "gt_corners_lower_left_x", "gt_corners_lower_left_y", "gt_corners_lower_right_x", "gt_corners_lower_right_y",
             "pred_corners_upper_left_x", "pred_corners_upper_left_y", "pred_corners_upper_right_x", "pred_corners_upper_right_y", "pred_corners_lower_left_x", "pred_corners_lower_left_y", "pred_corners_lower_right_x", "pred_corners_lower_right_y",
         ]
-        
-        # Metric fields  
+
+        corner_angle_fields = [
+            "angle_upper_left", "angle_upper_right", "angle_lower_left", "angle_lower_right",
+        ]
+
+        # Metric fields
         metric_fields = [
             "dice_mean",
-            "iou_mean", 
+            "iou_mean",
             "mean_distance_error",
             "corner_0_error",
-            "corner_1_error", 
+            "corner_1_error",
             "corner_2_error",
             "corner_3_error",
         ]
-        
-        return base_fields + gt_config_fields + predicted_config_fields + corner_fields + metric_fields
+
+        return base_fields + gt_config_fields + predicted_config_fields + corner_fields + corner_angle_fields + metric_fields
 
     def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str) -> str:
         """Generate overview PDF using OverviewGenerator"""
