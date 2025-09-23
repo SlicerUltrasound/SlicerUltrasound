@@ -2608,7 +2608,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         "filename": filename,
                         "dice": metrics.get("dice_mean") if metrics else None,
                         "iou": metrics.get("iou_mean") if metrics else None,
-                        "pixel_accuracy": metrics.get("pixel_accuracy_mean") if metrics else None
+                        "mean_distance_error": metrics.get("mean_distance_error") if metrics else None,
+                        "upper_left_error": metrics.get("upper_left_error") if metrics else None,
+                        "upper_right_error": metrics.get("upper_right_error") if metrics else None,
+                        "lower_left_error": metrics.get("lower_left_error") if metrics else None,
+                        "lower_right_error": metrics.get("lower_right_error") if metrics else None,
                     })
 
                 result = processor.evaluate_single_dicom(
@@ -2708,7 +2712,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         "filename": filename,
                         "dice": metrics.get("dice_mean") if metrics else None,
                         "iou": metrics.get("iou_mean") if metrics else None,
-                        "pixel_accuracy": metrics.get("pixel_accuracy_mean") if metrics else None
+                        "mean_distance_error": metrics.get("mean_distance_error") if metrics else None,
+                        "upper_left_error": metrics.get("upper_left_error") if metrics else None,
+                        "upper_right_error": metrics.get("upper_right_error") if metrics else None,
+                        "lower_left_error": metrics.get("lower_left_error") if metrics else None,
+                        "lower_right_error": metrics.get("lower_right_error") if metrics else None,
                     })
 
                 result = processor.process_single_dicom(

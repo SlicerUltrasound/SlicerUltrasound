@@ -921,10 +921,10 @@ class DicomProcessor:
             "dice_mean",
             "iou_mean",
             "mean_distance_error",
-            "corner_0_error",
-            "corner_1_error",
-            "corner_2_error",
-            "corner_3_error",
+            "upper_left_error",
+            "upper_right_error",
+            "lower_left_error",
+            "lower_right_error",
         ]
 
         return base_fields + gt_config_fields + predicted_config_fields + corner_fields + corner_angle_fields + metric_fields

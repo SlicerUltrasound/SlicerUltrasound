@@ -144,14 +144,11 @@ def calculate_segmentation_metrics(
     iou_score = float(iou_val[0]) if hasattr(iou_val, '__getitem__') else float(iou_val)
 
     return {
-        # Basic metrics
         'dice_mean': dice_score,
         'iou_mean': iou_score,
         'mean_distance_error': mean_distance_error,
-        'corner_0_error': per_corner_errors[0],
-        'corner_1_error': per_corner_errors[1],
-        'corner_2_error': per_corner_errors[2],
-        'corner_3_error': per_corner_errors[3],
-        'dice_mean': dice_score,
-        'iou_mean': iou_score
+        'upper_left_error': per_corner_errors[0],
+        'upper_right_error': per_corner_errors[1],
+        'lower_left_error': per_corner_errors[2],
+        'lower_right_error': per_corner_errors[3],
     }
