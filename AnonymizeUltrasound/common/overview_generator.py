@@ -165,7 +165,8 @@ class OverviewGenerator:
                     fig.patch.set_facecolor('white')
 
                     # Create vertical layout: image on top (75% height), table on bottom (25% height)
-                    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.1)
+                    gs = fig.add_gridspec(2, 1, height_ratios=[4, 1], hspace=0.05,
+                                         top=0.95, bottom=0.05, left=0.03, right=0.97)
 
                     ax_img = fig.add_subplot(gs[0, 0])
                     ax_img.imshow(img, interpolation='nearest')
@@ -174,19 +175,12 @@ class OverviewGenerator:
                     ax_table = fig.add_subplot(gs[1, 0])
                     ax_table.axis('off')
                     
-                    # # Use gridspec for precise layout control
-                    # gs = gridspec.GridSpec(1, 2, width_ratios=[7, 3], 
-                    #                     left=0.02, right=0.98, 
-                    #                     top=0.95, bottom=0.05,
-                    #                     wspace=0.05)
-                    
                     # Prepare metrics data
-                    filename = item.get("filename", "Unknown")
                     metrics_data = [
-                        ["Filename", filename],
+                        ["Filename", item.get("filename", "Unknown")],
                         ["Dice Score", f"{item.get('dice', 0):.3f}"],
                         ["IoU", f"{item.get('iou', 0):.3f}"],
-                        ["Mean Distance Error", f"{item.get('mean_distance_error', 0):.3f}"],
+                        ["MDE", f"{item.get('mean_distance_error', 0):.3f}"],
                         ["Upper Left Error", f"{item.get('upper_left_error', 0):.3f}"],
                         ["Upper Right Error", f"{item.get('upper_right_error', 0):.3f}"],
                         ["Lower Left Error", f"{item.get('lower_left_error', 0):.3f}"],
@@ -198,12 +192,16 @@ class OverviewGenerator:
                         cellText=[list(row[1] for row in metrics_data)],  # Values only
                         colLabels=[row[0] for row in metrics_data],       # Metrics as column headers
                         cellLoc='center',
-                        loc='center'
+                        loc='center',
+                        bbox=[0,0,1,1]
                     )
-                    
-                    self._style_metrics_table(table, len(metrics_data))
-                    
-                    pdf.savefig(fig, facecolor='white')
+
+                    # Optimize table appearance for landscape layout
+                    table.auto_set_font_size(False)
+                    table.set_fontsize(6)
+                    table.scale(1, 1.2)
+
+                    pdf.savefig(fig, facecolor='white', bbox_inches='tight', pad_inches=0.05)
                     plt.close(fig)
 
             return overview_pdf_path
@@ -216,26 +214,3 @@ class OverviewGenerator:
                 except OSError as cleanup_error:
                     logging.debug(f"Could not remove partial PDF file {overview_pdf_path}: {cleanup_error}")
             raise Exception(f"Failed to create overview PDF: {e}") from e
-
-    def _style_metrics_table(self, table, num_rows: int):
-        """Apply consistent styling to metrics table"""
-        table.auto_set_font_size(False)
-        table.set_fontsize(9)
-        table.scale(1, 1.8)  # Increase row height for better readability
-        
-        # Style header row
-        for col in range(2):
-            table[(0, col)].set_facecolor('#2E7D32')  # Dark green
-            table[(0, col)].set_text_props(weight='bold', color='white')
-            table[(0, col)].set_edgecolor('white')
-        
-        # Style data rows with alternating colors
-        for row in range(1, num_rows + 1):
-            color = '#E8F5E8' if row % 2 == 0 else 'white'  # Light green alternating
-            for col in range(2):
-                table[(row, col)].set_facecolor(color)
-                table[(row, col)].set_edgecolor('#CCCCCC')
-                
-        # Make filename row stand out
-        table[(1, 0)].set_text_props(weight='bold')  # Filename label
-        table[(1, 1)].set_text_props(weight='bold')  # Filename value
