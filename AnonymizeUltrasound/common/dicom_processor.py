@@ -172,6 +172,7 @@ class DicomProcessor:
         row,
         output_folder: str,
         headers_folder: str,
+        overview_dir: str,
         progress_callback: Optional[Callable[[str], None]] = None,
         overview_callback: Optional[Callable[[str, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[Dict[str, Any]]], None]] = None
     ) -> ProcessingResult:

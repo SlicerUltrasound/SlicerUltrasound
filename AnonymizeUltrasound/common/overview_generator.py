@@ -4,6 +4,7 @@ import os
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 import logging
+import cv2
 
 class OverviewGenerator:
     """Generates overview images for anonymization results"""
@@ -13,6 +14,59 @@ class OverviewGenerator:
         os.makedirs(output_dir, exist_ok=True)
         self.logger = logging.getLogger(__name__)
 
+    def _enhance_contrast_percentile(self, image: np.ndarray, **kwargs) :
+        """
+        Enhance image contrast using various methods
+
+        Args:
+            image: Input image array
+            method: 'percentile', 'clahe', or 'gamma'
+            **kwargs: Method-specific parameters
+
+        Returns:
+            Enhanced image or (vmin, vmax) for percentile method
+        """
+        low_pct = kwargs.get('low_percentile', 2)
+        high_pct = kwargs.get('high_percentile', 98)
+        vmin = np.percentile(image, low_pct)
+        vmax = np.percentile(image, high_pct)
+        return vmin, vmax
+
+    def _enhance_contrast(self, image: np.ndarray, method: str, **kwargs) :
+        """
+        Enhance image contrast using various methods
+
+        Args:
+            image: Input image array
+            method: 'clahe', or 'gamma'
+            **kwargs: Method-specific parameters
+
+        Returns:
+            Enhanced image
+        """
+        if method == 'clahe':
+            clip_limit = kwargs.get('clip_limit', 2.0)
+            tile_size = kwargs.get('tile_grid_size', (8, 8))
+
+            # Convert to uint8 if needed
+            if image.dtype != np.uint8:
+                img_norm = ((image - image.min()) / (image.max() - image.min()) * 255).astype(np.uint8)
+            else:
+                img_norm = image
+
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+            return clahe.apply(img_norm)
+
+        elif method == 'gamma':
+            gamma = kwargs.get('gamma', 0.7)
+            normalized = image.astype(np.float32)
+            if normalized.max() > 1.0:
+                normalized = normalized / 255.0
+            corrected = np.power(normalized, gamma)
+            if image.max() > 1.0:
+                corrected = (corrected * 255).astype(np.uint8)
+            return corrected
+
     def generate_overview(
         self,
         filename: str,
@@ -20,7 +74,8 @@ class OverviewGenerator:
         masked_image: np.ndarray,
         mask: Optional[np.ndarray] = None,
         ground_truth_config: Optional[Dict[str, Any]] = None,
-        predicted_config: Optional[Dict[str, Any]] = None
+        predicted_config: Optional[Dict[str, Any]] = None,
+        contrast_method: str = 'percentile'
     ) -> str:
         """Generate overview image comparing original vs anonymized"""
 
@@ -44,23 +99,29 @@ class OverviewGenerator:
         # This ensures we're showing the same "background" image that the AI model analyzed
         orig_frame = self._create_snapshot(original_image)
 
-        # Display original snapshot
-        axes[0].imshow(orig_frame.squeeze(), cmap='gray')
-        axes[0].axis('off')
+        # Enhance contrast
+        if contrast_method == 'percentile':
+            vmin, vmax = self._enhance_contrast_percentile(orig_frame.squeeze())
+            axes[0].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
+            axes[1].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
+        else:
+            enhanced_frame = self._enhance_contrast(orig_frame.squeeze(), contrast_method)
+            axes[0].imshow(enhanced_frame, cmap='gray')
+            axes[1].imshow(enhanced_frame, cmap='gray')
 
-        # Display original snapshot with mask outline
-        axes[1].imshow(orig_frame.squeeze(), cmap='gray')
+
         if mask is not None:
             axes[1].contour(mask, levels=[0.5], colors='lime', linewidths=1.0)
         else:
             axes[1].text(0.5, 0.5, 'No mask', ha='center', va='center',
                         transform=axes[1].transAxes, color='red')
-        axes[1].axis('off')
 
+        axes[0].axis('off')
+        axes[1].axis('off')
 
         # If ground truth and predicted configs are provided, show comparison, otherwise show anonymized
         if ground_truth_config is not None and predicted_config is not None:
-            axes[2].set_title('GT (Blue) vs Predicted (Red)')
+            axes[2].set_title('GT (Yellow) vs Predicted (Cyan)')
             comparison_image = self._create_mask_comparison_image(
                 original_image, ground_truth_config, predicted_config
             )
@@ -91,8 +152,8 @@ class OverviewGenerator:
         predicted_config: Optional[dict]
         ) -> np.ndarray:
         """
-        Create a comparison image showing ground truth mask in blue,
-        predicted mask in red, and overlap in purple.
+        Create a comparison image showing ground truth mask in yellow,
+        predicted mask in cyan, and overlap in lime green.
 
         Args:
             original_image: Original ultrasound image array (N, H, W, C)
@@ -139,9 +200,9 @@ class OverviewGenerator:
         overlay = base_image.copy().astype(np.float32)
 
         # Define colors (in RGB)
-        blue_color = np.array([0, 0, 255], dtype=np.float32)    # Ground truth
-        red_color = np.array([255, 0, 0], dtype=np.float32)     # Predicted
-        purple_color = np.array([128, 0, 128], dtype=np.float32) # Overlap
+        yellow_color = np.array([255, 255, 0], dtype=np.float32)    # Ground truth
+        cyan_color = np.array([0, 255, 255], dtype=np.float32)      # Predicted
+        lime_green_color = np.array([127, 255, 127], dtype=np.float32)   # Overlap (yellow + cyan = lime green)
 
         # Calculate overlap
         overlap_mask = (gt_binary & pred_binary).astype(bool)
@@ -151,17 +212,17 @@ class OverviewGenerator:
         # Apply color overlays with transparency
         alpha = 0.4  # Transparency factor
 
-        # Ground truth only (blue)
+        # Ground truth only (yellow)
         if np.any(gt_only_mask):
-            overlay[gt_only_mask] = (1 - alpha) * overlay[gt_only_mask] + alpha * blue_color
+            overlay[gt_only_mask] = (1 - alpha) * overlay[gt_only_mask] + alpha * yellow_color
 
-        # Predicted only (red)
+        # Predicted only (cyan)
         if np.any(pred_only_mask):
-            overlay[pred_only_mask] = (1 - alpha) * overlay[pred_only_mask] + alpha * red_color
+            overlay[pred_only_mask] = (1 - alpha) * overlay[pred_only_mask] + alpha * cyan_color
 
-        # Overlap (purple)
+        # Overlap (lime green)
         if np.any(overlap_mask):
-            overlay[overlap_mask] = (1 - alpha) * overlay[overlap_mask] + alpha * purple_color
+            overlay[overlap_mask] = (1 - alpha) * overlay[overlap_mask] + alpha * lime_green_color
 
         # Clip values and convert back to uint8
         overlay = np.clip(overlay, 0, 255).astype(np.uint8)

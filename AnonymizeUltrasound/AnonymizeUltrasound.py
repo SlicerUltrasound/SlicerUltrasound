@@ -1869,7 +1869,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         logging.info(f"Auto mask infer in {time.time() - start:.3f}s")
         return coordsN
 
-
     def showMaskContour(self, show=True):
         parameterNode = self.getParameterNode()
         maskContourVolumeNode = parameterNode.overlayVolume
@@ -2719,11 +2718,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     })
 
                 result = processor.process_single_dicom(
-                    row, output_folder, headers_folder,
+                    row, output_folder, headers_folder, overview_dir,
                     lambda msg: progress.update(idx, msg),
-                    overview_callback,
-                    None,
-                    overview_dir=overview_dir or None
+                    overview_callback
                 )
 
                 # Update counters
@@ -2735,11 +2732,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     failed += 1
                     if result.error_message:
                         error_messages.append(result.error_message)
-
-                # Write metrics to CSV
-                if metrics_writer and result.success and not result.skipped:
-                    csv_row = processor.format_metrics_for_csv(result)
-                    metrics_writer.writerow(csv_row)
 
             # Generate all PDFs after processing all files
             processor.generate_all_pdfs()
