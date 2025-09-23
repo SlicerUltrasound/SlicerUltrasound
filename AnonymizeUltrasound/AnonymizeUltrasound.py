@@ -2600,10 +2600,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]], gt_mask_config: Optional[dict], predicted_mask_config: Optional[dict]):
                     if not overview_dir:
                         return
-                    og = OverviewGenerator(overview_dir)
-                    p = og.generate_overview(filename, orig, masked, mask, gt_mask_config, predicted_mask_config)
+                    overview_generator = OverviewGenerator(overview_dir)
+                    overview_path = overview_generator.generate_overview(
+                        filename, orig, masked, mask, gt_mask_config, predicted_mask_config)
                     overview_manifest.append({
-                        "path": p,
+                        "path": overview_path,
                         "filename": filename,
                         "dice": metrics.get("dice_mean") if metrics else None,
                         "iou": metrics.get("iou_mean") if metrics else None,
@@ -2682,8 +2683,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
 
         overview_manifest = []
-        if overview_dir:
-            os.makedirs(overview_dir, exist_ok=True)
+        os.makedirs(overview_dir, exist_ok=True)
+        overview_generator = OverviewGenerator(overview_dir)
 
         # Process files using shared logic
         progress = SlicerProgressReporter(self)
@@ -2703,10 +2704,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
                     if not overview_dir:
                         return
-                    og = OverviewGenerator(overview_dir)
-                    p = og.generate_overview(filename, orig, masked, mask, metrics or {})
+                    overview_path = overview_generator.generate_overview(filename, orig, masked, mask, metrics or {})
                     overview_manifest.append({
-                        "path": p,
+                        "path": overview_path,
                         "filename": filename,
                         "dice": metrics.get("dice_mean") if metrics else None,
                         "iou": metrics.get("iou_mean") if metrics else None,
@@ -2874,7 +2874,6 @@ class AnonymizeUltrasoundTest(ScriptedLoadableModuleTest):
 
         import SampleData
 
-        onSlicerStartupCompleted()
         inputVolume = SampleData.downloadSample("AnonymizeUltrasound1")
         self.delayDisplay("Loaded test data set")
 

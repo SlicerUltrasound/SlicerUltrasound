@@ -14,6 +14,13 @@ Args:
     preserve_directory_structure: Whether to preserve the directory structure. default: True
     resume_anonymization: Whether to skip processing if the output file already exists. default: False
     no_mask_generation: Whether to NOT generate a mask. This means that only the headers will be anonymized. default: False
+
+Example:
+python -m auto_anonymize --input_folder input_dicoms/ \
+    --output_folder output_dicoms/ \
+    --headers_folder headers_out/ \
+    --model-path model_trace.pt \
+    --device cpu
 """
 # Add the parent directory to the Python path
 import sys
@@ -36,11 +43,11 @@ def main():
     parser = argparse.ArgumentParser(description='Anonymize ultrasound DICOM files')
 
     # required arguments
-    parser.add_argument('input_folder',
+    parser.add_argument('--input_folder',
                        help='Directory containing DICOM files to anonymize')
-    parser.add_argument('output_folder',
+    parser.add_argument('--output_folder',
                        help='Directory to save anonymized DICOM files')
-    parser.add_argument('headers_folder',
+    parser.add_argument('--headers_folder',
                        help='Directory to save DICOM headers (and also the keys.csv)')
 
     # optional arguments

@@ -9,7 +9,15 @@ Args:
     preserve_directory_structure: Whether to preserve the directory structure. default: True
     overview_dir: The directory to save the overview images. default: None
     ground_truth_dir: The directory to save the ground truth images. default: None
+
+Example:
+python -m model_eval --input_folder input_dicoms/ \
+    --ground_truth_dir ground_truth_masks/ \
+    --overview_dir overviews/ \
+    --model_path model_trace.pt \
+    --device cpu
 """
+
 # Add the parent directory to the Python path
 import sys
 import os
@@ -20,6 +28,7 @@ import numpy as np
 from typing import Optional, Dict, Any
 import csv
 import time
+from datetime import datetime
 
 from common.dicom_file_manager import DicomFileManager
 from common.dicom_processor import DicomProcessor, ProcessingConfig
@@ -31,15 +40,15 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate a model on a directory of DICOM files')
 
     # required arguments
-    parser.add_argument('input_folder',
+    parser.add_argument('--input_folder',
                        help='Directory containing DICOM files to evaluate')
-    parser.add_argument('ground_truth_dir',
+    parser.add_argument('--ground_truth_dir',
                        help='Directory containing ground truth images of original vs anonymized frames')
-    parser.add_argument('overview_dir',
+    parser.add_argument('--overview_dir',
                        help='Directory to save overview images of original vs anonymized frames')
 
     # optional arguments
-    parser.add_argument('--model-path',
+    parser.add_argument('--model_path',
                        help='Path to pre-trained model for corner prediction')
     parser.add_argument('--device', choices=['cpu', 'cuda', 'mps'], default='cpu',
                        help='Device to use for model inference')
@@ -77,15 +86,16 @@ def main():
     metrics_file = None
     metrics_writer = None
 
-    os.makedirs(os.path.dirname(args.overview_dir), exist_ok=True)
-    metrics_file = open(os.path.join(args.overview_dir, "metrics.csv"), "w", newline="")
-    metrics_writer = csv.DictWriter(metrics_file, fieldnames=processor.get_metrics_fieldnames())
+    os.makedirs(args.overview_dir, exist_ok=True)
+    metrics_file = open(os.path.join(args.overview_dir, f"metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), "w", newline="")
+    metrics_writer = csv.DictWriter(metrics_file, fieldnames=processor.get_evaluate_fieldnames())
     metrics_writer.writeheader()
 
     # Process files
     progress_reporter.start(num_files, "Processing DICOM files")
 
-    success_count = failed_count = skipped_count = 0
+    success = failed = skipped = 0
+    errors = []
     overview_manifest = []
 
     try:
@@ -96,35 +106,32 @@ def main():
             def progress_callback(message: str):
                 progress_reporter.update(idx, message)
 
-            def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
-                if overview_generator:
-                    overview_path = overview_generator.generate_overview(filename, orig, masked, mask, metrics)
-                    overview_manifest.append({
-                        "path": overview_path,
-                        "filename": filename,
-                        "dice": metrics.get("dice_mean") if metrics else None,
-                        "iou": metrics.get("iou_mean") if metrics else None,
-                        "mean_distance_error": metrics.get("mean_distance_error") if metrics else None,
-                        "upper_left_error": metrics.get("upper_left_error") if metrics else None,
-                        "upper_right_error": metrics.get("upper_right_error") if metrics else None,
-                        "lower_left_error": metrics.get("lower_left_error") if metrics else None,
-                        "lower_right_error": metrics.get("lower_right_error") if metrics else None,
-                    })
+            def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]], gt_mask_config: Optional[dict], predicted_mask_config: Optional[dict]):
+                overview_path = overview_generator.generate_overview(filename, orig, masked, mask, gt_mask_config, predicted_mask_config)
+                overview_manifest.append({
+                    "path": overview_path,
+                    "filename": filename,
+                    "dice": metrics.get("dice_mean") if metrics else None,
+                    "iou": metrics.get("iou_mean") if metrics else None,
+                    "mean_distance_error": metrics.get("mean_distance_error") if metrics else None,
+                    "upper_left_error": metrics.get("upper_left_error") if metrics else None,
+                    "upper_right_error": metrics.get("upper_right_error") if metrics else None,
+                    "lower_left_error": metrics.get("lower_left_error") if metrics else None,
+                    "lower_right_error": metrics.get("lower_right_error") if metrics else None,
+                })
 
             result = processor.evaluate_single_dicom(row, progress_callback, overview_callback)
 
-            # Update counters
             if result.success and not result.skipped:
-                success_count += 1
+                success += 1
+                if metrics_writer and result.metrics:
+                    metrics_writer.writerow(result.metrics)
             elif result.skipped:
-                skipped_count += 1
+                skipped += 1
             else:
-                failed_count += 1
-
-            # Write metrics to CSV if available
-            if metrics_writer and result.success and not result.skipped:
-                csv_row = processor.format_evaluate_metrics_for_csv(result)
-                metrics_writer.writerow(csv_row)
+                failed += 1
+                if result.error_message:
+                    errors.append(result.error_message)
 
     finally:
         progress_reporter.finish()
@@ -139,14 +146,13 @@ def main():
     else:
         logger.info("No overview PDF generated")
 
-    logger.info(f"Evaluation complete! Success: {success_count}, Failed: {failed_count}, Skipped: {skipped_count}, Time: {time.time() - start_time:.2f}s")
+    logger.info(f"Evaluation complete! Success: {success}, Failed: {failed}, Skipped: {skipped}, Time: {time.time() - start_time:.2f}s")
 
     return {
-        "status": f"Evaluation complete! Success: {success_count}, Failed: {failed_count}, Skipped: {skipped_count}",
-        "success": success_count,
-        "failed": failed_count,
-        "overview_pdf_path": overview_pdf_path,
-        "metrics_csv_path": os.path.join(args.overview_dir, "metrics.csv")
+        "status": f"Model evaluation complete! Success: {success}, Failed: {failed}, Skipped: {skipped}",
+        "success": success, "failed": failed, "skipped": skipped,
+        "error_messages": errors,
+        "overview_pdf_path": overview_pdf_path
     }
 
 if __name__ == '__main__':
