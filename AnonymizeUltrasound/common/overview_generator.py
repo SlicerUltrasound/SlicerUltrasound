@@ -19,7 +19,8 @@ class OverviewGenerator:
         original_image: np.ndarray,
         masked_image: np.ndarray,
         mask: Optional[np.ndarray] = None,
-        metrics: Optional[Dict[str, Any]] = None
+        ground_truth_config: Optional[Dict[str, Any]] = None,
+        predicted_config: Optional[Dict[str, Any]] = None
     ) -> str:
         """Generate overview image comparing original vs anonymized"""
 
@@ -38,44 +39,10 @@ class OverviewGenerator:
 
         axes[0].set_title('Original')
         axes[1].set_title('Mask Outline')
-        axes[2].set_title('Anonymized')
 
         # Create max-pooled snapshots (same as AI model preprocessing)
         # This ensures we're showing the same "background" image that the AI model analyzed
         orig_frame = self._create_snapshot(original_image)
-        masked_frame = self._create_snapshot(masked_image)
-        
-        if orig_frame.shape != masked_frame.shape:
-            raise ValueError("Original and masked frame shapes do not match")
-
-        # Convert mask to boolean for processing
-        mask2d = None
-        if mask is not None:
-            mask2d = (mask > 0)
-
-        # Helper function to apply white background outside the fan
-        def _with_white_bg(frame, mask2d):
-            """Apply white background outside the mask area"""
-            if mask2d is None:
-                return frame, 'gray'
-
-            if frame.ndim == 2:
-                out = frame.copy()
-                out[~mask2d] = 255
-                return out, 'gray'
-            elif frame.ndim == 3 and frame.shape[2] == 3:
-                out = frame.copy()
-                m3 = np.repeat((~mask2d)[..., None], 3, axis=2)
-                out[m3] = 255
-                return out, None
-            else:
-                # single-channel but kept as HxWx1
-                out = frame[..., 0].copy()
-                out[~mask2d] = 255
-                return out, 'gray'
-
-        # Apply white background to masked frame
-        masked_disp, cmap2 = _with_white_bg(masked_frame, mask2d)
 
         # Display original snapshot
         axes[0].imshow(orig_frame.squeeze(), cmap='gray')
@@ -90,8 +57,23 @@ class OverviewGenerator:
                         transform=axes[1].transAxes, color='red')
         axes[1].axis('off')
 
-        # Display anonymized with white background
-        axes[2].imshow(masked_disp, cmap=cmap2)
+
+        # If ground truth and predicted configs are provided, show comparison, otherwise show anonymized
+        if ground_truth_config is not None and predicted_config is not None:
+            axes[2].set_title('GT (Blue) vs Predicted (Red)')
+            comparison_image = self._create_mask_comparison_image(
+                original_image, ground_truth_config, predicted_config
+            )
+            axes[2].imshow(comparison_image)
+        else:
+            axes[2].set_title('Anonymized')
+            masked_frame = self._create_snapshot(masked_image)
+
+            if orig_frame.shape != masked_frame.shape:
+                raise ValueError("Original and masked frame shapes do not match")
+
+            axes[2].imshow(masked_frame)
+
         axes[2].axis('off')
 
         # Save overview
@@ -103,24 +85,107 @@ class OverviewGenerator:
 
         return overview_path
 
+    def _create_mask_comparison_image(self,
+        original_image: np.ndarray,
+        ground_truth_config: Optional[dict],
+        predicted_config: Optional[dict]
+        ) -> np.ndarray:
+        """
+        Create a comparison image showing ground truth mask in blue,
+        predicted mask in red, and overlap in purple.
+
+        Args:
+            original_image: Original ultrasound image array (N, H, W, C)
+            ground_truth_config: Ground truth mask configuration
+            predicted_config: Predicted mask configuration
+
+        Returns:
+            RGB image with color-coded mask comparison
+        """
+        from .masking import create_mask
+
+        # Create snapshot for consistent visualization
+        orig_frame = self._create_snapshot(original_image)
+
+        # Get image dimensions
+        if orig_frame.ndim == 2:
+            height, width = orig_frame.shape
+        else:
+            height, width = orig_frame.shape[:2]
+
+        # Create ground truth and predicted masks
+        gt_mask = create_mask(ground_truth_config, image_size=(height, width))
+        pred_mask = create_mask(predicted_config, image_size=(height, width))
+
+        # Convert to binary masks
+        gt_binary = (gt_mask > 0).astype(np.uint8)
+        pred_binary = (pred_mask > 0).astype(np.uint8)
+
+        # Create RGB comparison image
+        # Start with grayscale original image as base
+        if orig_frame.ndim == 2:
+            # Convert grayscale to RGB
+            base_image = np.stack([orig_frame, orig_frame, orig_frame], axis=2)
+        else:
+            base_image = orig_frame.copy()
+
+        # Ensure base image is in 0-255 range
+        if base_image.max() <= 1.0:
+            base_image = (base_image * 255).astype(np.uint8)
+        else:
+            base_image = base_image.astype(np.uint8)
+
+        # Create color overlay
+        overlay = base_image.copy().astype(np.float32)
+
+        # Define colors (in RGB)
+        blue_color = np.array([0, 0, 255], dtype=np.float32)    # Ground truth
+        red_color = np.array([255, 0, 0], dtype=np.float32)     # Predicted
+        purple_color = np.array([128, 0, 128], dtype=np.float32) # Overlap
+
+        # Calculate overlap
+        overlap_mask = (gt_binary & pred_binary).astype(bool)
+        gt_only_mask = (gt_binary & ~pred_binary).astype(bool)
+        pred_only_mask = (pred_binary & ~gt_binary).astype(bool)
+
+        # Apply color overlays with transparency
+        alpha = 0.4  # Transparency factor
+
+        # Ground truth only (blue)
+        if np.any(gt_only_mask):
+            overlay[gt_only_mask] = (1 - alpha) * overlay[gt_only_mask] + alpha * blue_color
+
+        # Predicted only (red)
+        if np.any(pred_only_mask):
+            overlay[pred_only_mask] = (1 - alpha) * overlay[pred_only_mask] + alpha * red_color
+
+        # Overlap (purple)
+        if np.any(overlap_mask):
+            overlay[overlap_mask] = (1 - alpha) * overlay[overlap_mask] + alpha * purple_color
+
+        # Clip values and convert back to uint8
+        overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+
+        return overlay
+
     def _create_snapshot(self, image_array: np.ndarray) -> np.ndarray:
         """
         Create a max-pooled snapshot from multi-frame image array.
         This replicates the same preprocessing step used by the AI model.
-        
+
         Args:
             image_array: Multi-frame image array with shape (N, H, W, C)
-            
+
         Returns:
             Single frame snapshot with shape (H, W, C) or (H, W) for grayscale
         """
         # Validate input shape - should be (N, H, W, C)
         if len(image_array.shape) != 4:
             raise ValueError(f"Expected 4D array (N, H, W, C), got {len(image_array.shape)}D array")
-        
+
         # Step 1: Max-pool frames to get single frame (same as AI model preprocessing)
         snapshot = image_array.max(axis=0)  # (H, W, C)
-        
+
         # If single channel, we can optionally squeeze the channel dimension for display
         # but keep it consistent with how the AI model would see it
         if snapshot.shape[2] == 1:
@@ -159,7 +224,7 @@ class OverviewGenerator:
                         continue
 
                     img = plt.imread(item["path"])
-                    
+
                     # Create figure with structured layout
                     fig = plt.figure(figsize=(11, 8.5), dpi=300)
                     fig.patch.set_facecolor('white')
@@ -174,7 +239,7 @@ class OverviewGenerator:
 
                     ax_table = fig.add_subplot(gs[1, 0])
                     ax_table.axis('off')
-                    
+
                     # Prepare metrics data
                     metrics_data = [
                         ["Filename", item.get("filename", "Unknown")],
@@ -186,7 +251,7 @@ class OverviewGenerator:
                         ["Lower Left Error", f"{item.get('lower_left_error', 0):.3f}"],
                         ["Lower Right Error", f"{item.get('lower_right_error', 0):.3f}"]
                     ]
-                    
+
                     # Create horizontal table layout
                     table = ax_table.table(
                         cellText=[list(row[1] for row in metrics_data)],  # Values only

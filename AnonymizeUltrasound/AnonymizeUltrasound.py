@@ -1003,7 +1003,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 ground_truth_folder=gt_dir,
                 model_path=model_path,
                 device=device,
-                overview_dir=overview_dir
+                overview_dir=overview_dir,
             )
             self.ui.statusLabel.text = result['status']
         except Exception as e:
@@ -2552,7 +2552,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
     def batch_model_evaluation(self, input_folder: str, ground_truth_folder: str,
                          model_path: str = MODEL_PATH, device: str = "cpu",
-                         overview_dir: str = "", metrics_csv_path: str = "") -> Dict[str, Any]:
+                         overview_dir: str = "") -> Dict[str, Any]:
         start_time = time.time()
 
         # Scan input recursively; skip_single_frame choice is optional (can reuse UI setting)
@@ -2598,11 +2598,11 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
                 row = self.dicom_manager.dicom_df.iloc[idx]
 
-                def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
+                def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]], gt_mask_config: Optional[dict], predicted_mask_config: Optional[dict]):
                     if not overview_dir:
                         return
                     og = OverviewGenerator(overview_dir)
-                    p = og.generate_overview(filename, orig, masked, mask, metrics or {})
+                    p = og.generate_overview(filename, orig, masked, mask, gt_mask_config, predicted_mask_config)
                     overview_manifest.append({
                         "path": p,
                         "filename": filename,
@@ -2646,7 +2646,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             "status": f"Model evaluation complete! Success: {success}, Failed: {failed}, Skipped: {skipped}",
             "success": success, "failed": failed, "skipped": skipped,
             "error_messages": errors,
-            "metrics_csv_path": os.path.join(overview_dir, "metrics.csv"),
             "overview_pdf_path": overview_pdf_path
         }
 
@@ -2827,36 +2826,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             "lower_left": tuple(coords[2]),
             "lower_right": tuple(coords[3]),
         }
-
-    def _mask_from_corners(self, original_dims: tuple[int, int], corners_dict: dict):
-        """
-        Build curvilinear mask and config from corners (0/1 mask).
-        """
-        return compute_masks_and_configs(
-            original_dims=original_dims,
-            predicted_corners=corners_dict
-        )
-
-    def _apply_mask_nhwc(self, image_nhwc: np.ndarray, mask_2d: np.ndarray) -> np.ndarray:
-        """
-        Apply a 2D binary mask to a 4D image array to anonymize ultrasound images by masking
-        out regions that contain patient information or other sensitive data.
-        Multiply each frame/channel by the binary mask (0/1).
-        :param image_nhwc: 4D image array (N, H, W, C)
-        :param mask_2d: 2D binary mask (H, W)
-        :return: 4D image array (N, H, W, C)
-        """
-        # Validate input shapes
-        if len(image_nhwc.shape) != 4:
-            raise ValueError(f"Expected 4D image array, got {len(image_nhwc.shape)}D")
-        if len(mask_2d.shape) != 2:
-            raise ValueError(f"Expected 2D mask array, got {len(mask_2d.shape)}D")
-        if image_nhwc.shape[1:3] != mask_2d.shape:
-            raise ValueError(f"Mask shape {mask_2d.shape} doesn't match image spatial dims {image_nhwc.shape[1:3]}")
-
-        # Reshape mask to enable broadcasting: (H, W) -> (1, H, W, 1)
-        mask_broadcast = mask_2d[np.newaxis, :, :, np.newaxis]
-        return image_nhwc.copy() * mask_broadcast
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""

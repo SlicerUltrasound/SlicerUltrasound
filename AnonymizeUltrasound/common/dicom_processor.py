@@ -117,7 +117,7 @@ class DicomProcessor:
         self,
         row,
         progress_callback: Optional[Callable[[str], None]] = None,
-        overview_callback: Optional[Callable[[str, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[Dict[str, Any]]], None]] = None
+        overview_callback: Optional[Callable[[str, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[Dict[str, Any]], Optional[dict], Optional[dict]], None]] = None,
     ) -> ProcessingResult:
         start_time = time.time()
         input_path = row.InputPath
@@ -152,7 +152,7 @@ class DicomProcessor:
 
             # Overview callback
             if overview_callback and original_image.shape[0] > 0:
-                overview_callback(dicom_basename, original_image, masked_image, predicted_mask_2d, metrics)
+                overview_callback(dicom_basename, original_image, masked_image, predicted_mask_2d, metrics, gt_mask_config, predicted_mask_config)
 
             return ProcessingResult(
                 success=True, skipped=False, input_path=input_path,
