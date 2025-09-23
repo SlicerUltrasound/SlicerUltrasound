@@ -158,6 +158,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     AUTO_ANON_GT_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeGroundTruthDir"
     AUTO_ANON_TOP_RATIO_SETTING = "AnonymizeUltrasound/AutoAnonymizeTopRatio"
     AUTO_ANON_PHI_ONLY_MODE_SETTING = "AnonymizeUltrasound/AutoAnonymizePhiOnlyMode"
+    AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING = "AnonymizeUltrasound/AutoAnonymizeRemovePhiFromImage"
     AUTO_ANON_OVERWRITE_FILES_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverwriteFiles"
     EVAL_ENABLE_SETTING = "AnonymizeUltrasound/EnableModelEvaluation"
     EVAL_INPUT_DIR_SETTING = "AnonymizeUltrasound/EvalInputFolder"
@@ -402,13 +403,12 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self.ui.autoAnonModelPathButton.currentPath = MODEL_PATH
 
-        target_device = settings.value(self.AUTO_ANON_DEVICE_SETTING)
-        if target_device:
-            device_index = self.ui.autoAnonDeviceComboBox.findText(target_device)
-            if device_index >= 0:
-                self.ui.autoAnonDeviceComboBox.setCurrentIndex(device_index)
-            else:
-                self.ui.autoAnonDeviceComboBox.setCurrentIndex(0)  # Default to CPU
+        target_device = settings.value(self.AUTO_ANON_DEVICE_SETTING, "cpu")  # Default to CPU
+        device_index = self.ui.autoAnonDeviceComboBox.findText(target_device)
+        if device_index >= 0:
+            self.ui.autoAnonDeviceComboBox.setCurrentIndex(device_index)
+        else:
+            self.ui.autoAnonDeviceComboBox.setCurrentIndex(0)  # Default to CPU
 
         self.ui.autoAnonModelPathButton.connect("currentPathChanged(QString)",
                                                 lambda newValue: self.onSettingChanged(self.AUTO_ANON_MODEL_PATH_SETTING, newValue))
@@ -432,8 +432,16 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # Setup PHI-only mode setting
         phiOnlyMode = settings.value(self.AUTO_ANON_PHI_ONLY_MODE_SETTING, "false").lower() == "true"
         self.ui.phiOnlyModeCheckBox.checked = phiOnlyMode
-        self.ui.phiOnlyModeCheckBox.connect('toggled(bool)',
-                                           lambda checked: self.onSettingChanged(self.AUTO_ANON_PHI_ONLY_MODE_SETTING, str(checked).lower()))
+        self.ui.phiOnlyModeCheckBox.connect('toggled(bool)', self.onPhiOnlyModeToggled)
+
+        # Setup remove PHI from image setting
+        removePhiFromImage = settings.value(self.AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING, "true").lower() == "true"
+        self.ui.removePhiFromImageCheckBox.checked = removePhiFromImage
+        self.ui.removePhiFromImageCheckBox.connect('toggled(bool)',
+                                                  lambda checked: self.onSettingChanged(self.AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING, str(checked).lower()))
+
+        # Apply initial dependency state
+        self.updateRemovePhiFromImageVisibility()
 
         # Setup overwrite files setting
         overwriteFiles = settings.value(self.AUTO_ANON_OVERWRITE_FILES_SETTING, "false").lower() == "true"
@@ -1028,6 +1036,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         resume = self.ui.continueProgressCheckBox.checked
         top_ratio = self.ui.topRatioSpinBox.value
         phi_only_mode = self.ui.phiOnlyModeCheckBox.checked
+        remove_phi_from_image = self.ui.removePhiFromImageCheckBox.checked
         overwrite_files = self.ui.overwriteFilesCheckBox.checked
 
         self.ui.statusLabel.text = "Running auto‑anonymize..."
@@ -1046,6 +1055,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 hash_patient_id=hash_pid,
                 top_ratio=top_ratio,
                 phi_only_mode=phi_only_mode,
+                remove_phi_from_image=remove_phi_from_image,
                 overwrite_files=overwrite_files,
             )
             self.ui.statusLabel.text = result['status']
@@ -1156,6 +1166,24 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def _updateAutoOverlayCheckBoxVisibility(self):
         self.ui.autoOverlayCheckBox.setVisible(self.developerMode)
+
+    def onPhiOnlyModeToggled(self, checked):
+        """Handle PHI-only mode checkbox toggle and update dependent checkbox"""
+        self.onSettingChanged(self.AUTO_ANON_PHI_ONLY_MODE_SETTING, str(checked).lower())
+        self.updateRemovePhiFromImageVisibility()
+
+    def updateRemovePhiFromImageVisibility(self):
+        """Update the visibility and state of the Remove PHI from image checkbox based on PHI-only mode"""
+        phiOnlyModeEnabled = self.ui.phiOnlyModeCheckBox.checked
+
+        # Enable/disable the checkbox based on PHI-only mode
+        self.ui.removePhiFromImageCheckBox.setEnabled(phiOnlyModeEnabled)
+        self.ui.removePhiFromImageLabel.setEnabled(phiOnlyModeEnabled)
+
+        # If PHI-only mode is disabled, also uncheck the Remove PHI from image checkbox
+        if not phiOnlyModeEnabled:
+            self.ui.removePhiFromImageCheckBox.checked = False
+            self.onSettingChanged(self.AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING, "false")
 
     #
     # Placement of mask markups
@@ -2634,6 +2662,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             no_mask_generation=kwargs.get('no_mask_generation', False),
             top_ratio=kwargs.get('top_ratio', 0.1),
             phi_only_mode=kwargs.get('phi_only_mode', False),
+            remove_phi_from_image=kwargs.get('remove_phi_from_image', True),
             overwrite_files=kwargs.get('overwrite_files', False),
         )
 

@@ -29,6 +29,7 @@ class ProcessingConfig:
     ground_truth_dir: Optional[str] = None
     top_ratio: float = 0.1
     phi_only_mode: bool = False  # If True, only apply top redaction, skip fan mask
+    remove_phi_from_image: bool = True  # If True, apply PHI redaction to image and generate PDF; if False, only remove PHI from metadata
     overwrite_files: bool = False  # If True, overwrite existing output files; if False, skip them
 
 @dataclass
@@ -239,16 +240,20 @@ class DicomProcessor:
                         predicted_corners=predicted_corners
                     )
 
-            # 4. Apply mask to image (only if not in PHI-only mode)
-            if self.config.phi_only_mode:
+            # 4. Apply mask to image (only if both PHI-only mode and remove_phi_from_image are enabled)
+            if self.config.phi_only_mode and self.config.remove_phi_from_image:
                 # In PHI-only mode, start with original image (no fan mask)
                 masked_image_array = original_image.copy()
-            else:
-                # Normal mode: apply fan mask
+            elif not self.config.phi_only_mode:
+                # Normal mode: apply fan mask (regardless of remove_phi_from_image setting)
                 masked_image_array = self._apply_mask(original_image, curvilinear_mask)
+            else:
+                # PHI-only mode is enabled but remove_phi_from_image is disabled - use original image
+                masked_image_array = original_image.copy()
 
-            # 4.5. Apply top redaction if enabled
-            if self.config.top_ratio > 0 and predicted_corners is not None:
+            # 4.5. Apply top redaction if enabled (only in PHI-only mode with remove_phi_from_image enabled)
+            if (self.config.phi_only_mode and self.config.remove_phi_from_image and
+                self.config.top_ratio > 0 and predicted_corners is not None):
                 masked_image_array = self._apply_top_redaction(
                     masked_image_array, predicted_corners, self.config.top_ratio
                 )
@@ -347,6 +352,10 @@ class DicomProcessor:
 
     def generate_all_pdfs(self):
         """Generate PDFs for all collected data (call this after processing all files)"""
+        if not (self.config.phi_only_mode and self.config.remove_phi_from_image):
+            self.logger.info("Skipping PDF generation - PHI-only mode or remove_phi_from_image is disabled")
+            return
+
         if not hasattr(self, '_pdf_data') or not self._pdf_data:
             return
 

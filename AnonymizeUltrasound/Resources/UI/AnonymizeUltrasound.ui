@@ -604,6 +604,28 @@
               </widget>
             </item>
             <item row="8" column="0">
+              <widget class="QLabel" name="removePhiFromImageLabel">
+                <property name="text">
+                  <string>Remove PHI from image:</string>
+                </property>
+                <property name="toolTip">
+                  <string>If enabled, applies PHI redaction to the image pixel data and generates
+                    PDF with diff. If disabled, only removes PHI from DICOM metadata.</string>
+                </property>
+              </widget>
+            </item>
+            <item row="8" column="1">
+              <widget class="QCheckBox" name="removePhiFromImageCheckBox">
+                <property name="text">
+                  <string>Remove PHI from image</string>
+                </property>
+                <property name="toolTip">
+                  <string>If enabled, applies PHI redaction to the image pixel data and generates
+                    PDF with diff. If disabled, only removes PHI from DICOM metadata.</string>
+                </property>
+              </widget>
+            </item>
+            <item row="9" column="0">
               <widget class="QLabel" name="overwriteFilesLabel">
                 <property name="text">
                   <string>Overwrite existing files:</string>
@@ -614,7 +636,7 @@
                 </property>
               </widget>
             </item>
-            <item row="8" column="1">
+            <item row="9" column="1">
               <widget class="QCheckBox" name="overwriteFilesCheckBox">
                 <property name="text">
                   <string>Overwrite existing files</string>
@@ -625,7 +647,7 @@
                 </property>
               </widget>
             </item>
-            <item row="9" column="0" colspan="2">
+            <item row="10" column="0" colspan="2">
               <widget class="QPushButton" name="runAutoAnonymizeButton">
                 <property name="text">
                   <string>Run Auto‑Anonymize</string>
