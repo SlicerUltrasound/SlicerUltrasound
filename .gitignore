@@ -134,3 +134,6 @@ secrets.json
 *.pem
 .aws/
 .gcp/
+
+# Diff files
+diff.txt

@@ -2650,7 +2650,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         }
 
     def batch_auto_anonymize(self, input_folder: str, output_folder: str, headers_folder: str,
-                            model_path: str = MODEL_PATH, device: str = "", overview_dir: str = "", **kwargs) -> Dict[str, Any]:
+                            model_path: str = MODEL_PATH, device: str = "", **kwargs) -> Dict[str, Any]:
         start_time = time.time()
 
         # Create processing configuration
@@ -2681,10 +2681,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             os.makedirs(headers_folder, exist_ok=True)
             df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
 
-
         overview_manifest = []
-        os.makedirs(overview_dir, exist_ok=True)
-        overview_generator = OverviewGenerator(overview_dir)
+        overview_generator = OverviewGenerator(headers_folder)
 
         # Process files using shared logic
         progress = SlicerProgressReporter(self)
@@ -2702,9 +2700,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                 self.dicom_manager.current_index = idx
 
                 def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
-                    if not overview_dir:
+                    if not headers_folder:
                         return
-                    overview_path = overview_generator.generate_overview(filename, orig, masked, mask, metrics or {})
+                    overview_path = overview_generator.generate_overview(filename, orig, masked, mask)
                     overview_manifest.append({
                         "path": overview_path,
                         "filename": filename,
@@ -2717,8 +2715,9 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                         "lower_right_error": metrics.get("lower_right_error") if metrics else None,
                     })
 
+                # Use headers_folder for both headers and overview
                 result = processor.process_single_dicom(
-                    row, output_folder, headers_folder, overview_dir,
+                    row, output_folder, headers_folder, headers_folder,
                     lambda msg: progress.update(idx, msg),
                     overview_callback
                 )

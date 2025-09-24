@@ -3,7 +3,7 @@
 This script anonymizes a directory of DICOM files using a pre-trained model for corner prediction.
 
 Args:
-    input_folder: The directory containing the DICOM files to anonymize.
+    input_dir: The directory containing the DICOM files to anonymize.
     model_path: The path to the pre-trained model for corner prediction. default: None
     device: The device to use for the model. default: "cpu"
     preserve_directory_structure: Whether to preserve the directory structure. default: True
@@ -11,7 +11,7 @@ Args:
     ground_truth_dir: The directory to save the ground truth images. default: None
 
 Example:
-python -m model_eval --input_folder input_dicoms/ \
+python -m model_eval --input_dir input_dicoms/ \
     --ground_truth_dir ground_truth_masks/ \
     --overview_dir overviews/ \
     --model_path model_trace.pt \
@@ -40,7 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate a model on a directory of DICOM files')
 
     # required arguments
-    parser.add_argument('--input_folder',
+    parser.add_argument('--input_dir',
                        help='Directory containing DICOM files to evaluate')
     parser.add_argument('--ground_truth_dir',
                        help='Directory containing ground truth images of original vs anonymized frames')
