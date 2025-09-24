@@ -639,8 +639,10 @@ class DicomProcessor:
                 'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
                 'GrayscaleConversion': False
             }
+
             if mask_config is not None:
-                sequence_info['MaskConfig'] = mask_config
+                for key, value in mask_config.items():
+                    sequence_info[key] = value
 
             json_path = final_output_path.replace(".dcm", ".json")
             with open(json_path, 'w') as f:
