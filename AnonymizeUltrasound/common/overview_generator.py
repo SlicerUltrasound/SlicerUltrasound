@@ -44,6 +44,9 @@ class OverviewGenerator:
         Returns:
             Enhanced image
         """
+        if method not in ['clahe', 'gamma']:
+            raise ValueError(f"Invalid method: {method}")
+
         if method == 'clahe':
             clip_limit = kwargs.get('clip_limit', 2.0)
             tile_size = kwargs.get('tile_grid_size', (8, 8))
@@ -53,6 +56,13 @@ class OverviewGenerator:
                 img_norm = ((image - image.min()) / (image.max() - image.min()) * 255).astype(np.uint8)
             else:
                 img_norm = image
+
+            # CRITICAL: Ensure single channel for CLAHE
+            if len(img_norm.shape) == 3:
+                if img_norm.shape[2] == 3:  # RGB
+                    img_norm = cv2.cvtColor(img_norm, cv2.COLOR_RGB2GRAY)
+                elif img_norm.shape[2] == 1:  # Single channel with explicit dimension
+                    img_norm = img_norm.squeeze(axis=2)
 
             clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
             return clahe.apply(img_norm)
@@ -75,7 +85,7 @@ class OverviewGenerator:
         mask: Optional[np.ndarray] = None,
         ground_truth_config: Optional[Dict[str, Any]] = None,
         predicted_config: Optional[Dict[str, Any]] = None,
-        contrast_method: str = 'percentile'
+        contrast_method: str = 'clahe'
     ) -> str:
         """Generate overview image comparing original vs anonymized"""
 
@@ -85,57 +95,78 @@ class OverviewGenerator:
         if masked_image.shape[0] == 0:
             raise ValueError("No frames available in masked_image")
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=300)
+        # Change to 2x2 layout
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10), dpi=300)
         fig.patch.set_facecolor('white')
 
         # Set individual axes backgrounds to white
-        for ax in axes:
+        for ax in axes.flat:
             ax.set_facecolor('white')
 
-        axes[0].set_title('Original')
-        axes[1].set_title('Mask Outline')
+        # Set panel titles
+        axes[0,0].set_title('Original (max-pooled and contrast enhanced)')
+        axes[1,0].set_title('Mask Outline')
+        axes[1,1].set_title('Ground Truth Outline')
 
         # Create max-pooled snapshots (same as AI model preprocessing)
-        # This ensures we're showing the same "background" image that the AI model analyzed
         orig_frame = self._create_snapshot(original_image)
 
-        # Enhance contrast
+        # Enhance contrast for background panels
         if contrast_method == 'percentile':
             vmin, vmax = self._enhance_contrast_percentile(orig_frame.squeeze())
-            axes[0].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
-            axes[1].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
+            axes[0,0].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
+            axes[1,0].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
+            axes[1,1].imshow(orig_frame.squeeze(), cmap='gray', vmin=vmin, vmax=vmax)
         else:
             enhanced_frame = self._enhance_contrast(orig_frame.squeeze(), contrast_method)
-            axes[0].imshow(enhanced_frame, cmap='gray')
-            axes[1].imshow(enhanced_frame, cmap='gray')
+            axes[0,0].imshow(enhanced_frame, cmap='gray')
+            axes[1,0].imshow(enhanced_frame, cmap='gray')
+            axes[1,1].imshow(enhanced_frame, cmap='gray')
 
-
+        # Panel [1,0]: Current mask outline (cyan)
         if mask is not None:
-            axes[1].contour(mask, levels=[0.5], colors='lime', linewidths=1.0)
+            axes[1,0].contour(mask, levels=[0.5], colors='cyan', linewidths=0.5)
         else:
-            axes[1].text(0.5, 0.5, 'No mask', ha='center', va='center',
-                        transform=axes[1].transAxes, color='red')
+            axes[1,0].text(0.5, 0.5, 'No mask', ha='center', va='center',
+                        transform=axes[1,0].transAxes, color='red')
 
-        axes[0].axis('off')
-        axes[1].axis('off')
+        # Panel [1,1]: Ground Truth mask outline (yellow)
+        if ground_truth_config is not None:
+            # Create ground truth mask
+            from .masking import create_mask
 
-        # If ground truth and predicted configs are provided, show comparison, otherwise show anonymized
+            if orig_frame.ndim == 2:
+                height, width = orig_frame.shape
+            else:
+                height, width = orig_frame.shape[:2]
+
+            gt_mask = create_mask(ground_truth_config, image_size=(height, width))
+
+            # Add yellow contour for ground truth mask
+            axes[1,1].contour(gt_mask, levels=[0.5], colors='yellow', linewidths=0.5)
+        else:
+            axes[1,1].text(0.5, 0.5, 'No Ground Truth', ha='center', va='center',
+                        transform=axes[1,1].transAxes, color='red')
+
+        # Panel [0,1]: GT vs Predicted comparison OR Anonymized
         if ground_truth_config is not None and predicted_config is not None:
-            axes[2].set_title('GT (Yellow) vs Predicted (Cyan)')
+            axes[0,1].set_title('GT (Yellow) vs Predicted (Cyan)')
             comparison_image = self._create_mask_comparison_image(
                 original_image, ground_truth_config, predicted_config
             )
-            axes[2].imshow(comparison_image)
+            axes[0,1].imshow(comparison_image)
         else:
-            axes[2].set_title('Anonymized')
+            axes[0,1].set_title('Anonymized')
             masked_frame = self._create_snapshot(masked_image)
 
             if orig_frame.shape != masked_frame.shape:
                 raise ValueError("Original and masked frame shapes do not match")
 
-            axes[2].imshow(masked_frame)
+            axes[0,1].imshow(masked_frame)
 
-        axes[2].axis('off')
+        # Turn off axes for all panels
+        for ax in axes.flat:
+            ax.axis('off')
 
         # Save overview
         overview_filename = f"{os.path.splitext(filename)[0]}.png"
@@ -264,11 +295,12 @@ class OverviewGenerator:
             return "N/A"
 
 
-    def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str) -> str:
-        """Generate a comprehensive PDF report with metrics tables."""
+    def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str, no_metrics_table: bool = False) -> str:
+        """
+        Generate a comprehensive PDF report.
+        If no_metrics_table is True, the image will be saved without the metrics table.
+        """
         from matplotlib.backends.backend_pdf import PdfPages
-        from datetime import datetime
-        import matplotlib.gridspec as gridspec
 
         if not overview_manifest:
             raise ValueError("Overview manifest is empty")
@@ -285,6 +317,18 @@ class OverviewGenerator:
                         continue
 
                     img = plt.imread(item["path"])
+
+                    # Save the image only
+                    if no_metrics_table:
+                        fig = plt.figure(figsize=(11, 8.5), dpi=300)
+                        fig.patch.set_facecolor('white')
+                        fig.suptitle(item.get("filename", "Unknown"), fontsize=12)
+                        ax_img = fig.add_subplot(1, 1, 1)
+                        ax_img.imshow(img, interpolation='nearest')
+                        ax_img.axis('off')
+                        pdf.savefig(fig, facecolor='white', bbox_inches='tight', pad_inches=0.05)
+                        plt.close(fig)
+                        continue
 
                     # Create figure with structured layout
                     fig = plt.figure(figsize=(11, 8.5), dpi=300)
