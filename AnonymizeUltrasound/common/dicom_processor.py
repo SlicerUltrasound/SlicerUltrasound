@@ -342,12 +342,8 @@ class DicomProcessor:
                 processing_time=time.time() - start_time
             )
 
-    def generate_all_pdfs(self):
-        """Generate PDFs for all collected data (call this after processing all files)"""
-        if not (self.config.phi_only_mode and self.config.remove_phi_from_image):
-            self.logger.info("Skipping PDF generation - PHI-only mode or remove_phi_from_image is disabled")
-            return
-
+    def generate_redaction_pdf(self):
+        """Generate redaction PDF for all collected data (call this after processing all files)"""
         if not hasattr(self, '_pdf_data') or not self._pdf_data:
             return
 
@@ -364,7 +360,7 @@ class DicomProcessor:
             # Generate PDF with all files for this headers directory
             with PdfPages(pdf_path) as pdf:
                 for file_data in files:
-                    self._add_page_to_pdf(
+                    self._add_page_to_redaction_pdf(
                         pdf,
                         file_data['original_image'],
                         file_data['redacted_image'],
@@ -535,7 +531,7 @@ class DicomProcessor:
         final_redaction_height = min(final_redaction_height, image_height - 1)
         return int(final_redaction_height)
 
-    def _add_page_to_pdf(self, pdf, original_image, redacted_image, predicted_corners, top_ratio, filename, frame_idx=0):
+    def _add_page_to_redaction_pdf(self, pdf, original_image, redacted_image, predicted_corners, top_ratio, filename, frame_idx=0):
         """Add a single page to the PDF with original, redacted, and diff images"""
         # Use only the first frame since redaction is the same across all frames
         orig_frame = original_image[frame_idx]
@@ -932,7 +928,7 @@ class DicomProcessor:
 
         return base_fields + gt_config_fields + predicted_config_fields + corner_fields + corner_angle_fields + metric_fields
 
-    def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str) -> str:
+    def generate_overview_pdf(self, overview_manifest: List[Dict[str, Any]], output_dir: str, no_metrics_table: bool = False) -> str:
         """Generate overview PDF using OverviewGenerator"""
         from .overview_generator import OverviewGenerator
 
@@ -942,7 +938,7 @@ class DicomProcessor:
 
         try:
             generator = OverviewGenerator(output_dir)
-            pdf_path = generator.generate_overview_pdf(overview_manifest, output_dir)
+            pdf_path = generator.generate_overview_pdf(overview_manifest, output_dir, no_metrics_table)
             self.logger.info(f"Generated overview PDF: {pdf_path}")
             return pdf_path
         except Exception as e:

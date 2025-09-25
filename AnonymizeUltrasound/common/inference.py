@@ -7,11 +7,11 @@ import os
 import requests
 
 # Model URL for downloading the AI model
-MODEL_URL = "https://www.dropbox.com/scl/fi/mnu2k4n8fju6gy1glhieb/model_traced.pt?rlkey=eb0xmwzwsoesq3mp11s8xt9xd&dl=1"
+MODEL_URL = "https://www.dropbox.com/scl/fi/q4jwm11hqfkro4whgkift/model_traced_best.pt?rlkey=n7k0e7mmykupvwxs693iriry1&st=wbzg4tmp&dl=1"
 
 # Default model path (relative to the AnonymizeUltrasound module)
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Go up one level from common/
-MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/model_traced_unet_dsnt.pt')
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'Resources/checkpoints/baseline_unet_dsnt.pt')
 
 def get_device(device: str = 'cpu'):
     """ Set the Device to run the model on """

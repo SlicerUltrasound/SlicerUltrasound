@@ -2652,6 +2652,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
     def batch_auto_anonymize(self, input_folder: str, output_folder: str, headers_folder: str,
                             model_path: str = MODEL_PATH, device: str = "", **kwargs) -> Dict[str, Any]:
         start_time = time.time()
+        phi_only_mode = kwargs.get('phi_only_mode', False)
+        remove_phi_from_image = kwargs.get('remove_phi_from_image', True)
 
         # Create processing configuration
         config = ProcessingConfig(
@@ -2663,8 +2665,8 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             hash_patient_id=kwargs.get('hash_patient_id', True),
             no_mask_generation=kwargs.get('no_mask_generation', False),
             top_ratio=kwargs.get('top_ratio', 0.1),
-            phi_only_mode=kwargs.get('phi_only_mode', False),
-            remove_phi_from_image=kwargs.get('remove_phi_from_image', True),
+            phi_only_mode=phi_only_mode,
+            remove_phi_from_image=remove_phi_from_image,
             overwrite_files=kwargs.get('overwrite_files', False),
         )
 
@@ -2732,8 +2734,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
                     if result.error_message:
                         error_messages.append(result.error_message)
 
-            # Generate all PDFs after processing all files
-            processor.generate_all_pdfs()
+            if (phi_only_mode and remove_phi_from_image):
+                processor.generate_redaction_pdf()
+            else:
+                processor.generate_overview_pdf(overview_manifest, headers_folder, no_metrics_table=True)
 
         finally:
             progress.finish()

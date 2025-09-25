@@ -97,6 +97,8 @@ def main():
 
     logger, _ = setup_logging(process_name='auto_anonymize')
 
+    logger.info(f"Starting auto-anonymize with args: {args}")
+
     # Create processing configuration
     config = ProcessingConfig(
         model_path=args.model_path,
@@ -173,6 +175,11 @@ def main():
                 failed += 1
                 if result.error_message:
                     error_messages.append(result.error_message)
+
+        if (config.phi_only_mode and config.remove_phi_from_image):
+            processor.generate_redaction_pdf()
+        else:
+            processor.generate_overview_pdf(overview_manifest, args.headers_dir, no_metrics_table=True)
 
     finally:
         progress_reporter.finish()

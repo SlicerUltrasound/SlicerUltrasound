@@ -76,7 +76,7 @@ def main():
     overview_generator = OverviewGenerator(args.overview_dir) if args.overview_dir else None
 
     # Scan directory
-    num_files = dicom_manager.scan_directory(args.input_folder, config.skip_single_frame, config.hash_patient_id)
+    num_files = dicom_manager.scan_directory(args.input_dir, config.skip_single_frame, config.hash_patient_id)
     logger.info(f"Found {num_files} DICOM files")
 
     # Initialize model
