@@ -105,3 +105,20 @@ def save_frame_png(frame_item: np.ndarray, out_path: str) -> bool:
 # Example usage:
 save_frame_png(frame_item, os.path.expanduser("~/Downloads/frame_item.png"))
 ```
+
+## Troubleshooting
+
+### Import Errors
+
+```python
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'debugpy'
+```
+
+If you see this error, run the following in the Slicer Python console:
+
+```python
+import slicer
+slicer.util.pip_install('debugpy')
+```
