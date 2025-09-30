@@ -217,26 +217,95 @@ python -m model_eval \
 #### Usage
 
 ```bash
-./batch_auto_anonymize.sh <input_root_dir> <output_root_dir> <headers_root_dir>
+./batch_auto_anonymize.sh <input_root_dir> <output_root_dir> <headers_root_dir> <mode> [options]
 ```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `input_root_dir` | Root directory to scan for DICOM files |
+| `output_root_dir` | Directory for anonymized DICOMs |
+| `headers_root_dir` | Directory for headers/keys |
+| `mode` | Anonymization mode: `full` or `phi-only` |
+
+#### Optional Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `[overview_root_dir]` | Positional: Directory for QC overview images (backward compatible) |
+| `--overview-dir <path>` | Named: Directory for QC overview images (only for `full` mode) |
+| `--model-path <path>` | Path to model checkpoint file (`.pt`)<br>Default: `../Resources/checkpoints/baseline_unet_dsnt.pt` |
+| `--script-dir <path>` | Path to scripts directory<br>Default: `../AnonymizeUltrasound/scripts` |
+
+#### Modes
+
+- **`full`**: Full anonymization with fan masking. Optionally generates before/after comparison images for QC.
+- **`phi-only`**: Only anonymize PHI region at top of image. Uses `--phi_only_mode` and `--remove_phi_from_image` flags.
 
 #### Features
 
 - ✅ Automatically finds all directories containing DICOM files
 - ✅ Preserves directory structure in output
+- ✅ Flexible anonymization modes (full or PHI-only)
+- ✅ Configurable model and script paths
 - ✅ Colored progress output
 - ✅ Memory usage tracking
 - ✅ Error handling and summary reporting
 - ✅ Interactive confirmation before processing
-- ✅ PHI-only mode with image redaction (default)
 
-#### Example
+#### Examples
 
+**1. Full anonymization with overview images (positional):**
+```bash
+./batch_auto_anonymize.sh \
+    /data/input \
+    /data/output \
+    /data/headers \
+    full \
+    /data/overview
+```
+
+**2. Full anonymization with named arguments:**
+```bash
+./batch_auto_anonymize.sh \
+    /data/input \
+    /data/output \
+    /data/headers \
+    full \
+    --overview-dir /data/overview
+```
+
+**3. PHI-only mode (default behavior):**
 ```bash
 ./batch_auto_anonymize.sh \
     /data/R21-Batch001-2Pts \
     /data/output \
-    /data/headers
+    /data/headers \
+    phi-only
+```
+
+**4. Full mode with custom model path:**
+```bash
+./batch_auto_anonymize.sh \
+    /data/input \
+    /data/output \
+    /data/headers \
+    full \
+    --model-path /custom/models/v2_model.pt \
+    --overview-dir /data/qc
+```
+
+**5. All custom paths:**
+```bash
+./batch_auto_anonymize.sh \
+    /data/input \
+    /data/output \
+    /data/headers \
+    full \
+    --overview-dir /data/overview \
+    --model-path /custom/model.pt \
+    --script-dir /opt/scripts
 ```
 
 #### How It Works
@@ -244,22 +313,10 @@ python -m model_eval \
 1. Scans the input root directory recursively
 2. Identifies all leaf directories containing DICOM files (`.dcm` or `.dicom`)
 3. Processes each directory individually with `auto_anonymize.py`
-4. Maintains the same directory structure in output and headers locations
-5. Reports success/failure for each directory
-6. Provides final summary with total counts
-
-#### Configuration
-
-The script uses hardcoded defaults optimized for batch processing:
-
-```bash
---model_path: /Users/dqdinh/workspace/source/SlicerUltrasound/AnonymizeUltrasound/Resources/checkpoints/baseline_unet_dsnt.pt
---device: cpu
---phi_only_mode: enabled
---remove_phi_from_image: enabled
-```
-
-To customize, edit lines 80-87 in the script.
+4. Applies the selected anonymization mode (full or PHI-only)
+5. Maintains the same directory structure in output and headers locations
+6. Reports success/failure for each directory
+7. Provides final summary with total counts
 
 #### Output Example
 
@@ -267,12 +324,12 @@ To customize, edit lines 80-87 in the script.
 [INFO] === DICOM BATCH ANONYMIZATION SCRIPT ===
 [INFO] Validation passed
 [INFO] Preview of directories that will be processed:
-Patient001/Study001 (145 DICOM files)
-Patient001/Study002 (89 DICOM files)
+  1. Patient001/Study001 (145 DICOM files)
+  2. Patient001/Study002 (89 DICOM files)
 ...
 [INFO] Total directories to process: 12
 Do you want to proceed with processing? (y/N): y
-[INFO] Processing: Patient001/Study001 (145 DICOM files)
+[INFO] Processing: Patient001/Study001 (145 DICOM files) [Mode: full]
 [INFO] Memory usage before: 124MB
 [SUCCESS] Completed: Patient001/Study001 (45s, Memory: 124MB → 156MB)
 ...
@@ -290,13 +347,24 @@ Do you want to proceed with processing? (y/N): y
 #### Usage
 
 ```bash
-./batch_model_eval.sh \
-    <parent_dir> \
-    <ground_truth_dir> \
-    <overview_dir> \
-    <model_path> \
-    <device>
+./batch_model_eval.sh <parent_dir> <ground_truth_dir> <overview_dir> <model_path> <device> [options]
 ```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `parent_dir` | Parent directory containing subdirectories with DICOM files |
+| `ground_truth_dir` | Directory containing ground truth annotations |
+| `overview_dir` | Directory to save evaluation overview images and metrics |
+| `model_path` | Path to the model checkpoint (`.pt` file) |
+| `device` | Device to use: `cpu`, `cuda`, or `mps` |
+
+#### Optional Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--script-dir <path>` | Path to scripts directory<br>Default: `../AnonymizeUltrasound/scripts` |
 
 #### Features
 
@@ -307,9 +375,11 @@ Do you want to proceed with processing? (y/N): y
 - ✅ Comprehensive error reporting
 - ✅ Interactive confirmation with preview
 - ✅ Path validation before execution
+- ✅ Configurable script directory
 
-#### Example
+#### Examples
 
+**1. Basic usage with default script directory:**
 ```bash
 ./batch_model_eval.sh \
     /data/output_001_R21 \
@@ -317,6 +387,28 @@ Do you want to proceed with processing? (y/N): y
     /data/eval_overview \
     /path/to/baseline_unet_dsnt.pt \
     mps
+```
+
+**2. With custom script directory:**
+```bash
+./batch_model_eval.sh \
+    /data/output_001_R21 \
+    /data/R21_anonymized \
+    /data/eval_overview \
+    /models/baseline_unet_dsnt.pt \
+    cpu \
+    --script-dir /custom/scripts
+```
+
+**3. Full example with Apple Silicon GPU:**
+```bash
+./batch_model_eval.sh \
+    /Users/username/data/output_R21 \
+    /Users/username/data/R21_ground_truth \
+    /Users/username/data/evaluation_results \
+    /Users/username/models/baseline_unet_dsnt.pt \
+    mps \
+    --script-dir /Users/username/SlicerUltrasound/AnonymizeUltrasound/scripts
 ```
 
 #### How It Works
@@ -330,23 +422,14 @@ Do you want to proceed with processing? (y/N): y
 7. Adds 5-second delays between batches for memory management
 8. Reports detailed timing and memory usage
 
-#### Arguments
-
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `parent_dir` | ✓ | Parent directory containing subdirectories with DICOM files |
-| `ground_truth_dir` | ✓ | Directory containing ground truth annotations |
-| `overview_dir` | ✓ | Directory to save evaluation overview images and metrics |
-| `model_path` | ✓ | Path to the model checkpoint (`.pt` file) |
-| `device` | ✓ | Device to use: `cpu`, `cuda`, or `mps` |
-
 #### Output Example
+
 ```bash
 [INFO] === BATCH MODEL EVALUATION SCRIPT ===
 [INFO] Validation passed
 [INFO] Preview of subdirectories that will be processed:
-R21-Batch001-2Pts (290 DICOM files)
-R21-Batch002-3pt (435 DICOM files)
+  1. R21-Batch001-2Pts (290 DICOM files)
+  2. R21-Batch002-3pt (435 DICOM files)
 ...
 [INFO] Total subdirectories to process: 15
 Do you want to proceed with evaluation? (y/N): y
@@ -371,4 +454,164 @@ The script includes several memory management features:
 - 2-second garbage collection pauses after each batch
 - Memory usage tracking (before/after each batch)
 - Per-subdirectory isolation prevents memory accumulation
+
 ---
+
+## Dependencies
+
+See the following files for complete dependency lists:
+
+- **`requirements.txt`**: Base dependencies
+- **`requirements-cpu.txt`**: CPU-only optimized (includes PyTorch CPU)
+- **`requirements-gpu.txt`**: CUDA GPU support (includes PyTorch with CUDA)
+
+### Key Dependencies
+
+- `torch` (PyTorch): Deep learning framework for model inference
+- `pydicom`: DICOM file reading/writing
+- `numpy`: Numerical computations
+- `Pillow`: Image processing
+- `scikit-image`: Image evaluation metrics
+- `scipy`: Scientific computing utilities
+
+---
+
+## Common Workflows
+
+### Workflow 1: Full Batch Anonymization with QC
+
+Process a large dataset with full fan masking and generate QC images:
+
+```bash
+# Step 1: Run batch anonymization in full mode
+./batch_auto_anonymize.sh \
+    /data/raw_dicoms \
+    /data/anonymized \
+    /data/headers \
+    full \
+    --overview-dir /data/qc_images
+
+# Step 2: Review QC images in /data/qc_images
+# Step 3: Check summary in console output
+```
+
+### Workflow 2: PHI-Only Batch Processing
+
+Quick PHI removal for datasets where fan masking isn't needed:
+
+```bash
+./batch_auto_anonymize.sh \
+    /data/raw_dicoms \
+    /data/anonymized \
+    /data/headers \
+    phi-only
+```
+
+### Workflow 3: Model Evaluation Pipeline
+
+Evaluate model performance on multiple batches:
+
+```bash
+# Step 1: Run batch evaluation
+./batch_model_eval.sh \
+    /data/test_batches \
+    /data/ground_truth \
+    /data/eval_results \
+    /models/baseline_unet_dsnt.pt \
+    mps
+
+# Step 2: Review metrics in /data/eval_results/*/metrics_*.csv
+# Step 3: Check visual comparisons in /data/eval_results/*/*.png
+```
+
+### Workflow 4: Custom Pipeline with Non-Standard Paths
+
+Using custom model and script locations:
+
+```bash
+./batch_auto_anonymize.sh \
+    /data/input \
+    /data/output \
+    /data/headers \
+    full \
+    --model-path /experiments/models/improved_model_v3.pt \
+    --script-dir /opt/anonymize/scripts \
+    --overview-dir /data/qc
+```
+
+### Workflow 5: Cross-System Portable Setup
+
+For running on different machines or CI/CD:
+
+```bash
+# Define paths as variables for easy modification
+MODEL_PATH="/path/to/model.pt"
+SCRIPT_DIR="/path/to/scripts"
+INPUT_DIR="/path/to/input"
+OUTPUT_DIR="/path/to/output"
+HEADERS_DIR="/path/to/headers"
+
+# Run with explicit paths (no hardcoded values)
+./batch_auto_anonymize.sh \
+    "$INPUT_DIR" \
+    "$OUTPUT_DIR" \
+    "$HEADERS_DIR" \
+    full \
+    --model-path "$MODEL_PATH" \
+    --script-dir "$SCRIPT_DIR"
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue**: Script directory not found
+```bash
+[ERROR] Script directory does not exist: /path/to/scripts
+```
+**Solution**: Use `--script-dir` to specify the correct path:
+```bash
+--script-dir /correct/path/to/SlicerUltrasound/AnonymizeUltrasound/scripts
+```
+
+**Issue**: Model file not found
+```bash
+[ERROR] Model file does not exist: /path/to/model.pt
+```
+**Solution**: Use `--model-path` to specify the correct model location:
+```bash
+--model-path /correct/path/to/baseline_unet_dsnt.pt
+```
+
+**Issue**: Memory errors during large batch processing
+**Solution**: Process in smaller batches or use CPU instead of GPU:
+```bash
+# Use cpu device instead of mps/cuda
+./batch_model_eval.sh ... cpu --script-dir /path/to/scripts
+```
+
+---
+
+## Exit Codes
+
+Both batch scripts use consistent exit codes:
+
+- `0`: All processing completed successfully
+- `1`: One or more failures occurred (details in console output)
+
+---
+
+## Logging
+
+All Python scripts create detailed logs in the `logs/` directory:
+
+- `logs/auto_anonymize_YYYYMMDD_HHMMSS.log`
+- `logs/model_eval_YYYYMMDD_HHMMSS.log`
+
+Bash scripts output colored logs directly to console with timestamps and memory usage tracking.
+
+---
+
+**Last Updated**: 2025-09-30
