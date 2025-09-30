@@ -64,7 +64,8 @@ class GroundTruthManager:
         try:
             for root, _, files in os.walk(self.ground_truth_dir):
                 for f in files:
-                    if f.lower().endswith(".json"):
+                    if f.lower().endswith(".json") and not f.lower().endswith("_dicomheader.json"):
+                        self.logger.info(f"Indexing ground truth file: {f}")
                         full_path = os.path.join(root, f)
                         if f not in self.gt_index:
                             self.gt_index[f] = full_path
