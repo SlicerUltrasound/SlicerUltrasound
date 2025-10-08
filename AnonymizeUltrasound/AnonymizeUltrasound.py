@@ -89,7 +89,7 @@ from common.inference import load_model, preprocess_image, get_device, download_
 from common.dicom_processor import DicomProcessor, ProcessingConfig
 from common.progress_reporter import SlicerProgressReporter
 from common.overview_generator import OverviewGenerator
-from common.logging import setup_logging
+from common import logging as au_logging
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -165,6 +165,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     EVAL_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/EvalOverviewDir"
     EVAL_MODEL_PATH_SETTING = "AnonymizeUltrasound/EvalModelPath"
     EVAL_DEVICE_SETTING = "AnonymizeUltrasound/EvalDevice"
+    LOGGING_ENABLED_SETTING = "AnonymizeUltrasound/LoggingEnabled" # logging settings key
+    LOGGING_LEVEL_SETTING = "AnonymizeUltrasound/LoggingLevel"
+    LOGGING_DIR_SETTING = "AnonymizeUltrasound/LoggingDirectory"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -247,6 +250,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.outputDirectoryButton.connect("directoryChanged(QString)",
                                               lambda newValue: self.onSettingChanged(self.OUTPUT_FOLDER_SETTING, newValue))
 
+        # Headers folder: initialize from settings and connect for saving
         headersFolder = settings.value(self.HEADERS_FOLDER_SETTING)
         if headersFolder:
             if os.path.exists(headersFolder):
@@ -260,17 +264,101 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.headersDirectoryButton.connect("directoryChanged(QString)",
                                                lambda newValue: self.onSettingChanged(self.HEADERS_FOLDER_SETTING, newValue))
 
-        self.ui.importDicomButton.connect("clicked(bool)", self.onImportDicomButton)
+        # Wire Import DICOM button
+        if hasattr(self.ui, 'importDicomButton'):
+            self.ui.importDicomButton.connect("clicked(bool)", self.onImportDicomButton)
 
-        # Workflow control buttons
+        # Restore primary workflow button connections (as in original)
+        if hasattr(self.ui, 'nextButton'):
+            self.ui.nextButton.clicked.connect(self.onNextButton)
+        if hasattr(self.ui, 'prevButton'):
+            self.ui.prevButton.clicked.connect(self.onPreviousButton)
+        if hasattr(self.ui, 'defineMaskButton'):
+            self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
+        if hasattr(self.ui, 'exportButton'):
+            self.ui.exportButton.clicked.connect(self.onExportScanButton)
+        if hasattr(self.ui, 'exportAndNextButton'):
+            self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
 
-        self.ui.nextButton.clicked.connect(self.onNextButton)
-        self.ui.prevButton.clicked.connect(self.onPreviousButton)
-        self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
-        self.ui.exportButton.clicked.connect(self.onExportScanButton)
-        self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
+        # Logging checkbox connection (minimal wiring for testing)
+        if hasattr(self.ui, 'enableFileLoggingCheckBox'):
+            try:
+                # Initialize from persisted setting
+                enabled_val = settings.value(self.LOGGING_ENABLED_SETTING)
+                self.ui.enableFileLoggingCheckBox.checked = bool(enabled_val and str(enabled_val).lower() == "true")
 
-        # Settings widgets
+                self.ui.enableFileLoggingCheckBox.connect("toggled(bool)", self.onEnableFileLoggingToggled)
+            except Exception as e:
+                logging.warning(f"Failed to connect enableFileLoggingCheckBox: {e}")
+
+        # Logging level: load persisted value and connect for saving on change
+        if hasattr(self.ui, 'logLevelComboBox'):
+            try:
+                level_val = settings.value(self.LOGGING_LEVEL_SETTING)
+                if not level_val:
+                    level_val = "INFO"
+                if level_val not in ["DEBUG", "INFO", "WARNING", "ERROR"]:
+                    level_val = "INFO"
+                index = self.ui.logLevelComboBox.findText(level_val)
+                if index >= 0:
+                    self.ui.logLevelComboBox.setCurrentIndex(index)
+                self.ui.logLevelComboBox.currentTextChanged.connect(
+                    lambda newValue: self.onSettingChanged(self.LOGGING_LEVEL_SETTING, newValue)
+                )
+            except Exception as e:
+                logging.warning(f"Failed to initialize log level: {e}")
+
+        # Logging directory: load persisted value and connect for saving on change (using ctkDirectoryButton)
+        if hasattr(self.ui, 'logDirectoryButton'):
+            try:
+                dir_val = settings.value(self.LOGGING_DIR_SETTING, "")
+                # Default to user's Documents if no saved value or invalid path
+                default_docs = os.path.join(os.path.expanduser("~"), "Documents")
+                if dir_val and os.path.exists(dir_val):
+                    self.ui.logDirectoryButton.directory = dir_val
+                else:
+                    # Use Documents if exists, otherwise keep empty and let user choose
+                    if os.path.exists(default_docs):
+                        self.ui.logDirectoryButton.directory = default_docs
+                self.ui.logDirectoryButton.connect(
+                    'directoryChanged(QString)',
+                    lambda newValue: self.onSettingChanged(self.LOGGING_DIR_SETTING, newValue)
+                )
+            except Exception as e:
+                logging.warning(f"Failed to initialize log directory button: {e}")
+
+    def onEnableFileLoggingToggled(self, enabled):
+        print(f"Enable file logging toggled: {enabled}")
+        # Align with module pattern: obtain settings locally where used
+        settings = slicer.app.settings()
+        settings.setValue(self.LOGGING_ENABLED_SETTING, str(enabled))
+        # Start/stop file logging in a minimal, isolated way
+        try:
+            # Ensure we see the latest helpers after a reload
+            import importlib
+            try:
+                importlib.reload(au_logging)
+            except Exception as _reload_err:
+                logging.debug(f"Could not reload logging helpers: {_reload_err}")
+
+            if enabled:
+                level = settings.value(self.LOGGING_LEVEL_SETTING, "INFO")
+                directory = settings.value(self.LOGGING_DIR_SETTING, "") or None
+                # ctkDirectoryButton may hold the current directory even if setting not yet saved
+                if not directory and hasattr(self.ui, 'logDirectoryButton'):
+                    directory = self.ui.logDirectoryButton.directory
+                if hasattr(au_logging, 'start_file_logging'):
+                    au_logging.start_file_logging("AnonymizeUltrasound", level=level, directory=directory or '')
+                else:
+                    logging.warning("File logging helper not available (start_file_logging)")
+            else:
+                if hasattr(au_logging, 'stop_file_logging'):
+                    au_logging.stop_file_logging("AnonymizeUltrasound")
+                else:
+                    logging.warning("File logging helper not available (stop_file_logging)")
+        except Exception as e:
+            logging.warning(f"Failed to toggle file logging: {e}")
+        
 
         preserveDirectoryStructure = settings.value(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING)
         if preserveDirectoryStructure and preserveDirectoryStructure.lower() == "true":
@@ -816,6 +904,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def onImportDicomButton(self) -> None:
         logging.info("Import DICOM button clicked")
+        # Ensure parameter node exists before use to avoid NoneType errors
+        if self._parameterNode is None:
+            try:
+                self.initializeParameterNode()
+            except Exception as e:
+                logging.warning(f"Failed to initialize parameter node: {e}")
+                return
         self.set_processing_mode(True)
 
         # Check input and output folders
