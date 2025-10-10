@@ -479,65 +479,6 @@
                                 </property>
                             </widget>
                         </item>
-                        <item>
-                            <widget class="QCheckBox" name="enableFileLoggingCheckBox">
-                                <property name="text">
-                                    <string>Enable file logging</string>
-                                </property>
-                                <property name="toolTip">
-                                    <string>When enabled, logs will also be written to files in a configurable directory</string>
-                                </property>
-                            </widget>
-                        </item>
-                        <item>
-                            <layout class="QFormLayout" name="loggingFormLayout">
-                                <item row="0" column="0">
-                                    <widget class="QLabel" name="logLevelLabel">
-                                        <property name="text">
-                                            <string>Log level:</string>
-                                        </property>
-                                    </widget>
-                                </item>
-                                <item row="0" column="1">
-                                    <widget class="QComboBox" name="logLevelComboBox">
-                                        <item>
-                                            <property name="text">
-                                                <string>DEBUG</string>
-                                            </property>
-                                        </item>
-                                        <item>
-                                            <property name="text">
-                                                <string>INFO</string>
-                                            </property>
-                                        </item>
-                                        <item>
-                                            <property name="text">
-                                                <string>WARNING</string>
-                                            </property>
-                                        </item>
-                                        <item>
-                                            <property name="text">
-                                                <string>ERROR</string>
-                                            </property>
-                                        </item>
-                                    </widget>
-                                </item>
-                                <item row="1" column="0">
-                                    <widget class="QLabel" name="logDirectoryLabel">
-                                        <property name="text">
-                                            <string>Log directory:</string>
-                                        </property>
-                                    </widget>
-                                </item>
-                                <item row="1" column="1">
-                                    <widget class="ctkDirectoryButton" name="logDirectoryButton">
-                                        <property name="toolTip">
-                                            <string>Select a custom directory for log files; leave unset to use default</string>
-                                        </property>
-                                    </widget>
-                                </item>
-                            </layout>
-                        </item>
                     </layout>
                 </widget>
             </item>

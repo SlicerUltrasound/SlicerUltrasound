@@ -37,16 +37,3 @@ To run the tests:
 
 
 
-## Logging (AnonymizeUltrasound)
-
-The AnonymizeUltrasound module supports optional file logging for easier debugging:
-
-- Enable in the module UI under Settings → "Enable file logging".
-- Choose a log level (DEBUG/INFO/WARNING/ERROR). INFO is the default.
-- Choose a log directory. If unset, it defaults to your Documents folder; a module default logs directory is also used internally when needed.
-- Log files are plain text with names like `AnonymizeUltrasound_YYYYMMDD_HHMMSS.log`.
-- Logs are written as events occur. Rotation is size‑based (10MB, 3 backups).
-- When disabled, no file handler is attached (no overhead).
-
-Tip: set level to DEBUG while reproducing an issue, then attach the resulting `.log` file when reporting.
-
