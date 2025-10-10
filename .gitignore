@@ -71,13 +71,10 @@ conda-meta/
 ehthumbs.db
 Thumbs.db
 
-# Logs (project-wide)
+# Logs
 *.log
 logs/
 log/
-
-# Module-specific logs
-AnonymizeUltrasound/logs/
 
 # Outputs and results
 output/

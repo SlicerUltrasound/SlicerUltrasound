@@ -802,36 +802,6 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
     def refocusAndRestoreShortcuts(self, delay: int = 300):
         qt.QTimer.singleShot(delay + 100, self._restoreFocusAndShortcuts)
 
-    def onSettingChanged(self, setting_key: str, new_value: str) -> None:
-        """Handle changes to logging settings."""
-        settings = slicer.app.settings()
-        settings.setValue(setting_key, new_value)
-
-    def onEnableFileLoggingToggled(self, enabled: bool) -> None:
-        """Handle enable/disable file logging toggle."""
-        print(f"Enable file logging toggled: {enabled}")
-        settings = slicer.app.settings()
-        settings.setValue(self.LOGGING_ENABLED_SETTING, str(enabled))
-        
-        try:
-            importlib.reload(au_logging)  # Ensure latest logging helpers are used
-            if enabled:
-                level = settings.value(self.LOGGING_LEVEL_SETTING, "INFO")
-                directory = settings.value(self.LOGGING_DIR_SETTING, "") or None
-                if not directory and hasattr(self.ui, 'logDirectoryButton'):
-                    directory = self.ui.logDirectoryButton.directory
-                if hasattr(au_logging, 'start_file_logging'):
-                    au_logging.start_file_logging("AnnotateUltrasound", level=level, directory=directory or '')
-                else:
-                    logging.warning("File logging helper not available (start_file_logging)")
-            else:
-                if hasattr(au_logging, 'stop_file_logging'):
-                    au_logging.stop_file_logging("AnnotateUltrasound")
-                else:
-                    logging.warning("File logging helper not available (stop_file_logging)")
-        except Exception as e:
-            logging.warning(f"Failed to toggle file logging: {e}")
-
     def onReadInputButton(self):
         """
         Read the input directory and update the dicomDf dataframe, using rater-specific annotation files.
