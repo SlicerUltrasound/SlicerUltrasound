@@ -264,34 +264,24 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.headersDirectoryButton.connect("directoryChanged(QString)",
                                                lambda newValue: self.onSettingChanged(self.HEADERS_FOLDER_SETTING, newValue))
 
-        # Wire Import DICOM button
-        if hasattr(self.ui, 'importDicomButton'):
-            self.ui.importDicomButton.connect("clicked(bool)", self.onImportDicomButton)
+        self.ui.importDicomButton.connect("clicked(bool)", self.onImportDicomButton)
 
-        # Restore primary workflow button connections (as in original)
-        if hasattr(self.ui, 'nextButton'):
-            self.ui.nextButton.clicked.connect(self.onNextButton)
-        if hasattr(self.ui, 'prevButton'):
-            self.ui.prevButton.clicked.connect(self.onPreviousButton)
-        if hasattr(self.ui, 'defineMaskButton'):
-            self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
-        if hasattr(self.ui, 'exportButton'):
-            self.ui.exportButton.clicked.connect(self.onExportScanButton)
-        if hasattr(self.ui, 'exportAndNextButton'):
-            self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
+        # Workflow control buttons
+        self.ui.nextButton.clicked.connect(self.onNextButton)
+        self.ui.prevButton.clicked.connect(self.onPreviousButton)
+        self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
+        self.ui.exportButton.clicked.connect(self.onExportScanButton)
+        self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
 
-        # Logging checkbox connection (minimal wiring for testing)
+        # Logging settings
         if hasattr(self.ui, 'enableFileLoggingCheckBox'):
             try:
-                # Initialize from persisted setting
                 enabled_val = settings.value(self.LOGGING_ENABLED_SETTING)
                 self.ui.enableFileLoggingCheckBox.checked = bool(enabled_val and str(enabled_val).lower() == "true")
-
                 self.ui.enableFileLoggingCheckBox.connect("toggled(bool)", self.onEnableFileLoggingToggled)
             except Exception as e:
                 logging.warning(f"Failed to connect enableFileLoggingCheckBox: {e}")
 
-        # Logging level: load persisted value and connect for saving on change
         if hasattr(self.ui, 'logLevelComboBox'):
             try:
                 level_val = settings.value(self.LOGGING_LEVEL_SETTING)
@@ -308,16 +298,13 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             except Exception as e:
                 logging.warning(f"Failed to initialize log level: {e}")
 
-        # Logging directory: load persisted value and connect for saving on change (using ctkDirectoryButton)
         if hasattr(self.ui, 'logDirectoryButton'):
             try:
                 dir_val = settings.value(self.LOGGING_DIR_SETTING, "")
-                # Default to user's Documents if no saved value or invalid path
                 default_docs = os.path.join(os.path.expanduser("~"), "Documents")
                 if dir_val and os.path.exists(dir_val):
                     self.ui.logDirectoryButton.directory = dir_val
                 else:
-                    # Use Documents if exists, otherwise keep empty and let user choose
                     if os.path.exists(default_docs):
                         self.ui.logDirectoryButton.directory = default_docs
                 self.ui.logDirectoryButton.connect(
