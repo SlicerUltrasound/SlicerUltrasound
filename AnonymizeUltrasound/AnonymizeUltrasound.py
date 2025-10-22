@@ -636,7 +636,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         def humanize(text):
             # Split on CamelCase, handling consecutive capitals
             # This will split "LiverSpleenDiaphragm" into ["Liver", "Spleen", "Diaphragm"]
-            words = re.findall('[A-Z][a-z\d]+|[A-Z\d]+(?=[A-Z][a-z\d]|[^a-zA-Z\d]|$)|[a-z\d]+', text)
+            words = re.findall(r'[A-Z][a-z\d]+|[A-Z\d]+(?=[A-Z][a-z\d]|[^a-zA-Z\d]|$)|[a-z\d]+', text)
             return ' '.join(words)
         # Create widgets with humanized display text
         for category, labels in categories.items():
