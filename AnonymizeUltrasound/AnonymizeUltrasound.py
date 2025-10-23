@@ -89,7 +89,7 @@ from common.inference import load_model, preprocess_image, get_device, download_
 from common.dicom_processor import DicomProcessor, ProcessingConfig
 from common.progress_reporter import SlicerProgressReporter
 from common.overview_generator import OverviewGenerator
-from common import logging as au_logging
+from common import log_management as au_logging
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -274,48 +274,53 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
 
         # Logging settings
-        if hasattr(self.ui, 'enableFileLoggingCheckBox'):
-            try:
-                enabled_val = settings.value(self.LOGGING_ENABLED_SETTING)
-                self.ui.enableFileLoggingCheckBox.checked = bool(enabled_val and str(enabled_val).lower() == "true")
-                self.ui.enableFileLoggingCheckBox.connect("toggled(bool)", self.onEnableFileLoggingToggled)
-            except Exception as e:
-                logging.warning(f"Failed to connect enableFileLoggingCheckBox: {e}")
+        try:
+            enabled_val = settings.value(self.LOGGING_ENABLED_SETTING)
+            self.ui.enableFileLoggingCheckBox.checked = bool(enabled_val and str(enabled_val).lower() == "true")
+            self.ui.enableFileLoggingCheckBox.connect("toggled(bool)", self.onEnableFileLoggingToggled)
+        except Exception as e:
+            logging.warning(f"Failed to connect enableFileLoggingCheckBox: {e}")
 
-        if hasattr(self.ui, 'logLevelComboBox'):
-            try:
-                level_val = settings.value(self.LOGGING_LEVEL_SETTING)
-                if not level_val:
-                    level_val = "INFO"
-                if level_val not in ["DEBUG", "INFO", "WARNING", "ERROR"]:
-                    level_val = "INFO"
-                index = self.ui.logLevelComboBox.findText(level_val)
-                if index >= 0:
-                    self.ui.logLevelComboBox.setCurrentIndex(index)
-                self.ui.logLevelComboBox.currentTextChanged.connect(
-                    lambda newValue: self.onSettingChanged(self.LOGGING_LEVEL_SETTING, newValue)
-                )
-            except Exception as e:
-                logging.warning(f"Failed to initialize log level: {e}")
+        try:
+            level_val = settings.value(self.LOGGING_LEVEL_SETTING)
+            if not level_val:
+                level_val = "INFO"
+            if level_val not in ["DEBUG", "INFO", "WARNING", "ERROR"]:
+                level_val = "INFO"
+            index = self.ui.logLevelComboBox.findText(level_val)
+            if index >= 0:
+                self.ui.logLevelComboBox.setCurrentIndex(index)
+            self.ui.logLevelComboBox.currentTextChanged.connect(
+                lambda newValue: self.onSettingChanged(self.LOGGING_LEVEL_SETTING, newValue)
+            )
+        except Exception as e:
+            logging.warning(f"Failed to initialize log level: {e}")
 
-        if hasattr(self.ui, 'logDirectoryButton'):
-            try:
-                dir_val = settings.value(self.LOGGING_DIR_SETTING, "")
-                default_docs = os.path.join(os.path.expanduser("~"), "Documents")
-                if dir_val and os.path.exists(dir_val):
-                    self.ui.logDirectoryButton.directory = dir_val
-                else:
-                    if os.path.exists(default_docs):
-                        self.ui.logDirectoryButton.directory = default_docs
-                self.ui.logDirectoryButton.connect(
-                    'directoryChanged(QString)',
-                    lambda newValue: self.onSettingChanged(self.LOGGING_DIR_SETTING, newValue)
-                )
-            except Exception as e:
-                logging.warning(f"Failed to initialize log directory button: {e}")
+        try:
+            dir_val = settings.value(self.LOGGING_DIR_SETTING, "")
+            default_docs = os.path.join(os.path.expanduser("~"), "Documents")
+            if dir_val and os.path.exists(dir_val):
+                self.ui.logDirectoryButton.directory = dir_val
+            else:
+                if os.path.exists(default_docs):
+                    self.ui.logDirectoryButton.directory = default_docs
+            self.ui.logDirectoryButton.connect(
+                'directoryChanged(QString)',
+                lambda newValue: self.onSettingChanged(self.LOGGING_DIR_SETTING, newValue)
+            )
+        except Exception as e:
+            logging.warning(f"Failed to initialize log directory button: {e}")
+
+        preserveDirectoryStructure = settings.value(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING)
+        if preserveDirectoryStructure and preserveDirectoryStructure.lower() == "true":
+            self.ui.preserveDirectoryStructureCheckBox.checked = True
+        else:
+            self.ui.preserveDirectoryStructureCheckBox.checked = False
+        self.ui.preserveDirectoryStructureCheckBox.connect('toggled(bool)',
+                                                          lambda newValue: self.on_critical_setting_changed(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING, str(newValue)))
 
     def onEnableFileLoggingToggled(self, enabled):
-        print(f"Enable file logging toggled: {enabled}")
+        logging.debug(f"Enable file logging toggled: {enabled}")
         # Align with module pattern: obtain settings locally where used
         settings = slicer.app.settings()
         settings.setValue(self.LOGGING_ENABLED_SETTING, str(enabled))
@@ -334,26 +339,11 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 # ctkDirectoryButton may hold the current directory even if setting not yet saved
                 if not directory and hasattr(self.ui, 'logDirectoryButton'):
                     directory = self.ui.logDirectoryButton.directory
-                if hasattr(au_logging, 'start_file_logging'):
-                    au_logging.start_file_logging("AnonymizeUltrasound", level=level, directory=directory or '')
-                else:
-                    logging.warning("File logging helper not available (start_file_logging)")
+                au_logging.start_file_logging("AnonymizeUltrasound", level=level, directory=directory or '')
             else:
-                if hasattr(au_logging, 'stop_file_logging'):
-                    au_logging.stop_file_logging("AnonymizeUltrasound")
-                else:
-                    logging.warning("File logging helper not available (stop_file_logging)")
+                au_logging.stop_file_logging("AnonymizeUltrasound")
         except Exception as e:
             logging.warning(f"Failed to toggle file logging: {e}")
-        
-
-        preserveDirectoryStructure = settings.value(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING)
-        if preserveDirectoryStructure and preserveDirectoryStructure.lower() == "true":
-            self.ui.preserveDirectoryStructureCheckBox.checked = True
-        else:
-            self.ui.preserveDirectoryStructureCheckBox.checked = False
-        self.ui.preserveDirectoryStructureCheckBox.connect('toggled(bool)',
-                                                          lambda newValue: self.on_critical_setting_changed(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING, str(newValue)))
 
         enableMaskCache = settings.value(self.ENABLE_MASK_CACHE_SETTING)
         if enableMaskCache and enableMaskCache.lower() == "true":
@@ -891,13 +881,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def onImportDicomButton(self) -> None:
         logging.info("Import DICOM button clicked")
-        # Ensure parameter node exists before use to avoid NoneType errors
-        if self._parameterNode is None:
-            try:
-                self.initializeParameterNode()
-            except Exception as e:
-                logging.warning(f"Failed to initialize parameter node: {e}")
-                return
         self.set_processing_mode(True)
 
         # Check input and output folders

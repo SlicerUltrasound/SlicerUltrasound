@@ -30,8 +30,9 @@ def get_or_warn(d, key, default, logger=logging.getLogger(__name__)):
     logger.warning("Missing %s; using default %r", key, default)
     return default
 
-# Simple registry to avoid duplicate handlers per module
-_module_file_handlers = {}
+# Global variables for single module handler management
+_current_file_handler = None
+_current_log_file_path = ""
 
 def _map_level(level_str: str) -> int:
     level_str = (level_str or 'INFO').upper()
@@ -56,17 +57,20 @@ def start_file_logging(module_name: str, level: str = 'INFO', directory: str = '
     module_name will be no-ops and return the current file path.
     """
     # If already started, do nothing
-    if module_name in _module_file_handlers:
-        handler, log_file_path = _module_file_handlers[module_name]
+    if _current_file_handler is not None:
         try:
             # Keep level updated if user changes it
-            handler.setLevel(_map_level(level))
+            _current_file_handler.setLevel(_map_level(level))
         except Exception:
             pass
-        return log_file_path
+        return _current_log_file_path
 
     logs_dir = directory if directory else _default_logs_dir_for_module(module_name)
-    os.makedirs(logs_dir, exist_ok=True)
+    try:
+        os.makedirs(logs_dir, exist_ok=True)
+    except OSError as e:
+        logging.warning(f"Failed to create log directory '{logs_dir}': {e}")
+        return ""
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_file_path = os.path.join(logs_dir, f"{module_name}_{timestamp}.log")
@@ -79,20 +83,23 @@ def start_file_logging(module_name: str, level: str = 'INFO', directory: str = '
     root_logger = logging.getLogger()
     root_logger.addHandler(handler)
 
-    _module_file_handlers[module_name] = (handler, log_file_path)
+    _current_file_handler = handler
+    _current_log_file_path = log_file_path
     return log_file_path
 
 def stop_file_logging(module_name: str) -> None:
     """Detach and close the rotating file handler for the given module if present."""
-    if module_name not in _module_file_handlers:
+    if _current_file_handler is None:
         return
-    handler, _ = _module_file_handlers.pop(module_name)
+    handler = _current_file_handler
     root_logger = logging.getLogger()
     try:
         root_logger.removeHandler(handler)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug(f"Error removing handler for {module_name}: {e}")
     try:
         handler.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug(f"Error closing handler for {module_name}: {e}")
+    _current_file_handler = None
+    _current_log_file_path = ""
