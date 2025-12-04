@@ -3704,12 +3704,12 @@ class AnnotateUltrasoundLogic(ScriptedLoadableModuleLogic, CustomObserverMixin, 
             if displayNode:
                 displayNode.SetWindow(255)
                 displayNode.SetLevel(127)
-                                # For label volumes, use a simple color map that shows cyan for non-zero values
+
+                # For label volumes, use a simple color map that shows cyan for non-zero values
                 # Create a custom color table that maps non-zero values to cyan
                 colorNode = slicer.vtkMRMLColorTableNode()
                 colorNode.SetTypeToUser()
                 colorNode.SetNumberOfColors(256)
-                colorNode.SetNamesInitialised(True)
 
                 # Set all colors to transparent except for non-zero values which will be cyan
                 for i in range(256):

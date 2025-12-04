@@ -853,7 +853,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self._parameterNode.status = AnonymizerStatus.INITIAL
 
         # Export self.logic.dicom_manager.dicom_df as a CSV file in the headers directory
-        if self.logic.dicom_manager.dicom_df is not None:
+        if self.logic.dicom_manager.dicom_df is not None and not self.logic.dicom_manager.dicom_df.empty:
             outputFilePath = os.path.join(outputHeadersDirectory, "keys.csv")
             self.logic.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(outputFilePath, index=False)
 
