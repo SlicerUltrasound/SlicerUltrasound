@@ -648,7 +648,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             for label in labels:
                 checkBox = qt.QCheckBox(humanize(label), categoryGroupBox)
                 checkBox.setSizePolicy(qt.QSizePolicy.Preferred, qt.QSizePolicy.Preferred)
-                checkBox.toggled.connect(lambda checked, cb=checkBox: self.onLabelCheckBoxToggled(cb, checked))
                 # Store original category and label for saving
                 checkBox.setProperty('originalCategory', category)
                 checkBox.setProperty('originalLabel', label)
