@@ -1024,6 +1024,40 @@ class TestDicomFileManager:
         assert hasattr(ds, 'TransducerData')
         assert ds.TransducerData == ""
 
+    def test_copy_source_metadata_strips_transducer_data_serial(self, manager_with_data, temp_dir):
+        """TransducerData in de-id retains only the model segment, not the serial number"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "SC6-1s,JK9U41102597"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SC6-1s"
+
+    def test_copy_source_metadata_strips_transducer_data_backslash(self, manager_with_data, temp_dir):
+        """Backslash-delimited TransducerData is stripped to model segment only"""
+        from pydicom.multival import MultiValue
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = MultiValue(str, ["S4-1U", "UNUSED", "UNUSED"])
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "S4-1U"
+
+    def test_copy_source_metadata_preserves_transducer_data_case(self, manager_with_data, temp_dir):
+        """TransducerData model segment in de-id preserves original case (unlike TransducerModel DataFrame column)"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "C1-5"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "C1-5"
+
     def test_apply_anonymization_generates_uids_when_none_provided(self, manager_with_data):
         """Test that _apply_anonymization generates UIDs when no patient info provided"""
         ds = pydicom.Dataset()

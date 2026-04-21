@@ -94,6 +94,22 @@ class DicomFileManager:
         self.next_index = 0
         self.current_index = 0
 
+    def _first_transducer_segment(self, raw) -> str:
+        """Return the first segment of a TransducerData-like value with case preserved.
+
+        Handles plain strings (comma- or backslash-delimited) and pydicom MultiValue
+        objects (auto-split by VR LO separator). Returns an empty string for None,
+        empty, or whitespace-only input.
+        """
+        if raw is not None and not isinstance(raw, str) and hasattr(raw, '__getitem__'):
+            raw = raw[0] if len(raw) > 0 else ''
+
+        source = str(raw).strip() if raw is not None else ''
+        if not source:
+            return ''
+
+        return source.split('\\')[0].split(',')[0].strip()
+
     def get_transducer_model(self, transducer_data, manufacturer: str = '',
                              manufacturer_model_name: str = '') -> str:
         """
@@ -112,15 +128,8 @@ class DicomFileManager:
         else:
             raw = transducer_data
 
-        if raw is not None and not isinstance(raw, str) and hasattr(raw, '__getitem__'):
-            raw = raw[0] if len(raw) > 0 else ''
-
-        source = str(raw).strip() if raw is not None else ''
-        if not source:
-            return 'unknown'
-
-        model = source.split('\\')[0].split(',')[0].strip().lower()
-        return model if model else 'unknown'
+        segment = self._first_transducer_segment(raw)
+        return segment.lower() if segment else 'unknown'
 
     def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
         """
@@ -569,6 +578,8 @@ class DicomFileManager:
 
         for tag in self.DICOM_TAGS_PRESERVE_OR_BLANK:
             value = getattr(source_ds, tag, '') or ''
+            if tag == 'TransducerData':
+                value = self._first_transducer_segment(value)
             setattr(ds, tag, value)
 
         # Handle UIDs
