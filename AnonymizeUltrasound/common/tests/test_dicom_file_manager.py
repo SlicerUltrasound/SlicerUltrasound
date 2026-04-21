@@ -27,7 +27,7 @@ class TestDicomFileManager:
     NUMBER_OF_FRAMES = 10
     CONTENT_DATE = "20240101"
     CONTENT_TIME = "120000"
-    TRANSDUCER_TYPE = "SC6-1s,02597"
+    TRANSDUCER_DATA = "SC6-1s,02597"
     TRANSDUCER_MODEL = "sc6-1s"
     ROWS = 4
     COLUMNS = 6
@@ -73,7 +73,7 @@ class TestDicomFileManager:
             'NumberOfFrames': self.NUMBER_OF_FRAMES,
             'ContentDate': self.CONTENT_DATE,
             'ContentTime': self.CONTENT_TIME,
-            'TransducerType': self.TRANSDUCER_TYPE,
+            'TransducerData': self.TRANSDUCER_DATA,
             'Rows': self.ROWS,
             'Columns': self.COLUMNS,
             'BitsAllocated': self.BITS_ALLOCATED,
@@ -468,7 +468,7 @@ class TestDicomFileManager:
             "Number of Frames": str(self.NUMBER_OF_FRAMES),
             "Content Date": self.CONTENT_DATE,
             "Content Time": self.CONTENT_TIME,
-            "Transducer Type": self.TRANSDUCER_TYPE,
+            "Transducer Data": self.TRANSDUCER_DATA,
             "Rows": self.ROWS,
             "Columns": self.COLUMNS,
             "Bits Allocated": self.BITS_ALLOCATED,
@@ -901,7 +901,7 @@ class TestDicomFileManager:
 
         # But these should still be copied
         assert hasattr(ds, 'BitsAllocated')
-        assert hasattr(ds, 'TransducerType')
+        assert hasattr(ds, 'TransducerData')
 
     def test_apply_anonymization_generates_uids_when_none_provided(self, manager_with_data):
         """Test that _apply_anonymization generates UIDs when no patient info provided"""

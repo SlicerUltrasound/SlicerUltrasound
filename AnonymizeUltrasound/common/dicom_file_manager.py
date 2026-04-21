@@ -55,7 +55,7 @@ class DicomFileManager:
         "StudyDate",
         "StudyDescription",
         "StudyTime",
-        "TransducerType",
+        "TransducerData",
         "Manufacturer"
     ]
 
@@ -88,15 +88,15 @@ class DicomFileManager:
         self.next_index = 0
         self.current_index = 0
 
-    def get_transducer_model(self, transducerType: str) -> str:
+    def get_transducer_model(self, transducerData: str) -> str:
         """
-        Parse the transducer type string and return the transducer model or 'unknown'.
-        For example, if transducerType is 'SC6-1s,02597', it returns 'sc6-1s'.
+        Parse the transducer data string and return the transducer model or 'unknown'.
+        For example, if transducerData is 'SC6-1s,02597', it returns 'sc6-1s'.
         """
-        if not transducerType or transducerType.strip() == '':
+        if not transducerData or transducerData.strip() == '':
             return 'unknown'
 
-        return transducerType.split(",")[0].lower()
+        return transducerData.split(",")[0].lower()
 
     def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
         """
@@ -180,7 +180,7 @@ class DicomFileManager:
             content_date = getattr(dicom_ds, 'ContentDate', '19000101')
             content_time = getattr(dicom_ds, 'ContentTime', '000000')
             to_patch = physical_delta_x is None or physical_delta_y is None
-            transducer_model = self.get_transducer_model(dicom_ds.get('TransducerType', ''))
+            transducer_model = self.get_transducer_model(dicom_ds.get('TransducerData', ''))
 
             # Calculate relative path from input folder. Replace the filename with the anonymized filename.
             output_path = os.path.relpath(file_path, input_folder).replace(os.path.basename(file_path), anon_filename)
