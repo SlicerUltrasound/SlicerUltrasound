@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import shutil
+import logging
 import pandas as pd
 import pydicom
 import numpy as np
@@ -1015,6 +1016,47 @@ class TestDicomFileManager:
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         manager_with_data._apply_anonymization(ds, source_ds)
         assert ds.PatientAge == "025M"
+
+    def test_cap_patient_age_logs_error_for_invalid_format(self, manager, caplog):
+        """Malformed PatientAge values are logged at ERROR with value + expected format, then passed through"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("25YR")
+
+        assert result == "25YR"
+        assert any("25YR" in r.message for r in caplog.records), "log should include the invalid value"
+        assert any("nnnX" in r.message for r in caplog.records), "log should include the expected format"
+
+    def test_cap_patient_age_logs_error_for_bad_unit(self, manager, caplog):
+        """Values with an invalid unit letter are flagged as errors"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("045X")
+
+        assert result == "045X"
+        assert any("045X" in r.message for r in caplog.records)
+
+    def test_cap_patient_age_logs_error_for_non_digit_prefix(self, manager, caplog):
+        """Values whose prefix isn't three digits are flagged as errors"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("abcY")
+
+        assert result == "abcY"
+        assert any("abcY" in r.message for r in caplog.records)
+
+    def test_cap_patient_age_silent_for_empty(self, manager, caplog):
+        """Empty PatientAge is a valid 'no value' state and should not log an error"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("")
+
+        assert result == ""
+        assert len(caplog.records) == 0
+
+    def test_cap_patient_age_silent_for_valid_non_year(self, manager, caplog):
+        """Valid non-year DICOM AS values should not log an error"""
+        with caplog.at_level(logging.ERROR):
+            for value in ("025M", "014D", "003W"):
+                assert manager._cap_patient_age(value) == value
+
+        assert len(caplog.records) == 0
 
     def test_copy_source_metadata_preserves_transducer_type(self, manager_with_data, temp_dir):
         """Test TransducerType present in source is preserved in de-id output"""

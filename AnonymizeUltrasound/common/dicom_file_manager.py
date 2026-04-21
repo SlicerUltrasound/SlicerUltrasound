@@ -636,17 +636,31 @@ class DicomFileManager:
     def _cap_patient_age(self, age_str) -> str:
         """Cap PatientAge at '090Y' for ages >= 90 years (HIPAA Safe Harbor).
 
-        DICOM AS format is 'nnnX' where X is D, W, M, or Y. Only year values
-        are capped; day/week/month values pass through unchanged (they can't
-        reach 89 years in those units within the format's 3-digit field).
-        Invalid or malformed values pass through unchanged.
+        DICOM AS format is 'nnnX' where nnn is three digits and X is one of
+        D (days), W (weeks), M (months), or Y (years). Only year values are
+        capped; D/W/M values and empty strings pass through unchanged.
+        Malformed values are logged at ERROR and passed through so source
+        data is never silently rewritten.
         """
-        if not isinstance(age_str, str) or len(age_str) != 4 or not age_str.endswith('Y'):
+        if not isinstance(age_str, str) or age_str == '':
             return age_str
-        try:
-            years = int(age_str[:3])
-        except ValueError:
+
+        is_valid_as = (
+            len(age_str) == 4
+            and age_str[-1] in ('D', 'W', 'M', 'Y')
+            and age_str[:3].isdigit()
+        )
+        if not is_valid_as:
+            logging.error(
+                f"Invalid PatientAge value {age_str!r}; "
+                "expected DICOM AS format 'nnnX' with X in (D, W, M, Y), e.g. '045Y'"
+            )
             return age_str
+
+        if age_str[-1] != 'Y':
+            return age_str
+
+        years = int(age_str[:3])
         return '090Y' if years >= 90 else age_str
 
     def _shift_date(self, date_str: str, offset: int) -> str:
