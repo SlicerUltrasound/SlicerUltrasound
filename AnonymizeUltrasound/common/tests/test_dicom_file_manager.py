@@ -962,6 +962,60 @@ class TestDicomFileManager:
         assert hasattr(ds, 'BitsAllocated')
         assert hasattr(ds, 'TransducerData')
 
+    def test_copy_source_metadata_excludes_station_name(self, manager_with_data, temp_dir):
+        """StationName (0008,1010) is a device/location identifier and must not leak to de-id"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.StationName = "US_ROOM_3B"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert not hasattr(ds, 'StationName')
+
+    def test_copy_source_metadata_excludes_study_description(self, manager_with_data, temp_dir):
+        """StudyDescription is a free-text field that frequently contains PHI; must not leak"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.StudyDescription = "Patient Jane Doe referred by Dr Smith"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert not hasattr(ds, 'StudyDescription')
+
+    def test_apply_anonymization_caps_patient_age_over_89(self, manager_with_data):
+        """PatientAge >= 90 years is capped at '090Y' per HIPAA Safe Harbor"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "095Y"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "090Y"
+
+    def test_apply_anonymization_caps_patient_age_exactly_90(self, manager_with_data):
+        """PatientAge of exactly 90 years is also capped (boundary)"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "090Y"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "090Y"
+
+    def test_apply_anonymization_preserves_patient_age_under_90(self, manager_with_data):
+        """PatientAge under 90 years passes through unchanged"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "045Y"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "045Y"
+
+    def test_apply_anonymization_preserves_non_year_patient_age(self, manager_with_data):
+        """Non-year PatientAge formats (months, weeks, days) are not affected by the 90Y cap"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "025M"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "025M"
+
     def test_copy_source_metadata_preserves_transducer_type(self, manager_with_data, temp_dir):
         """Test TransducerType present in source is preserved in de-id output"""
         ds = pydicom.Dataset()

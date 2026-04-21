@@ -42,6 +42,10 @@ class DicomFileManager:
     DICOM_EXTENSIONS = {'.dcm', '.dicom'}
 
     # Tags copied from source only if present (allowlist semantics).
+    # Intentionally excluded for HIPAA Safe Harbor compliance:
+    #   - StationName (0008,1010): device/room/institution identifier
+    #   - StudyDescription (0008,1030): free-text field that frequently
+    #     contains patient names, physician initials, or referral info
     DICOM_TAGS_TO_COPY = [
         "BitsAllocated",
         "BitsStored",
@@ -50,9 +54,7 @@ class DicomFileManager:
         "PatientSex",
         "PixelRepresentation",
         "SeriesNumber",
-        "StationName",
         "StudyDate",
-        "StudyDescription",
         "StudyTime",
         "Manufacturer",
     ]
@@ -624,8 +626,28 @@ class DicomFileManager:
         ds.ReferringPhysicianName = ""
         ds.AccessionNumber = ""
 
+        # HIPAA Safe Harbor: aggregate ages >89 years to "090Y".
+        if hasattr(ds, 'PatientAge'):
+            ds.PatientAge = self._cap_patient_age(ds.PatientAge)
+
         # Apply date shifting for anonymization
         self._apply_date_shifting(ds, source_ds)
+
+    def _cap_patient_age(self, age_str) -> str:
+        """Cap PatientAge at '090Y' for ages >= 90 years (HIPAA Safe Harbor).
+
+        DICOM AS format is 'nnnX' where X is D, W, M, or Y. Only year values
+        are capped; day/week/month values pass through unchanged (they can't
+        reach 89 years in those units within the format's 3-digit field).
+        Invalid or malformed values pass through unchanged.
+        """
+        if not isinstance(age_str, str) or len(age_str) != 4 or not age_str.endswith('Y'):
+            return age_str
+        try:
+            years = int(age_str[:3])
+        except ValueError:
+            return age_str
+        return '090Y' if years >= 90 else age_str
 
     def _shift_date(self, date_str: str, offset: int) -> str:
         """Shift a single date by the given offset."""
