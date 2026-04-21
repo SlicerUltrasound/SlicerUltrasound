@@ -41,12 +41,11 @@ class DicomFileManager:
     # Define allowed DICOM file extensions (case-insensitive)
     DICOM_EXTENSIONS = {'.dcm', '.dicom'}
 
-    # DICOM tags to copy directly
+    # Tags copied from source only if present (allowlist semantics).
     DICOM_TAGS_TO_COPY = [
         "BitsAllocated",
         "BitsStored",
         "HighBit",
-        "ManufacturerModelName",
         "PatientAge",
         "PatientSex",
         "PixelRepresentation",
@@ -55,8 +54,15 @@ class DicomFileManager:
         "StudyDate",
         "StudyDescription",
         "StudyTime",
+        "Manufacturer",
+    ]
+
+    # Tags always written to the de-id dataset: source value if present, else "".
+    # Downstream consumers rely on these tags being present on every anonymized DICOM.
+    DICOM_TAGS_PRESERVE_OR_BLANK = [
         "TransducerData",
-        "Manufacturer"
+        "TransducerType",
+        "ManufacturerModelName",
     ]
 
     # Expected columns in the DICOM files dataframe
@@ -88,15 +94,33 @@ class DicomFileManager:
         self.next_index = 0
         self.current_index = 0
 
-    def get_transducer_model(self, transducerData: str) -> str:
+    def get_transducer_model(self, transducer_data, manufacturer: str = '',
+                             manufacturer_model_name: str = '') -> str:
         """
-        Parse the transducer data string and return the transducer model or 'unknown'.
-        For example, if transducerData is 'SC6-1s,02597', it returns 'sc6-1s'.
+        Parse the transducer model identifier from DICOM metadata.
+
+        For Butterfly Network manufacturers, the device identifier is stored in
+        ManufacturerModelName (0008,1090) rather than TransducerData (0018,5010).
+        For other vendors, TransducerData may be comma-delimited ('SC6-1s,02597')
+        or backslash-delimited ('S4-1U\\UNUSED\\UNUSED'); pydicom may return the
+        latter as a MultiValue because backslash is the native VR LO separator.
+
+        Returns the lowercased model identifier, or 'unknown' if unavailable.
         """
-        if not transducerData or transducerData.strip() == '':
+        if 'butterfly' in str(manufacturer or '').lower():
+            raw = manufacturer_model_name
+        else:
+            raw = transducer_data
+
+        if raw is not None and not isinstance(raw, str) and hasattr(raw, '__getitem__'):
+            raw = raw[0] if len(raw) > 0 else ''
+
+        source = str(raw).strip() if raw is not None else ''
+        if not source:
             return 'unknown'
 
-        return transducerData.split(",")[0].lower()
+        model = source.split('\\')[0].split(',')[0].strip().lower()
+        return model if model else 'unknown'
 
     def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
         """
@@ -180,7 +204,11 @@ class DicomFileManager:
             content_date = getattr(dicom_ds, 'ContentDate', '19000101')
             content_time = getattr(dicom_ds, 'ContentTime', '000000')
             to_patch = physical_delta_x is None or physical_delta_y is None
-            transducer_model = self.get_transducer_model(dicom_ds.get('TransducerData', ''))
+            transducer_model = self.get_transducer_model(
+                dicom_ds.get('TransducerData', ''),
+                manufacturer=dicom_ds.get('Manufacturer', ''),
+                manufacturer_model_name=dicom_ds.get('ManufacturerModelName', ''),
+            )
 
             # Calculate relative path from input folder. Replace the filename with the anonymized filename.
             output_path = os.path.relpath(file_path, input_folder).replace(os.path.basename(file_path), anon_filename)
@@ -538,6 +566,10 @@ class DicomFileManager:
         for tag in self.DICOM_TAGS_TO_COPY:
             if hasattr(source_ds, tag):
                 setattr(ds, tag, getattr(source_ds, tag))
+
+        for tag in self.DICOM_TAGS_PRESERVE_OR_BLANK:
+            value = getattr(source_ds, tag, '') or ''
+            setattr(ds, tag, value)
 
         # Handle UIDs
         self._copy_and_generate_uids(ds, source_ds, output_path)

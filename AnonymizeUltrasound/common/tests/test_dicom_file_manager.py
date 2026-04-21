@@ -208,16 +208,60 @@ class TestDicomFileManager:
         assert manager.next_index == 0
 
     def test_get_transducer_model_valid(self, manager):
-        """Test transducer model extraction with valid input"""
+        """Test transducer model extraction with valid comma-delimited input"""
         assert manager.get_transducer_model("SC6-1s,02597") == "sc6-1s"
         assert manager.get_transducer_model("L12-3,12345") == "l12-3"
         assert manager.get_transducer_model("C1-5") == "c1-5"
+        # Explicit non-Butterfly manufacturer arg should not change behavior
+        assert manager.get_transducer_model("SC6-1s,02597", manufacturer="Philips") == "sc6-1s"
 
     def test_get_transducer_model_invalid(self, manager):
         """Test transducer model extraction with invalid input"""
         assert manager.get_transducer_model("") == "unknown"
         assert manager.get_transducer_model(None) == "unknown"
         assert manager.get_transducer_model("   ") == "unknown"
+
+    def test_get_transducer_model_backslash_format(self, manager):
+        """Test backslash-delimited TransducerData (VR LO native separator)"""
+        assert manager.get_transducer_model("S4-1U\\UNUSED\\UNUSED") == "s4-1u"
+        assert manager.get_transducer_model("L12-3\\UNUSED") == "l12-3"
+
+    def test_get_transducer_model_backslash_multivalue(self, manager):
+        """Test pydicom MultiValue input (auto-split backslash-delimited LO)"""
+        from pydicom.multival import MultiValue
+        mv = MultiValue(str, ["S4-1U", "UNUSED", "UNUSED"])
+        assert manager.get_transducer_model(mv) == "s4-1u"
+
+    def test_get_transducer_model_butterfly_uses_model_name(self, manager):
+        """Test Butterfly manufacturer routes through ManufacturerModelName"""
+        assert manager.get_transducer_model(
+            "", manufacturer="Butterfly Network Inc", manufacturer_model_name="IQ"
+        ) == "iq"
+        # Butterfly branch ignores TransducerData even when present
+        assert manager.get_transducer_model(
+            "IgnoreMe,123", manufacturer="Butterfly Network Inc", manufacturer_model_name="IQ3"
+        ) == "iq3"
+
+    def test_get_transducer_model_butterfly_case_insensitive(self, manager):
+        """Test Butterfly detection is case-insensitive substring match"""
+        assert manager.get_transducer_model(
+            "", manufacturer="butterfly network", manufacturer_model_name="IQ"
+        ) == "iq"
+        assert manager.get_transducer_model(
+            "", manufacturer="BUTTERFLY NETWORK INC", manufacturer_model_name="IQ"
+        ) == "iq"
+        assert manager.get_transducer_model(
+            "", manufacturer="Butterfly Network Inc.", manufacturer_model_name="IQ"
+        ) == "iq"
+
+    def test_get_transducer_model_butterfly_missing_model_name(self, manager):
+        """Test Butterfly without ManufacturerModelName returns 'unknown' (no fallback)"""
+        assert manager.get_transducer_model(
+            "SC6-1s,02597", manufacturer="Butterfly Network Inc", manufacturer_model_name=""
+        ) == "unknown"
+        assert manager.get_transducer_model(
+            "SC6-1s,02597", manufacturer="Butterfly Network Inc", manufacturer_model_name=None
+        ) == "unknown"
 
     def test_get_number_of_instances_empty(self, manager):
         """Test get_number_of_instances with empty dataframe"""
@@ -270,6 +314,21 @@ class TestDicomFileManager:
         result = manager._extract_dicom_info(filepath, self.INPUT_FOLDER, False)
 
         assert result is None
+
+    def test_extract_dicom_info_butterfly(self, manager, temp_dir):
+        """Test Butterfly manufacturer DICOM uses ManufacturerModelName for TransducerModel"""
+        ds = self.create_test_dicom_file(
+            Manufacturer="Butterfly Network Inc",
+            ManufacturerModelName="IQ",
+            TransducerData="",
+        )
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
+
+        result = manager._extract_dicom_info(filepath, self.INPUT_FOLDER, False)
+
+        assert result is not None
+        assert result['TransducerModel'] == "iq"
 
     def test_extract_dicom_info_includes_output_path(self, manager, temp_dir):
         # Create a subdirectory structure
@@ -902,6 +961,68 @@ class TestDicomFileManager:
         # But these should still be copied
         assert hasattr(ds, 'BitsAllocated')
         assert hasattr(ds, 'TransducerData')
+
+    def test_copy_source_metadata_preserves_transducer_type(self, manager_with_data, temp_dir):
+        """Test TransducerType present in source is preserved in de-id output"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerType = "LINEAR"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerType == "LINEAR"
+
+    def test_copy_source_metadata_blanks_missing_transducer_type(self, manager_with_data, temp_dir):
+        """Test TransducerType is present as empty string when absent in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'TransducerType'):
+            delattr(source_ds, 'TransducerType')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'TransducerType')
+        assert ds.TransducerType == ""
+
+    def test_copy_source_metadata_blanks_missing_transducer_data(self, manager_with_data, temp_dir):
+        """Test TransducerData is present as empty string when absent in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'TransducerData'):
+            delattr(source_ds, 'TransducerData')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'TransducerData')
+        assert ds.TransducerData == ""
+
+    def test_copy_source_metadata_blanks_missing_manufacturer_model_name(self, manager_with_data, temp_dir):
+        """Test ManufacturerModelName is present as empty string when absent in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'ManufacturerModelName'):
+            delattr(source_ds, 'ManufacturerModelName')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'ManufacturerModelName')
+        assert ds.ManufacturerModelName == ""
+
+    def test_copy_source_metadata_preserves_empty_transducer_data(self, manager_with_data, temp_dir):
+        """Test TransducerData empty string in source is preserved as empty in de-id"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = ""
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'TransducerData')
+        assert ds.TransducerData == ""
 
     def test_apply_anonymization_generates_uids_when_none_provided(self, manager_with_data):
         """Test that _apply_anonymization generates UIDs when no patient info provided"""
