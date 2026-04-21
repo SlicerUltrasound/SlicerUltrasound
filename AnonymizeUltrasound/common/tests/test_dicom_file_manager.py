@@ -1,6 +1,5 @@
 import pytest
 import os
-import sys
 import tempfile
 import shutil
 import logging
@@ -289,7 +288,7 @@ class TestDicomFileManager:
         assert result['InstanceUID'] == self.SOP_INSTANCE_UID
         assert result['ContentDate'] == self.CONTENT_DATE
         assert result['ContentTime'] == self.CONTENT_TIME
-        assert result['Patch'] == False
+        assert result['Patch'] is False
         assert result['TransducerModel'] == self.TRANSDUCER_MODEL
         assert result['PhysicalDeltaX'] == self.PHYSICAL_DELTA_X
         assert result['PhysicalDeltaY'] == self.PHYSICAL_DELTA_Y
@@ -796,8 +795,8 @@ class TestDicomFileManager:
         assert ds.SOPClassUID == source_ds.SOPClassUID
         assert ds.SOPInstanceUID == source_ds.SOPInstanceUID
         assert ds.StudyInstanceUID == source_ds.StudyInstanceUID
-        # SeriesInstanceUID should always be generated new
-        assert ds.SeriesInstanceUID != source_ds.SeriesInstanceUID
+        # SeriesInstanceUID should now be copied from source
+        assert ds.SeriesInstanceUID == source_ds.SeriesInstanceUID
 
     def test_copy_and_generate_uids_missing_source_uids(self, manager_with_data, temp_dir):
         """Test _copy_and_generate_uids with missing UIDs in source"""
@@ -914,7 +913,7 @@ class TestDicomFileManager:
         assert ds.LossyImageCompression == '01'
         assert ds.LossyImageCompressionMethod == 'ISO_10918_1'
         assert ds['PixelData'].VR == 'OB'
-        assert ds['PixelData'].is_undefined_length == True
+        assert ds['PixelData'].is_undefined_length is True
 
     def test_compress_frame_to_jpeg_2d(self, manager_with_data):
         """Test _compress_frame_to_jpeg with 2D frame"""
@@ -963,8 +962,8 @@ class TestDicomFileManager:
         assert hasattr(ds, 'BitsAllocated')
         assert hasattr(ds, 'TransducerData')
 
-    def test_copy_source_metadata_excludes_station_name(self, manager_with_data, temp_dir):
-        """StationName (0008,1010) is a device/location identifier and must not leak to de-id"""
+    def test_copy_source_metadata_preserves_station_name(self, manager_with_data, temp_dir):
+        """StationName (0008,1010) is preserved in the de-id DICOM per institutional workflow"""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.StationName = "US_ROOM_3B"
@@ -972,10 +971,10 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert not hasattr(ds, 'StationName')
+        assert ds.StationName == "US_ROOM_3B"
 
-    def test_copy_source_metadata_excludes_study_description(self, manager_with_data, temp_dir):
-        """StudyDescription is a free-text field that frequently contains PHI; must not leak"""
+    def test_copy_source_metadata_preserves_study_description(self, manager_with_data, temp_dir):
+        """StudyDescription is preserved in the de-id DICOM per institutional workflow"""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.StudyDescription = "Patient Jane Doe referred by Dr Smith"
@@ -983,7 +982,7 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert not hasattr(ds, 'StudyDescription')
+        assert ds.StudyDescription == "Patient Jane Doe referred by Dr Smith"
 
     def test_apply_anonymization_caps_patient_age_over_89(self, manager_with_data):
         """PatientAge >= 90 years is capped at '090Y' per HIPAA Safe Harbor"""
@@ -1120,8 +1119,8 @@ class TestDicomFileManager:
         assert hasattr(ds, 'TransducerData')
         assert ds.TransducerData == ""
 
-    def test_copy_source_metadata_strips_transducer_data_serial(self, manager_with_data, temp_dir):
-        """TransducerData in de-id retains only the model segment, not the serial number"""
+    def test_copy_source_metadata_preserves_transducer_data_serial(self, manager_with_data, temp_dir):
+        """TransducerData in de-id retains the raw source value, including the serial segment"""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.TransducerData = "SC6-1s,JK9U41102597"
@@ -1129,10 +1128,10 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert ds.TransducerData == "SC6-1s"
+        assert ds.TransducerData == "SC6-1s,JK9U41102597"
 
-    def test_copy_source_metadata_strips_transducer_data_backslash(self, manager_with_data, temp_dir):
-        """Backslash-delimited TransducerData is stripped to model segment only"""
+    def test_copy_source_metadata_preserves_transducer_data_backslash(self, manager_with_data, temp_dir):
+        """Backslash-delimited TransducerData is preserved element-wise in the de-id DICOM"""
         from pydicom.multival import MultiValue
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
@@ -1141,7 +1140,7 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert ds.TransducerData == "S4-1U"
+        assert list(ds.TransducerData) == ["S4-1U", "UNUSED", "UNUSED"]
 
     def test_copy_source_metadata_preserves_transducer_data_case(self, manager_with_data, temp_dir):
         """TransducerData model segment in de-id preserves original case (unlike TransducerModel DataFrame column)"""
@@ -1369,9 +1368,9 @@ class TestDicomFileManager:
         assert len(result) == 3
         assert all(isinstance(item, str) for item in result)
 
-    # Test for updated comment in _copy_and_generate_uids (verification that logic still works)
-    def test_copy_and_generate_uids_always_generates_series_uid(self, manager_with_data, temp_dir):
-        """Test that SeriesInstanceUID is always generated (never copied from source)"""
+    # Test that SeriesInstanceUID is now passed through from source
+    def test_copy_and_generate_uids_passes_through_series_uid(self, manager_with_data, temp_dir):
+        """Test that SeriesInstanceUID is copied from source when present"""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
@@ -1380,8 +1379,16 @@ class TestDicomFileManager:
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        # SeriesInstanceUID should always be different from source
-        assert ds.SeriesInstanceUID != original_series_uid
+        assert ds.SeriesInstanceUID == original_series_uid
+
+    def test_copy_and_generate_uids_generates_series_uid_when_missing(self, manager_with_data, temp_dir):
+        """Test that SeriesInstanceUID is freshly generated when source lacks it"""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()  # empty — no SeriesInstanceUID
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
         assert hasattr(ds, 'SeriesInstanceUID')
         assert ds.SeriesInstanceUID != ""
 

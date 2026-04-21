@@ -42,10 +42,6 @@ class DicomFileManager:
     DICOM_EXTENSIONS = {'.dcm', '.dicom'}
 
     # Tags copied from source only if present (allowlist semantics).
-    # Intentionally excluded for HIPAA Safe Harbor compliance:
-    #   - StationName (0008,1010): device/room/institution identifier
-    #   - StudyDescription (0008,1030): free-text field that frequently
-    #     contains patient names, physician initials, or referral info
     DICOM_TAGS_TO_COPY = [
         "BitsAllocated",
         "BitsStored",
@@ -54,7 +50,9 @@ class DicomFileManager:
         "PatientSex",
         "PixelRepresentation",
         "SeriesNumber",
+        "StationName",
         "StudyDate",
+        "StudyDescription",
         "StudyTime",
         "Manufacturer",
     ]
@@ -580,8 +578,6 @@ class DicomFileManager:
 
         for tag in self.DICOM_TAGS_PRESERVE_OR_BLANK:
             value = getattr(source_ds, tag, '') or ''
-            if tag == 'TransducerData':
-                value = self._first_transducer_segment(value)
             setattr(ds, tag, value)
 
         # Handle UIDs
@@ -606,8 +602,14 @@ class DicomFileManager:
             logging.error(f"SOPInstanceUID not found. Generating new one for {output_path}")
             ds.SOPInstanceUID = pydicom.uid.generate_uid()
 
-        # Generate a unique SeriesInstanceUID. This is because ultrasound machines often reuse the same SeriesInstanceUID, which can cause issues in the viewer.
-        ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+        # Copy or generate SeriesInstanceUID. Pass-through preserves series-level
+        # linkage between source and de-id outputs; callers must accept that
+        # ultrasound-machine UID reuse may cause viewer collisions downstream.
+        if hasattr(source_ds, 'SeriesInstanceUID') and source_ds.SeriesInstanceUID:
+            ds.SeriesInstanceUID = source_ds.SeriesInstanceUID
+        else:
+            logging.error(f"SeriesInstanceUID not found. Generating new one for {output_path}")
+            ds.SeriesInstanceUID = pydicom.uid.generate_uid()
 
         # Copy or generate StudyInstanceUID
         if hasattr(source_ds, 'StudyInstanceUID') and source_ds.StudyInstanceUID:
@@ -939,7 +941,7 @@ class DicomFileManager:
         output = np.zeros((num_frames, height, width, channels), dtype=np.uint8)
 
         try:
-            logging.info(f"Trying `dicom.encaps.generate_pixel_data_frame`")
+            logging.info("Trying `dicom.encaps.generate_pixel_data_frame`")
             pixel_data_frames = generate_pixel_data_frame(ds.PixelData)
 
             for i in range(num_frames):
@@ -951,6 +953,7 @@ class DicomFileManager:
                     frame = np.expand_dims(frame, axis=2)
                 output[i, :, :, :] = frame
         except Exception as e:
+            logging.warning("dicom.encaps.generate_pixel_data_frame approach failed: %s", e)
             try:
                 logging.info("Fallback to decode_data_sequence approach")
                 frame_data = decode_data_sequence(ds.PixelData)
@@ -966,6 +969,7 @@ class DicomFileManager:
                     output[i, :, :, :] = frame
 
             except Exception as e:
+                logging.warning("decode_data_sequence approach failed: %s", e)
                 try:
                     logging.info("Fallback to ds.pixel_array approach")
                     pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower
