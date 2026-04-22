@@ -852,9 +852,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self._parameterNode.status = AnonymizerStatus.INITIAL
 
         # Export self.logic.dicom_manager.dicom_df as a CSV file in the headers directory
-        if self.logic.dicom_manager.dicom_df is not None and not self.logic.dicom_manager.dicom_df.empty:
-            outputFilePath = os.path.join(outputHeadersDirectory, "keys.csv")
-            self.logic.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(outputFilePath, index=False)
+        df = self.logic.dicom_manager.build_csv_dataframe(inputDirectory)
+        if df is not None:
+            df.to_csv(os.path.join(outputHeadersDirectory, "keys.csv"), index=False)
 
         statusText = str(numFiles)
         if self.ui.skipSingleframeCheckBox.checked:
@@ -2647,6 +2647,20 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             "overview_pdf_path": overview_pdf_path
         }
 
+    def _write_keys_csv(self, headers_directory: str, input_folder: str) -> None:
+        """Serialize dicom_df to <headers_directory>/keys.csv.
+
+        InputPath column is rewritten relative to input_folder. No-op if
+        headers_directory is empty or dicom_df is empty/None.
+        """
+        if not headers_directory:
+            return
+        df = self.dicom_manager.build_csv_dataframe(input_folder)
+        if df is None:
+            return
+        os.makedirs(headers_directory, exist_ok=True)
+        df.to_csv(os.path.join(headers_directory, "keys.csv"), index=False)
+
     def batch_auto_anonymize(self, input_folder: str, output_folder: str, headers_folder: str,
                             model_path: str = MODEL_PATH, device: str = "", **kwargs) -> Dict[str, Any]:
         start_time = time.time()
@@ -2676,10 +2690,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         num_files = self.dicom_manager.scan_directory(input_folder, config.skip_single_frame, config.hash_patient_id)
 
         # Save keys.csv
-        if self.dicom_manager.dicom_df is not None and headers_folder:
-            df = self.dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False)
-            os.makedirs(headers_folder, exist_ok=True)
-            df.to_csv(os.path.join(headers_folder, "keys.csv"), index=False)
+        self._write_keys_csv(headers_folder, input_folder)
 
         overview_manifest = []
         overview_generator = OverviewGenerator(headers_folder)

@@ -126,11 +126,11 @@ def main():
     logger.info(f"Found {num_files} DICOM files")
 
     # Save keys.csv
-    if dicom_manager.dicom_df is not None and args.headers_dir:
-        os.makedirs(args.headers_dir, exist_ok=True)
-        dicom_manager.dicom_df.drop(columns=['DICOMDataset'], inplace=False).to_csv(
-            os.path.join(args.headers_dir, 'keys.csv'), index=False
-        )
+    if args.headers_dir:
+        df = dicom_manager.build_csv_dataframe(args.input_dir)
+        if df is not None:
+            os.makedirs(args.headers_dir, exist_ok=True)
+            df.to_csv(os.path.join(args.headers_dir, 'keys.csv'), index=False)
 
     # Process files
     progress_reporter.start(num_files, f"Auto-anonymizing {args.model_path.split('/')[-1]} on {args.device} for {num_files} files...")
