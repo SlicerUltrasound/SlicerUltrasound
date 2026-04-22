@@ -1679,8 +1679,7 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         # If found, apply it. If not, the user will need to define it manually.
         if self.dicom_manager.dicom_df is not None:
             current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
-            transducerType = current_dicom_record.get("TransducerModel", "unknown")
-            self.currentTransducerModel = self.dicom_manager.get_transducer_model(transducerType)
+            self.currentTransducerModel = current_dicom_record.get("TransducerModel", "unknown")
             cached_mask = self.getCachedMaskForTransducer(self.currentTransducerModel)
 
             if cached_mask:

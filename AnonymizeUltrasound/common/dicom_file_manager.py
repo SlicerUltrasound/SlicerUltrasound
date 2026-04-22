@@ -41,12 +41,11 @@ class DicomFileManager:
     # Define allowed DICOM file extensions (case-insensitive)
     DICOM_EXTENSIONS = {'.dcm', '.dicom'}
 
-    # DICOM tags to copy directly
+    # Tags copied from source only if present (allowlist semantics).
     DICOM_TAGS_TO_COPY = [
         "BitsAllocated",
         "BitsStored",
         "HighBit",
-        "ManufacturerModelName",
         "PatientAge",
         "PatientSex",
         "PixelRepresentation",
@@ -55,8 +54,15 @@ class DicomFileManager:
         "StudyDate",
         "StudyDescription",
         "StudyTime",
+        "Manufacturer",
+    ]
+
+    # Tags always written to the de-id dataset: source value if present, else "".
+    # Downstream consumers rely on these tags being present on every anonymized DICOM.
+    DICOM_TAGS_PRESERVE_OR_BLANK = [
+        "TransducerData",
         "TransducerType",
-        "Manufacturer"
+        "ManufacturerModelName",
     ]
 
     # Expected columns in the DICOM files dataframe
@@ -88,15 +94,42 @@ class DicomFileManager:
         self.next_index = 0
         self.current_index = 0
 
-    def get_transducer_model(self, transducerType: str) -> str:
-        """
-        Parse the transducer type string and return the transducer model or 'unknown'.
-        For example, if transducerType is 'SC6-1s,02597', it returns 'sc6-1s'.
-        """
-        if not transducerType or transducerType.strip() == '':
-            return 'unknown'
+    def _first_transducer_segment(self, raw) -> str:
+        """Return the first segment of a TransducerData-like value with case preserved.
 
-        return transducerType.split(",")[0].lower()
+        Handles plain strings (comma- or backslash-delimited) and pydicom MultiValue
+        objects (auto-split by VR LO separator). Returns an empty string for None,
+        empty, or whitespace-only input.
+        """
+        if raw is not None and not isinstance(raw, str) and hasattr(raw, '__getitem__'):
+            raw = raw[0] if len(raw) > 0 else ''
+
+        source = str(raw).strip() if raw is not None else ''
+        if not source:
+            return ''
+
+        return source.split('\\')[0].split(',')[0].strip()
+
+    def get_transducer_model(self, transducer_data, manufacturer: str = '',
+                             manufacturer_model_name: str = '') -> str:
+        """
+        Parse the transducer model identifier from DICOM metadata.
+
+        For Butterfly Network manufacturers, the device identifier is stored in
+        ManufacturerModelName (0008,1090) rather than TransducerData (0018,5010).
+        For other vendors, TransducerData may be comma-delimited ('SC6-1s,02597')
+        or backslash-delimited ('S4-1U\\UNUSED\\UNUSED'); pydicom may return the
+        latter as a MultiValue because backslash is the native VR LO separator.
+
+        Returns the lowercased model identifier, or 'unknown' if unavailable.
+        """
+        if 'butterfly' in str(manufacturer or '').lower():
+            raw = manufacturer_model_name
+        else:
+            raw = transducer_data
+
+        segment = self._first_transducer_segment(raw)
+        return segment.lower() if segment else 'unknown'
 
     def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
         """
@@ -180,7 +213,11 @@ class DicomFileManager:
             content_date = getattr(dicom_ds, 'ContentDate', '19000101')
             content_time = getattr(dicom_ds, 'ContentTime', '000000')
             to_patch = physical_delta_x is None or physical_delta_y is None
-            transducer_model = self.get_transducer_model(dicom_ds.get('TransducerType', ''))
+            transducer_model = self.get_transducer_model(
+                dicom_ds.get('TransducerData', ''),
+                manufacturer=dicom_ds.get('Manufacturer', ''),
+                manufacturer_model_name=dicom_ds.get('ManufacturerModelName', ''),
+            )
 
             # Calculate relative path from input folder. Replace the filename with the anonymized filename.
             output_path = os.path.relpath(file_path, input_folder).replace(os.path.basename(file_path), anon_filename)
@@ -539,6 +576,10 @@ class DicomFileManager:
             if hasattr(source_ds, tag):
                 setattr(ds, tag, getattr(source_ds, tag))
 
+        for tag in self.DICOM_TAGS_PRESERVE_OR_BLANK:
+            value = getattr(source_ds, tag, '') or ''
+            setattr(ds, tag, value)
+
         # Handle UIDs
         self._copy_and_generate_uids(ds, source_ds, output_path)
 
@@ -561,8 +602,14 @@ class DicomFileManager:
             logging.error(f"SOPInstanceUID not found. Generating new one for {output_path}")
             ds.SOPInstanceUID = pydicom.uid.generate_uid()
 
-        # Generate a unique SeriesInstanceUID. This is because ultrasound machines often reuse the same SeriesInstanceUID, which can cause issues in the viewer.
-        ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+        # Copy or generate SeriesInstanceUID. Pass-through preserves series-level
+        # linkage between source and de-id outputs; callers must accept that
+        # ultrasound-machine UID reuse may cause viewer collisions downstream.
+        if hasattr(source_ds, 'SeriesInstanceUID') and source_ds.SeriesInstanceUID:
+            ds.SeriesInstanceUID = source_ds.SeriesInstanceUID
+        else:
+            logging.error(f"SeriesInstanceUID not found. Generating new one for {output_path}")
+            ds.SeriesInstanceUID = pydicom.uid.generate_uid()
 
         # Copy or generate StudyInstanceUID
         if hasattr(source_ds, 'StudyInstanceUID') and source_ds.StudyInstanceUID:
@@ -581,8 +628,42 @@ class DicomFileManager:
         ds.ReferringPhysicianName = ""
         ds.AccessionNumber = ""
 
+        # HIPAA Safe Harbor: aggregate ages >89 years to "090Y".
+        if hasattr(ds, 'PatientAge'):
+            ds.PatientAge = self._cap_patient_age(ds.PatientAge)
+
         # Apply date shifting for anonymization
         self._apply_date_shifting(ds, source_ds)
+
+    def _cap_patient_age(self, age_str) -> str:
+        """Cap PatientAge at '090Y' for ages >= 90 years (HIPAA Safe Harbor).
+
+        DICOM AS format is 'nnnX' where nnn is three digits and X is one of
+        D (days), W (weeks), M (months), or Y (years). Only year values are
+        capped; D/W/M values and empty strings pass through unchanged.
+        Malformed values are logged at ERROR and passed through so source
+        data is never silently rewritten.
+        """
+        if not isinstance(age_str, str) or age_str == '':
+            return age_str
+
+        is_valid_as = (
+            len(age_str) == 4
+            and age_str[-1] in ('D', 'W', 'M', 'Y')
+            and age_str[:3].isdigit()
+        )
+        if not is_valid_as:
+            logging.error(
+                f"Invalid PatientAge value {age_str!r}; "
+                "expected DICOM AS format 'nnnX' with X in (D, W, M, Y), e.g. '045Y'"
+            )
+            return age_str
+
+        if age_str[-1] != 'Y':
+            return age_str
+
+        years = int(age_str[:3])
+        return '090Y' if years >= 90 else age_str
 
     def _shift_date(self, date_str: str, offset: int) -> str:
         """Shift a single date by the given offset."""
@@ -860,7 +941,7 @@ class DicomFileManager:
         output = np.zeros((num_frames, height, width, channels), dtype=np.uint8)
 
         try:
-            logging.info(f"Trying `dicom.encaps.generate_pixel_data_frame`")
+            logging.info("Trying `dicom.encaps.generate_pixel_data_frame`")
             pixel_data_frames = generate_pixel_data_frame(ds.PixelData)
 
             for i in range(num_frames):
@@ -872,6 +953,7 @@ class DicomFileManager:
                     frame = np.expand_dims(frame, axis=2)
                 output[i, :, :, :] = frame
         except Exception as e:
+            logging.warning("dicom.encaps.generate_pixel_data_frame approach failed: %s", e)
             try:
                 logging.info("Fallback to decode_data_sequence approach")
                 frame_data = decode_data_sequence(ds.PixelData)
@@ -887,6 +969,7 @@ class DicomFileManager:
                     output[i, :, :, :] = frame
 
             except Exception as e:
+                logging.warning("decode_data_sequence approach failed: %s", e)
                 try:
                     logging.info("Fallback to ds.pixel_array approach")
                     pixel_data_frames = ds.pixel_array # this seems to be more robust? but slower

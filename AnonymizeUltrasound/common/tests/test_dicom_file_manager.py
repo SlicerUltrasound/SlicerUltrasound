@@ -1,8 +1,8 @@
 import pytest
 import os
-import sys
 import tempfile
 import shutil
+import logging
 import pandas as pd
 import pydicom
 import numpy as np
@@ -27,7 +27,7 @@ class TestDicomFileManager:
     NUMBER_OF_FRAMES = 10
     CONTENT_DATE = "20240101"
     CONTENT_TIME = "120000"
-    TRANSDUCER_TYPE = "SC6-1s,02597"
+    TRANSDUCER_DATA = "SC6-1s,02597"
     TRANSDUCER_MODEL = "sc6-1s"
     ROWS = 4
     COLUMNS = 6
@@ -73,7 +73,7 @@ class TestDicomFileManager:
             'NumberOfFrames': self.NUMBER_OF_FRAMES,
             'ContentDate': self.CONTENT_DATE,
             'ContentTime': self.CONTENT_TIME,
-            'TransducerType': self.TRANSDUCER_TYPE,
+            'TransducerData': self.TRANSDUCER_DATA,
             'Rows': self.ROWS,
             'Columns': self.COLUMNS,
             'BitsAllocated': self.BITS_ALLOCATED,
@@ -208,16 +208,60 @@ class TestDicomFileManager:
         assert manager.next_index == 0
 
     def test_get_transducer_model_valid(self, manager):
-        """Test transducer model extraction with valid input"""
+        """Test transducer model extraction with valid comma-delimited input"""
         assert manager.get_transducer_model("SC6-1s,02597") == "sc6-1s"
         assert manager.get_transducer_model("L12-3,12345") == "l12-3"
         assert manager.get_transducer_model("C1-5") == "c1-5"
+        # Explicit non-Butterfly manufacturer arg should not change behavior
+        assert manager.get_transducer_model("SC6-1s,02597", manufacturer="Philips") == "sc6-1s"
 
     def test_get_transducer_model_invalid(self, manager):
         """Test transducer model extraction with invalid input"""
         assert manager.get_transducer_model("") == "unknown"
         assert manager.get_transducer_model(None) == "unknown"
         assert manager.get_transducer_model("   ") == "unknown"
+
+    def test_get_transducer_model_backslash_format(self, manager):
+        """Test backslash-delimited TransducerData (VR LO native separator)"""
+        assert manager.get_transducer_model("S4-1U\\UNUSED\\UNUSED") == "s4-1u"
+        assert manager.get_transducer_model("L12-3\\UNUSED") == "l12-3"
+
+    def test_get_transducer_model_backslash_multivalue(self, manager):
+        """Test pydicom MultiValue input (auto-split backslash-delimited LO)"""
+        from pydicom.multival import MultiValue
+        mv = MultiValue(str, ["S4-1U", "UNUSED", "UNUSED"])
+        assert manager.get_transducer_model(mv) == "s4-1u"
+
+    def test_get_transducer_model_butterfly_uses_model_name(self, manager):
+        """Test Butterfly manufacturer routes through ManufacturerModelName"""
+        assert manager.get_transducer_model(
+            "", manufacturer="Butterfly Network Inc", manufacturer_model_name="IQ"
+        ) == "iq"
+        # Butterfly branch ignores TransducerData even when present
+        assert manager.get_transducer_model(
+            "IgnoreMe,123", manufacturer="Butterfly Network Inc", manufacturer_model_name="IQ3"
+        ) == "iq3"
+
+    def test_get_transducer_model_butterfly_case_insensitive(self, manager):
+        """Test Butterfly detection is case-insensitive substring match"""
+        assert manager.get_transducer_model(
+            "", manufacturer="butterfly network", manufacturer_model_name="IQ"
+        ) == "iq"
+        assert manager.get_transducer_model(
+            "", manufacturer="BUTTERFLY NETWORK INC", manufacturer_model_name="IQ"
+        ) == "iq"
+        assert manager.get_transducer_model(
+            "", manufacturer="Butterfly Network Inc.", manufacturer_model_name="IQ"
+        ) == "iq"
+
+    def test_get_transducer_model_butterfly_missing_model_name(self, manager):
+        """Test Butterfly without ManufacturerModelName returns 'unknown' (no fallback)"""
+        assert manager.get_transducer_model(
+            "SC6-1s,02597", manufacturer="Butterfly Network Inc", manufacturer_model_name=""
+        ) == "unknown"
+        assert manager.get_transducer_model(
+            "SC6-1s,02597", manufacturer="Butterfly Network Inc", manufacturer_model_name=None
+        ) == "unknown"
 
     def test_get_number_of_instances_empty(self, manager):
         """Test get_number_of_instances with empty dataframe"""
@@ -244,7 +288,7 @@ class TestDicomFileManager:
         assert result['InstanceUID'] == self.SOP_INSTANCE_UID
         assert result['ContentDate'] == self.CONTENT_DATE
         assert result['ContentTime'] == self.CONTENT_TIME
-        assert result['Patch'] == False
+        assert result['Patch'] is False
         assert result['TransducerModel'] == self.TRANSDUCER_MODEL
         assert result['PhysicalDeltaX'] == self.PHYSICAL_DELTA_X
         assert result['PhysicalDeltaY'] == self.PHYSICAL_DELTA_Y
@@ -270,6 +314,21 @@ class TestDicomFileManager:
         result = manager._extract_dicom_info(filepath, self.INPUT_FOLDER, False)
 
         assert result is None
+
+    def test_extract_dicom_info_butterfly(self, manager, temp_dir):
+        """Test Butterfly manufacturer DICOM uses ManufacturerModelName for TransducerModel"""
+        ds = self.create_test_dicom_file(
+            Manufacturer="Butterfly Network Inc",
+            ManufacturerModelName="IQ",
+            TransducerData="",
+        )
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = self.save_dicom_file(ds, temp_dir, filename)
+
+        result = manager._extract_dicom_info(filepath, self.INPUT_FOLDER, False)
+
+        assert result is not None
+        assert result['TransducerModel'] == "iq"
 
     def test_extract_dicom_info_includes_output_path(self, manager, temp_dir):
         # Create a subdirectory structure
@@ -468,7 +527,7 @@ class TestDicomFileManager:
             "Number of Frames": str(self.NUMBER_OF_FRAMES),
             "Content Date": self.CONTENT_DATE,
             "Content Time": self.CONTENT_TIME,
-            "Transducer Type": self.TRANSDUCER_TYPE,
+            "Transducer Data": self.TRANSDUCER_DATA,
             "Rows": self.ROWS,
             "Columns": self.COLUMNS,
             "Bits Allocated": self.BITS_ALLOCATED,
@@ -736,8 +795,8 @@ class TestDicomFileManager:
         assert ds.SOPClassUID == source_ds.SOPClassUID
         assert ds.SOPInstanceUID == source_ds.SOPInstanceUID
         assert ds.StudyInstanceUID == source_ds.StudyInstanceUID
-        # SeriesInstanceUID should always be generated new
-        assert ds.SeriesInstanceUID != source_ds.SeriesInstanceUID
+        # SeriesInstanceUID should now be copied from source
+        assert ds.SeriesInstanceUID == source_ds.SeriesInstanceUID
 
     def test_copy_and_generate_uids_missing_source_uids(self, manager_with_data, temp_dir):
         """Test _copy_and_generate_uids with missing UIDs in source"""
@@ -854,7 +913,7 @@ class TestDicomFileManager:
         assert ds.LossyImageCompression == '01'
         assert ds.LossyImageCompressionMethod == 'ISO_10918_1'
         assert ds['PixelData'].VR == 'OB'
-        assert ds['PixelData'].is_undefined_length == True
+        assert ds['PixelData'].is_undefined_length is True
 
     def test_compress_frame_to_jpeg_2d(self, manager_with_data):
         """Test _compress_frame_to_jpeg with 2D frame"""
@@ -901,7 +960,198 @@ class TestDicomFileManager:
 
         # But these should still be copied
         assert hasattr(ds, 'BitsAllocated')
+        assert hasattr(ds, 'TransducerData')
+
+    def test_copy_source_metadata_preserves_station_name(self, manager_with_data, temp_dir):
+        """StationName (0008,1010) is preserved in the de-id DICOM per institutional workflow"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.StationName = "US_ROOM_3B"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.StationName == "US_ROOM_3B"
+
+    def test_copy_source_metadata_preserves_study_description(self, manager_with_data, temp_dir):
+        """StudyDescription is preserved in the de-id DICOM per institutional workflow"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.StudyDescription = "Patient Jane Doe referred by Dr Smith"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.StudyDescription == "Patient Jane Doe referred by Dr Smith"
+
+    def test_apply_anonymization_caps_patient_age_over_89(self, manager_with_data):
+        """PatientAge >= 90 years is capped at '090Y' per HIPAA Safe Harbor"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "095Y"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "090Y"
+
+    def test_apply_anonymization_caps_patient_age_exactly_90(self, manager_with_data):
+        """PatientAge of exactly 90 years is also capped (boundary)"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "090Y"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "090Y"
+
+    def test_apply_anonymization_preserves_patient_age_under_90(self, manager_with_data):
+        """PatientAge under 90 years passes through unchanged"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "045Y"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "045Y"
+
+    def test_apply_anonymization_preserves_non_year_patient_age(self, manager_with_data):
+        """Non-year PatientAge formats (months, weeks, days) are not affected by the 90Y cap"""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "025M"
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        manager_with_data._apply_anonymization(ds, source_ds)
+        assert ds.PatientAge == "025M"
+
+    def test_cap_patient_age_logs_error_for_invalid_format(self, manager, caplog):
+        """Malformed PatientAge values are logged at ERROR with value + expected format, then passed through"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("25YR")
+
+        assert result == "25YR"
+        assert any("25YR" in r.message for r in caplog.records), "log should include the invalid value"
+        assert any("nnnX" in r.message for r in caplog.records), "log should include the expected format"
+
+    def test_cap_patient_age_logs_error_for_bad_unit(self, manager, caplog):
+        """Values with an invalid unit letter are flagged as errors"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("045X")
+
+        assert result == "045X"
+        assert any("045X" in r.message for r in caplog.records)
+
+    def test_cap_patient_age_logs_error_for_non_digit_prefix(self, manager, caplog):
+        """Values whose prefix isn't three digits are flagged as errors"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("abcY")
+
+        assert result == "abcY"
+        assert any("abcY" in r.message for r in caplog.records)
+
+    def test_cap_patient_age_silent_for_empty(self, manager, caplog):
+        """Empty PatientAge is a valid 'no value' state and should not log an error"""
+        with caplog.at_level(logging.ERROR):
+            result = manager._cap_patient_age("")
+
+        assert result == ""
+        assert len(caplog.records) == 0
+
+    def test_cap_patient_age_silent_for_valid_non_year(self, manager, caplog):
+        """Valid non-year DICOM AS values should not log an error"""
+        with caplog.at_level(logging.ERROR):
+            for value in ("025M", "014D", "003W"):
+                assert manager._cap_patient_age(value) == value
+
+        assert len(caplog.records) == 0
+
+    def test_copy_source_metadata_preserves_transducer_type(self, manager_with_data, temp_dir):
+        """Test TransducerType present in source is preserved in de-id output"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerType = "LINEAR"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerType == "LINEAR"
+
+    def test_copy_source_metadata_blanks_missing_transducer_type(self, manager_with_data, temp_dir):
+        """Test TransducerType is present as empty string when absent in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'TransducerType'):
+            delattr(source_ds, 'TransducerType')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
         assert hasattr(ds, 'TransducerType')
+        assert ds.TransducerType == ""
+
+    def test_copy_source_metadata_blanks_missing_transducer_data(self, manager_with_data, temp_dir):
+        """Test TransducerData is present as empty string when absent in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'TransducerData'):
+            delattr(source_ds, 'TransducerData')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'TransducerData')
+        assert ds.TransducerData == ""
+
+    def test_copy_source_metadata_blanks_missing_manufacturer_model_name(self, manager_with_data, temp_dir):
+        """Test ManufacturerModelName is present as empty string when absent in source"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'ManufacturerModelName'):
+            delattr(source_ds, 'ManufacturerModelName')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'ManufacturerModelName')
+        assert ds.ManufacturerModelName == ""
+
+    def test_copy_source_metadata_preserves_empty_transducer_data(self, manager_with_data, temp_dir):
+        """Test TransducerData empty string in source is preserved as empty in de-id"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = ""
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'TransducerData')
+        assert ds.TransducerData == ""
+
+    def test_copy_source_metadata_preserves_transducer_data_serial(self, manager_with_data, temp_dir):
+        """TransducerData in de-id retains the raw source value, including the serial segment"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "SC6-1s,JK9U41102597"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SC6-1s,JK9U41102597"
+
+    def test_copy_source_metadata_preserves_transducer_data_backslash(self, manager_with_data, temp_dir):
+        """Backslash-delimited TransducerData is preserved element-wise in the de-id DICOM"""
+        from pydicom.multival import MultiValue
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = MultiValue(str, ["S4-1U", "UNUSED", "UNUSED"])
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert list(ds.TransducerData) == ["S4-1U", "UNUSED", "UNUSED"]
+
+    def test_copy_source_metadata_preserves_transducer_data_case(self, manager_with_data, temp_dir):
+        """TransducerData model segment in de-id preserves original case (unlike TransducerModel DataFrame column)"""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "C1-5"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "C1-5"
 
     def test_apply_anonymization_generates_uids_when_none_provided(self, manager_with_data):
         """Test that _apply_anonymization generates UIDs when no patient info provided"""
@@ -1118,9 +1368,9 @@ class TestDicomFileManager:
         assert len(result) == 3
         assert all(isinstance(item, str) for item in result)
 
-    # Test for updated comment in _copy_and_generate_uids (verification that logic still works)
-    def test_copy_and_generate_uids_always_generates_series_uid(self, manager_with_data, temp_dir):
-        """Test that SeriesInstanceUID is always generated (never copied from source)"""
+    # Test that SeriesInstanceUID is now passed through from source
+    def test_copy_and_generate_uids_passes_through_series_uid(self, manager_with_data, temp_dir):
+        """Test that SeriesInstanceUID is copied from source when present"""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
@@ -1129,8 +1379,16 @@ class TestDicomFileManager:
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        # SeriesInstanceUID should always be different from source
-        assert ds.SeriesInstanceUID != original_series_uid
+        assert ds.SeriesInstanceUID == original_series_uid
+
+    def test_copy_and_generate_uids_generates_series_uid_when_missing(self, manager_with_data, temp_dir):
+        """Test that SeriesInstanceUID is freshly generated when source lacks it"""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()  # empty — no SeriesInstanceUID
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
         assert hasattr(ds, 'SeriesInstanceUID')
         assert ds.SeriesInstanceUID != ""
 

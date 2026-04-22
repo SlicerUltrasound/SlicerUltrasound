@@ -153,7 +153,7 @@ python -m auto_anonymize \
 - **Patient name/ID:** Cleared or hashed (SHA-256)
 - **Birth date:** Truncated to year only
 - **Dates:** Randomly shifted ≤30 days (consistent per patient)
-- **UIDs:** Fresh SeriesInstanceUID generated
+- **UIDs:** SOP/Study/SeriesInstanceUID passed through from source when present; fresh UIDs generated only if missing
 - **Encoding:** Re-encoded with JPEG baseline compression
 
 #### Exit Codes
