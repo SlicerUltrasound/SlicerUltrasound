@@ -168,6 +168,29 @@ class DicomFileManager:
         """Get number of instances in dataframe"""
         return len(self.dicom_df) if self.dicom_df is not None else 0
 
+    def build_csv_dataframe(self, input_folder: Optional[str]) -> Optional[pd.DataFrame]:
+        """Return a copy of dicom_df ready to serialize to keys.csv.
+
+        Drops the DICOMDataset column (binary payload, not CSV-serializable) and
+        rewrites InputPath from absolute filepath to relative-to-input_folder.
+        Leaves OutputPath and all other columns untouched.
+
+        Args:
+            input_folder: Root to compute InputPath relative to. If falsy,
+                InputPath is left unchanged (absolute).
+        Returns:
+            DataFrame ready for to_csv(), or None if dicom_df is None or empty.
+        """
+        if self.dicom_df is None or self.dicom_df.empty:
+            return None
+        df = self.dicom_df.drop(columns=['DICOMDataset'], inplace=False, errors='ignore')
+        if input_folder:
+            normed = os.path.normpath(input_folder)
+            df['InputPath'] = df['InputPath'].apply(
+                lambda p: os.path.relpath(p, normed) if isinstance(p, str) and p else p
+            )
+        return df
+
     def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool, hash_patient_id: bool = True) -> Optional[dict]:
         """Extract DICOM information from file
 

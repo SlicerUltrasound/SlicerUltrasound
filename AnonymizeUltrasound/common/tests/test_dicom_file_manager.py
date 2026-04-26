@@ -1676,5 +1676,106 @@ class TestDicomFileManager:
         assert ds.PatientName == ""
         assert ds.PatientID == ""
 
+
+class TestBuildCsvDataframe:
+    """Tests for DicomFileManager.build_csv_dataframe.
+
+    The helper prepares dicom_df for keys.csv serialization: drops the
+    DICOMDataset binary column and rewrites InputPath relative to the given
+    input_folder. Internal dicom_df must NOT be mutated.
+    """
+
+    ROOT = os.path.normpath('/root')
+
+    @pytest.fixture
+    def manager(self):
+        return DicomFileManager()
+
+    def _make_row(self, input_path, output_path='anon.dcm'):
+        return {
+            'InputPath': input_path,
+            'OutputPath': output_path,
+            'AnonFilename': 'anon.dcm',
+            'PatientUID': 'P1',
+            'StudyUID': 'S1',
+            'SeriesUID': 'Se1',
+            'InstanceUID': 'I1',
+            'PhysicalDeltaX': 0.1,
+            'PhysicalDeltaY': 0.1,
+            'ContentDate': '20240101',
+            'ContentTime': '000000',
+            'Patch': False,
+            'TransducerModel': 'tm',
+            'DICOMDataset': object(),
+        }
+
+    def _populate(self, manager, rows):
+        manager.dicom_df = pd.DataFrame(rows, columns=DicomFileManager.DICOM_DATAFRAME_COLUMNS)
+
+    def test_rewrites_input_path_to_relative(self, manager):
+        abs_path = os.path.join(self.ROOT, 'a', 'b', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        assert df.iloc[0]['InputPath'] == os.path.join('a', 'b', 'IM001.dcm')
+
+    def test_preserves_nested_subdirs(self, manager):
+        abs_path = os.path.join(self.ROOT, 'p1', 's1', 'sub', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        assert df.iloc[0]['InputPath'] == os.path.join('p1', 's1', 'sub', 'IM001.dcm')
+
+    def test_drops_dicomdataset_column(self, manager):
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        assert 'DICOMDataset' not in df.columns
+        for col in ('InputPath', 'OutputPath', 'AnonFilename', 'PatientUID'):
+            assert col in df.columns
+
+    def test_preserves_output_path_unchanged(self, manager):
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path, output_path='a/anon_123.dcm')])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        assert df.iloc[0]['OutputPath'] == 'a/anon_123.dcm'
+        assert df.iloc[0]['OutputPath'] == manager.dicom_df.iloc[0]['OutputPath']
+
+    def test_returns_none_for_empty_df(self, manager):
+        manager.dicom_df = pd.DataFrame()
+
+        assert manager.build_csv_dataframe(self.ROOT) is None
+
+    def test_returns_none_when_df_is_none(self, manager):
+        manager.dicom_df = None
+
+        assert manager.build_csv_dataframe(self.ROOT) is None
+
+    def test_no_root_leaves_input_path_absolute(self, manager):
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df_none = manager.build_csv_dataframe(None)
+        df_empty = manager.build_csv_dataframe('')
+
+        assert df_none.iloc[0]['InputPath'] == abs_path
+        assert df_empty.iloc[0]['InputPath'] == abs_path
+
+    def test_handles_trailing_slash_in_input_folder(self, manager):
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df_slash = manager.build_csv_dataframe(self.ROOT + os.sep)
+        df_no_slash = manager.build_csv_dataframe(self.ROOT)
+
+        assert df_slash.iloc[0]['InputPath'] == df_no_slash.iloc[0]['InputPath']
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
