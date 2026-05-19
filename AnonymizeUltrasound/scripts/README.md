@@ -153,7 +153,8 @@ python -m auto_anonymize \
 - **Patient name/ID:** Cleared or hashed (SHA-256)
 - **Birth date:** Truncated to year only
 - **Dates:** Randomly shifted ≤30 days (consistent per patient)
-- **UIDs:** SOP/Study/SeriesInstanceUID passed through from source when present; fresh UIDs generated only if missing
+- **UIDs:** SOP/Study/SeriesInstanceUID are remapped deterministically into the `2.25.` OID arc (`2.25.<int>` derived from SHA-256 of the source UID). The original→anonymized mapping is recorded in `keys.csv` columns `AnonStudyUID`, `AnonSeriesUID`, `AnonSOPInstanceUID`. SOPClassUID is preserved verbatim (it identifies the registered DICOM object type).
+- **TransducerData (0018,5010):** Only the leading model segment is kept (e.g. `SC6-1s,JK9` → `SC6-1s`); vendor serial numbers after the first `,` or `\` are dropped.
 - **Encoding:** Re-encoded with JPEG baseline compression
 
 #### Exit Codes

@@ -13,6 +13,7 @@ import json
 
 # Import the module under test
 from ..dicom_file_manager import DicomFileManager
+from ..uid_remap import remap_uid
 
 class TestDicomFileManager:
     """Test suite for DicomFileManager class"""
@@ -278,7 +279,7 @@ class TestDicomFileManager:
         filename, _, _ = manager.generate_filename_from_dicom_dataset(result['DICOMDataset'])
 
         assert result is not None
-        assert len(result) == 14
+        assert len(result) == 17
         assert result['InputPath'] == sample_dicom_filepath
         assert filename in result['OutputPath']
         assert result['AnonFilename'] == filename
@@ -286,6 +287,9 @@ class TestDicomFileManager:
         assert result['StudyUID'] == self.STUDY_UID
         assert result['SeriesUID'] == self.SERIES_UID
         assert result['InstanceUID'] == self.SOP_INSTANCE_UID
+        assert result['AnonStudyUID'] == remap_uid(self.STUDY_UID)
+        assert result['AnonSeriesUID'] == remap_uid(self.SERIES_UID)
+        assert result['AnonSOPInstanceUID'] == remap_uid(self.SOP_INSTANCE_UID)
         assert result['ContentDate'] == self.CONTENT_DATE
         assert result['ContentTime'] == self.CONTENT_TIME
         assert result['Patch'] is False
@@ -784,33 +788,38 @@ class TestDicomFileManager:
         assert hasattr(ds, 'SeriesInstanceUID')
 
     def test_copy_and_generate_uids_with_source_uids(self, manager_with_data, temp_dir):
-        """Test _copy_and_generate_uids with existing UIDs in source"""
+        """Source instance UIDs are remapped via remap_uid; SOPClassUID stays verbatim."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        # Should copy existing UIDs
+        # SOPClassUID identifies the registered DICOM object type — NOT remapped.
         assert ds.SOPClassUID == source_ds.SOPClassUID
-        assert ds.SOPInstanceUID == source_ds.SOPInstanceUID
-        assert ds.StudyInstanceUID == source_ds.StudyInstanceUID
-        # SeriesInstanceUID should now be copied from source
-        assert ds.SeriesInstanceUID == source_ds.SeriesInstanceUID
+        # Study/Series/SOP Instance UIDs are deterministically remapped.
+        assert ds.SOPInstanceUID == remap_uid(str(source_ds.SOPInstanceUID))
+        assert ds.SeriesInstanceUID == remap_uid(str(source_ds.SeriesInstanceUID))
+        assert ds.StudyInstanceUID == remap_uid(str(source_ds.StudyInstanceUID))
+        # Outputs must live in the 2.25.* arc.
+        assert ds.SOPInstanceUID.startswith("2.25.")
+        assert ds.SeriesInstanceUID.startswith("2.25.")
+        assert ds.StudyInstanceUID.startswith("2.25.")
 
     def test_copy_and_generate_uids_missing_source_uids(self, manager_with_data, temp_dir):
-        """Test _copy_and_generate_uids with missing UIDs in source"""
+        """When source UIDs are missing, instance UIDs land in the 2.25 arc."""
         ds = pydicom.Dataset()
         source_ds = pydicom.Dataset()  # Empty dataset
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        # Should generate new UIDs
+        # SOPClassUID falls back to pydicom-generated; not constrained to 2.25.
         assert hasattr(ds, 'SOPClassUID')
-        assert hasattr(ds, 'SOPInstanceUID')
-        assert hasattr(ds, 'StudyInstanceUID')
-        assert hasattr(ds, 'SeriesInstanceUID')
+        # Study/Series/SOP Instance UIDs are routed through remap_uid even on fallback.
+        assert ds.SOPInstanceUID.startswith("2.25.")
+        assert ds.StudyInstanceUID.startswith("2.25.")
+        assert ds.SeriesInstanceUID.startswith("2.25.")
 
     def test_apply_anonymization_with_new_patient_info(self, manager_with_data):
         """Test _apply_anonymization with new patient information"""
@@ -1119,8 +1128,8 @@ class TestDicomFileManager:
         assert hasattr(ds, 'TransducerData')
         assert ds.TransducerData == ""
 
-    def test_copy_source_metadata_preserves_transducer_data_serial(self, manager_with_data, temp_dir):
-        """TransducerData in de-id retains the raw source value, including the serial segment"""
+    def test_copy_source_metadata_strips_transducer_data_serial(self, manager_with_data, temp_dir):
+        """Comma-delimited TransducerData is trimmed to the leading model segment."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.TransducerData = "SC6-1s,JK9U41102597"
@@ -1128,10 +1137,10 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert ds.TransducerData == "SC6-1s,JK9U41102597"
+        assert ds.TransducerData == "SC6-1s"
 
-    def test_copy_source_metadata_preserves_transducer_data_backslash(self, manager_with_data, temp_dir):
-        """Backslash-delimited TransducerData is preserved element-wise in the de-id DICOM"""
+    def test_copy_source_metadata_strips_transducer_data_backslash(self, manager_with_data, temp_dir):
+        """Backslash-delimited TransducerData (VR LO MultiValue) collapses to the first segment string."""
         from pydicom.multival import MultiValue
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
@@ -1140,10 +1149,10 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert list(ds.TransducerData) == ["S4-1U", "UNUSED", "UNUSED"]
+        assert ds.TransducerData == "S4-1U"
 
     def test_copy_source_metadata_preserves_transducer_data_case(self, manager_with_data, temp_dir):
-        """TransducerData model segment in de-id preserves original case (unlike TransducerModel DataFrame column)"""
+        """A single-segment TransducerData (no delimiter) survives unchanged with original case."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.TransducerData = "C1-5"
@@ -1152,6 +1161,85 @@ class TestDicomFileManager:
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
         assert ds.TransducerData == "C1-5"
+
+    def test_copy_source_metadata_strips_transducer_data_sp5_cb3c(self, manager_with_data, temp_dir):
+        """User example: 'SP5-1s,CB3C' -> 'SP5-1s'."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "SP5-1s,CB3C"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SP5-1s"
+
+    def test_copy_source_metadata_strips_transducer_data_sc6_jk9(self, manager_with_data, temp_dir):
+        """User example: 'SC6-1s,JK9' -> 'SC6-1s'."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "SC6-1s,JK9"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SC6-1s"
+
+    def test_copy_source_metadata_strips_transducer_data_only_delimiters(self, manager_with_data, temp_dir):
+        """Pathological all-delimiter input becomes empty."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "\\\\"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == ""
+
+    def test_copy_source_metadata_strips_transducer_data_with_whitespace(self, manager_with_data, temp_dir):
+        """Internal whitespace around the leading segment is stripped."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = " SC6-1s ,02597"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SC6-1s"
+
+    def test_copy_source_metadata_preserves_manufacturer(self, manager_with_data, temp_dir):
+        """Manufacturer (0008,0070) round-trips verbatim — regression lock."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.Manufacturer = "GE Healthcare"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.Manufacturer == "GE Healthcare"
+
+    def test_copy_source_metadata_preserves_manufacturer_model_name(self, manager_with_data, temp_dir):
+        """ManufacturerModelName (0008,1090) round-trips verbatim — regression lock."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.ManufacturerModelName = "Vivid E95"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.ManufacturerModelName == "Vivid E95"
+
+    def test_copy_source_metadata_preserves_ge_vivid_pair(self, manager_with_data, temp_dir):
+        """Most common GE configuration: both vendor/model survive intact together."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.Manufacturer = "GE Healthcare"
+        source_ds.ManufacturerModelName = "Vivid E95"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.Manufacturer == "GE Healthcare"
+        assert ds.ManufacturerModelName == "Vivid E95"
 
     def test_apply_anonymization_generates_uids_when_none_provided(self, manager_with_data):
         """Test that _apply_anonymization generates UIDs when no patient info provided"""
@@ -1368,9 +1456,8 @@ class TestDicomFileManager:
         assert len(result) == 3
         assert all(isinstance(item, str) for item in result)
 
-    # Test that SeriesInstanceUID is now passed through from source
-    def test_copy_and_generate_uids_passes_through_series_uid(self, manager_with_data, temp_dir):
-        """Test that SeriesInstanceUID is copied from source when present"""
+    def test_copy_and_generate_uids_remaps_series_uid(self, manager_with_data, temp_dir):
+        """SeriesInstanceUID is remapped via remap_uid when source provides one."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
@@ -1379,18 +1466,18 @@ class TestDicomFileManager:
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        assert ds.SeriesInstanceUID == original_series_uid
+        assert ds.SeriesInstanceUID == remap_uid(str(original_series_uid))
+        assert ds.SeriesInstanceUID != original_series_uid
 
     def test_copy_and_generate_uids_generates_series_uid_when_missing(self, manager_with_data, temp_dir):
-        """Test that SeriesInstanceUID is freshly generated when source lacks it"""
+        """When SeriesInstanceUID is missing, the fallback still lands in the 2.25 arc."""
         ds = pydicom.Dataset()
         source_ds = pydicom.Dataset()  # empty — no SeriesInstanceUID
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        assert hasattr(ds, 'SeriesInstanceUID')
-        assert ds.SeriesInstanceUID != ""
+        assert ds.SeriesInstanceUID.startswith("2.25.")
 
     @patch('pydicom.dataset.FileDataset.save_as')
     def test_create_and_save_dicom_file(self, mock_save_as, manager_with_data, temp_dir):
@@ -1700,6 +1787,9 @@ class TestBuildCsvDataframe:
             'StudyUID': 'S1',
             'SeriesUID': 'Se1',
             'InstanceUID': 'I1',
+            'AnonStudyUID': '2.25.111',
+            'AnonSeriesUID': '2.25.222',
+            'AnonSOPInstanceUID': '2.25.333',
             'PhysicalDeltaX': 0.1,
             'PhysicalDeltaY': 0.1,
             'ContentDate': '20240101',
@@ -1775,6 +1865,30 @@ class TestBuildCsvDataframe:
         df_no_slash = manager.build_csv_dataframe(self.ROOT)
 
         assert df_slash.iloc[0]['InputPath'] == df_no_slash.iloc[0]['InputPath']
+
+    def test_anon_uid_columns_pass_through_unchanged(self, manager):
+        """Anon* UID columns are persisted verbatim — not subject to the InputPath relative rewrite."""
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        assert 'AnonStudyUID' in df.columns
+        assert 'AnonSeriesUID' in df.columns
+        assert 'AnonSOPInstanceUID' in df.columns
+        assert df.iloc[0]['AnonStudyUID'] == '2.25.111'
+        assert df.iloc[0]['AnonSeriesUID'] == '2.25.222'
+        assert df.iloc[0]['AnonSOPInstanceUID'] == '2.25.333'
+
+    def test_dataframe_columns_match_constant_ordering(self, manager):
+        """build_csv_dataframe preserves DICOM_DATAFRAME_COLUMNS ordering minus DICOMDataset."""
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        expected = [c for c in DicomFileManager.DICOM_DATAFRAME_COLUMNS if c != 'DICOMDataset']
+        assert list(df.columns) == expected
 
 
 if __name__ == "__main__":

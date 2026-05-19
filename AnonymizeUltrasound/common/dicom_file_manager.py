@@ -12,6 +12,7 @@ import datetime
 import json
 from pydicom.dataset import FileMetaDataset
 from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
+from .uid_remap import remap_uid
 
 
 class DicomFileManager:
@@ -74,6 +75,9 @@ class DicomFileManager:
         'StudyUID',
         'SeriesUID',
         'InstanceUID',
+        'AnonStudyUID',
+        'AnonSeriesUID',
+        'AnonSOPInstanceUID',
         'PhysicalDeltaX',
         'PhysicalDeltaY',
         'ContentDate',
@@ -253,6 +257,9 @@ class DicomFileManager:
                 'StudyUID': study_uid,
                 'SeriesUID': series_uid,
                 'InstanceUID': instance_uid,
+                'AnonStudyUID': remap_uid(str(study_uid)) if study_uid else '',
+                'AnonSeriesUID': remap_uid(str(series_uid)) if series_uid else '',
+                'AnonSOPInstanceUID': remap_uid(str(instance_uid)) if instance_uid else '',
                 'PhysicalDeltaX': physical_delta_x,
                 'PhysicalDeltaY': physical_delta_y,
                 'ContentDate': content_date,
@@ -594,13 +601,21 @@ class DicomFileManager:
             ds.PixelSpacing = [f"{delta_x_mm:.14f}", f"{delta_y_mm:.14f}"]
 
     def _copy_source_metadata(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, output_path: str) -> None:
-        """Copy metadata from source dataset."""
+        """Copy metadata from source dataset.
+
+        TransducerData is reduced to its leading model segment (e.g. "SC6-1s")
+        so vendor serial numbers do not leak via 0018,5010. TransducerType and
+        ManufacturerModelName are preserved verbatim — downstream tooling and
+        Butterfly Network device routing depend on those exact values.
+        """
         for tag in self.DICOM_TAGS_TO_COPY:
             if hasattr(source_ds, tag):
                 setattr(ds, tag, getattr(source_ds, tag))
 
         for tag in self.DICOM_TAGS_PRESERVE_OR_BLANK:
             value = getattr(source_ds, tag, '') or ''
+            if tag == 'TransducerData':
+                value = self._first_transducer_segment(value)
             setattr(ds, tag, value)
 
         # Handle UIDs
@@ -610,36 +625,26 @@ class DicomFileManager:
         ds.SeriesNumber = self._get_series_number_for_current_instance()
 
     def _copy_and_generate_uids(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, output_path: str) -> None:
-        """Copy or generate required UIDs."""
-        # Copy or generate SOPClassUID
+        """Remap instance UIDs deterministically; preserve SOPClassUID verbatim.
+
+        SOPClassUID identifies the registered DICOM object type (e.g. Ultrasound
+        Multi-frame Image Storage) and must NOT be remapped. Study, Series, and
+        SOP Instance UIDs are routed through remap_uid so the de-id output sits
+        in the 2.25 OID arc and original UIDs do not leak.
+        """
         if hasattr(source_ds, 'SOPClassUID') and source_ds.SOPClassUID:
             ds.SOPClassUID = source_ds.SOPClassUID
         else:
             logging.error(f"SOPClassUID not found. Generating new one for {output_path}")
             ds.SOPClassUID = pydicom.uid.generate_uid()
 
-        # Copy or generate SOPInstanceUID
-        if hasattr(source_ds, 'SOPInstanceUID') and source_ds.SOPInstanceUID:
-            ds.SOPInstanceUID = source_ds.SOPInstanceUID
-        else:
-            logging.error(f"SOPInstanceUID not found. Generating new one for {output_path}")
-            ds.SOPInstanceUID = pydicom.uid.generate_uid()
-
-        # Copy or generate SeriesInstanceUID. Pass-through preserves series-level
-        # linkage between source and de-id outputs; callers must accept that
-        # ultrasound-machine UID reuse may cause viewer collisions downstream.
-        if hasattr(source_ds, 'SeriesInstanceUID') and source_ds.SeriesInstanceUID:
-            ds.SeriesInstanceUID = source_ds.SeriesInstanceUID
-        else:
-            logging.error(f"SeriesInstanceUID not found. Generating new one for {output_path}")
-            ds.SeriesInstanceUID = pydicom.uid.generate_uid()
-
-        # Copy or generate StudyInstanceUID
-        if hasattr(source_ds, 'StudyInstanceUID') and source_ds.StudyInstanceUID:
-            ds.StudyInstanceUID = source_ds.StudyInstanceUID
-        else:
-            logging.error(f"StudyInstanceUID not found. Generating new one for {output_path}")
-            ds.StudyInstanceUID = pydicom.uid.generate_uid()
+        for attr in ('SOPInstanceUID', 'SeriesInstanceUID', 'StudyInstanceUID'):
+            src_val = getattr(source_ds, attr, None)
+            if src_val:
+                setattr(ds, attr, remap_uid(str(src_val)))
+            else:
+                logging.error(f"{attr} not found. Generating new one for {output_path}")
+                setattr(ds, attr, remap_uid(pydicom.uid.generate_uid()))
 
     def _apply_anonymization(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
                             new_patient_name: str = "", new_patient_id: str = "") -> None:
