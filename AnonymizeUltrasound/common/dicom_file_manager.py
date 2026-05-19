@@ -631,6 +631,12 @@ class DicomFileManager:
         Multi-frame Image Storage) and must NOT be remapped. Study, Series, and
         SOP Instance UIDs are routed through remap_uid so the de-id output sits
         in the 2.25 OID arc and original UIDs do not leak.
+
+        FrameOfReferenceUID is remapped (not generated) when present so spatial
+        linkage between de-id'd datasets in 3D/4D ultrasound and registration
+        workflows is preserved. When the source lacks it, the output is left
+        without one — inventing a synthetic frame UID would falsely link
+        otherwise-unrelated datasets.
         """
         if hasattr(source_ds, 'SOPClassUID') and source_ds.SOPClassUID:
             ds.SOPClassUID = source_ds.SOPClassUID
@@ -646,6 +652,11 @@ class DicomFileManager:
                 logging.error(f"{attr} not found. Generating new one for {output_path}")
                 setattr(ds, attr, remap_uid(pydicom.uid.generate_uid()))
 
+        # FrameOfReferenceUID is conditional: remap if present, omit otherwise.
+        src_for_uid = getattr(source_ds, 'FrameOfReferenceUID', None)
+        if src_for_uid:
+            ds.FrameOfReferenceUID = remap_uid(str(src_for_uid))
+
     def _apply_anonymization(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
                             new_patient_name: str = "", new_patient_id: str = "") -> None:
         """Apply anonymization including patient info and date shifting."""
@@ -656,9 +667,15 @@ class DicomFileManager:
         ds.ReferringPhysicianName = ""
         ds.AccessionNumber = ""
 
-        # HIPAA Safe Harbor: aggregate ages >89 years to "090Y".
-        if hasattr(ds, 'PatientAge'):
+        # HIPAA Safe Harbor: aggregate ages >89 years to "090Y". When the
+        # source has no PatientAge, derive it from StudyDate - PatientBirthDate
+        # so the demographic survives de-id when only PatientBirthDate was set.
+        if hasattr(ds, 'PatientAge') and ds.PatientAge:
             ds.PatientAge = self._cap_patient_age(ds.PatientAge)
+        else:
+            computed = self._compute_patient_age_from_birthdate(source_ds)
+            if computed is not None:
+                ds.PatientAge = computed
 
         # Apply date shifting for anonymization
         self._apply_date_shifting(ds, source_ds)
@@ -692,6 +709,54 @@ class DicomFileManager:
 
         years = int(age_str[:3])
         return '090Y' if years >= 90 else age_str
+
+    def _compute_patient_age_from_birthdate(self, source_ds: pydicom.Dataset) -> Optional[str]:
+        """Compute DICOM AS PatientAge from source StudyDate - PatientBirthDate.
+
+        Used only when the source dataset has no PatientAge — trusts the source
+        value when present. Returns ``None`` (and logs a warning) if the math
+        can't be performed: missing/empty dates, malformed dates, or a birth
+        date after the study date. Output units are picked by the magnitude of
+        the delta to keep the value clinically meaningful:
+
+        * ``< 31 days``  -> ``nnnD``
+        * ``< 365 days`` -> ``nnnM`` using 30.4375 days/month
+        * else           -> ``nnnY`` using 365.25 days/year, capped at ``090Y``
+          per HIPAA Safe Harbor §164.514(b)(2)(i)(C).
+        """
+        study_date_str = getattr(source_ds, 'StudyDate', None)
+        birth_date_str = getattr(source_ds, 'PatientBirthDate', None)
+        if not study_date_str or not birth_date_str:
+            logging.warning(
+                "PatientAge not set: source has no usable PatientBirthDate+StudyDate"
+            )
+            return None
+
+        try:
+            study_date = datetime.datetime.strptime(str(study_date_str), "%Y%m%d")
+            birth_date = datetime.datetime.strptime(str(birth_date_str), "%Y%m%d")
+        except ValueError:
+            logging.warning(
+                f"PatientAge not set: could not parse PatientBirthDate={birth_date_str!r} "
+                f"or StudyDate={study_date_str!r} as %Y%m%d"
+            )
+            return None
+
+        if study_date < birth_date:
+            logging.warning(
+                "PatientAge not set: PatientBirthDate is after StudyDate "
+                f"(birth={birth_date_str}, study={study_date_str})"
+            )
+            return None
+
+        delta_days = (study_date - birth_date).days
+        if delta_days < 31:
+            return f"{delta_days:03d}D"
+        if delta_days < 365:
+            months = int(delta_days // 30.4375)
+            return f"{months:03d}M"
+        years = int(delta_days // 365.25)
+        return '090Y' if years >= 90 else f"{years:03d}Y"
 
     def _shift_date(self, date_str: str, offset: int) -> str:
         """Shift a single date by the given offset."""

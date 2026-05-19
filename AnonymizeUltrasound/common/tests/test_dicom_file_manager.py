@@ -1066,6 +1066,214 @@ class TestDicomFileManager:
 
         assert len(caplog.records) == 0
 
+    def test_copy_and_generate_uids_remaps_frame_of_reference_uid(self, manager_with_data, temp_dir):
+        """FrameOfReferenceUID present in source is remapped via remap_uid (PS3.15 E.1.1 action U)."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID == remap_uid("1.2.840.113619.2.1.99")
+        assert ds.FrameOfReferenceUID.startswith("2.25.")
+
+    def test_copy_and_generate_uids_frame_of_reference_remap_deterministic(self, manager_with_data, temp_dir):
+        """Same source FrameOfReferenceUID yields the same remapped output (cross-dataset linkage)."""
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        ds_a = pydicom.Dataset()
+        ds_b = pydicom.Dataset()
+        manager_with_data._copy_and_generate_uids(ds_a, source_ds, output_path)
+        manager_with_data._copy_and_generate_uids(ds_b, source_ds, output_path)
+
+        assert ds_a.FrameOfReferenceUID == ds_b.FrameOfReferenceUID
+
+    def test_copy_and_generate_uids_omits_frame_of_reference_when_source_lacks_it(
+        self, manager_with_data, temp_dir
+    ):
+        """When the source has no FrameOfReferenceUID, the output must not invent one."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'FrameOfReferenceUID'):
+            delattr(source_ds, 'FrameOfReferenceUID')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert not hasattr(ds, 'FrameOfReferenceUID')
+
+    def test_copy_and_generate_uids_does_not_copy_frame_of_reference_verbatim(
+        self, manager_with_data, temp_dir
+    ):
+        """Leakage guard: source FrameOfReferenceUID never appears verbatim in the de-id output."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID != "1.2.840.113619.2.1.99"
+
+    def test_apply_anonymization_computes_age_in_years_from_birthdate(self, manager_with_data):
+        """When source has BirthDate+StudyDate but no PatientAge, age is computed in years."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19800101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "040Y"
+
+    def test_apply_anonymization_computes_age_in_months_for_infant(self, manager_with_data):
+        """Infant age (>=31 days, <365) is computed in months using 30.4375 days/month."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "20191215"
+        source_ds.StudyDate = "20200615"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "006M"
+
+    def test_apply_anonymization_computes_age_in_days_for_newborn(self, manager_with_data):
+        """Newborn age (<31 days) is computed in days, zero-padded to three digits."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "20200115"
+        source_ds.StudyDate = "20200125"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "010D"
+
+    def test_apply_anonymization_computed_age_capped_at_90y(self, manager_with_data):
+        """Computed age >= 90 years is capped at '090Y' per HIPAA Safe Harbor."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19200101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "090Y"
+
+    def test_apply_anonymization_preserves_existing_patient_age_does_not_recompute(
+        self, manager_with_data
+    ):
+        """Source PatientAge wins over a (different) BirthDate-derived value — no overwrite."""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "045Y"
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19500101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "045Y"
+
+    def test_apply_anonymization_missing_birthdate_no_age_set_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """With no PatientAge and no BirthDate, PatientAge is left absent and a warning is logged."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.StudyDate = "20200101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message for r in caplog.records)
+
+    def test_apply_anonymization_missing_studydate_no_age_set_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """With no PatientAge and no StudyDate, PatientAge is left absent and a warning is logged."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19800101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message for r in caplog.records)
+
+    def test_apply_anonymization_birthdate_after_studydate_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """If BirthDate is after StudyDate (data error), no age is set and a warning is logged."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "20200101"
+        source_ds.StudyDate = "20190101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message or "BirthDate" in r.message
+                   for r in caplog.records)
+
+    def test_apply_anonymization_malformed_birthdate_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """A non-parseable BirthDate yields no PatientAge and logs a warning (not an error)."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "BADDATE"
+        source_ds.StudyDate = "20200101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message or "BirthDate" in r.message
+                   for r in caplog.records)
+
+    def test_apply_anonymization_empty_birthdate_no_age_set_no_error(
+        self, manager_with_data, caplog
+    ):
+        """Empty BirthDate is a valid 'no value' state — no age set, no ERROR-level log."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = ""
+        source_ds.StudyDate = "20200101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert all(r.levelno < logging.ERROR for r in caplog.records)
+
+    def test_apply_anonymization_clears_birthdate_when_age_computed(self, manager_with_data):
+        """PatientBirthDate is still cleared to '' even when PatientAge is computed from it."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19800101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientBirthDate == ""
+        assert ds.PatientAge == "040Y"
+
     def test_copy_source_metadata_preserves_transducer_type(self, manager_with_data, temp_dir):
         """Test TransducerType present in source is preserved in de-id output"""
         ds = pydicom.Dataset()
