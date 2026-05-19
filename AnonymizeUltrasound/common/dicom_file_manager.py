@@ -78,6 +78,8 @@ class DicomFileManager:
         'AnonStudyUID',
         'AnonSeriesUID',
         'AnonSOPInstanceUID',
+        'FrameOfReferenceUID',
+        'AnonFrameOfReferenceUID',
         'PhysicalDeltaX',
         'PhysicalDeltaY',
         'ContentDate',
@@ -97,6 +99,10 @@ class DicomFileManager:
         self.input_folder = None
         self.next_index = 0
         self.current_index = 0
+        # Maps (source StudyInstanceUID, source FrameOfReferenceUID) → run-local
+        # anonymized FOR UID. Populated by _populate_anon_for_column or seeded
+        # from a prior export's keys.csv via _seed_for_map_from_keys_csv.
+        self._for_map: dict[tuple[str, str], str] = {}
 
     def _first_transducer_segment(self, raw) -> str:
         """Return the first segment of a TransducerData-like value with case preserved.
@@ -135,7 +141,9 @@ class DicomFileManager:
         segment = self._first_transducer_segment(raw)
         return segment.lower() if segment else 'unknown'
 
-    def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
+    def scan_directory(self, input_folder: str, skip_single_frame: bool = False,
+                       hash_patient_id: bool = True,
+                       seed_keys_csv: Optional[str] = None) -> int:
         """
         Scan directory for DICOM files and create dataframe
 
@@ -143,11 +151,19 @@ class DicomFileManager:
             input_folder: Directory to scan
             skip_single_frame: Skip single frame DICOM files (AnonymizeUltrasound)
             hash_patient_id: If True, hash the patient ID
+            seed_keys_csv: Optional path to a prior export's keys.csv. When
+                provided, the (StudyUID, source FOR) → AnonFrameOfReferenceUID
+                mapping from that file pre-populates self._for_map so a resumed
+                export reuses the same anon FOR UIDs as the prior partial run.
 
         Returns:
             Number of DICOM files found
         """
         dicom_data = []
+
+        # Seed _for_map BEFORE _create_dataframe assigns the column, so seeded
+        # mappings are consulted instead of regenerated.
+        self._seed_for_map_from_keys_csv(seed_keys_csv)
 
         for root, dirs, files in os.walk(input_folder):
             # Sort to ensure consistent processing order
@@ -167,6 +183,34 @@ class DicomFileManager:
         self._create_dataframe(dicom_data)
 
         return len(self.dicom_df) if self.dicom_df is not None else 0
+
+    def _seed_for_map_from_keys_csv(self, path: Optional[str]) -> None:
+        """Pre-populate self._for_map from an existing export's keys.csv.
+
+        Enables resume safety: skipped + newly written files in a resumed export
+        share one (StudyUID, source FOR) → AnonFrameOfReferenceUID mapping.
+        Silently no-ops if path is None/empty/missing or the keys.csv lacks the
+        FrameOfReferenceUID / AnonFrameOfReferenceUID columns (older export
+        pre-dating this change). Existing entries in self._for_map are not
+        overwritten — first-seen wins (use setdefault).
+        """
+        if not path or not os.path.exists(path):
+            return
+        prior = pd.read_csv(path, dtype=str).fillna('')
+        required = {'StudyUID', 'FrameOfReferenceUID', 'AnonFrameOfReferenceUID'}
+        if not required.issubset(prior.columns):
+            return
+        for _, row in prior.iterrows():
+            study = row['StudyUID']
+            source_for = row['FrameOfReferenceUID']
+            anon = row['AnonFrameOfReferenceUID']
+            if not (study and anon):
+                continue
+            if source_for:
+                key = (study, source_for)
+            else:
+                key = (study, f":SeriesUID:{row.get('SeriesUID', '')}")
+            self._for_map.setdefault(key, anon)
 
     def get_number_of_instances(self) -> int:
         """Get number of instances in dataframe"""
@@ -260,6 +304,7 @@ class DicomFileManager:
                 'AnonStudyUID': remap_uid(str(study_uid)) if study_uid else '',
                 'AnonSeriesUID': remap_uid(str(series_uid)) if series_uid else '',
                 'AnonSOPInstanceUID': remap_uid(str(instance_uid)) if instance_uid else '',
+                'FrameOfReferenceUID': getattr(dicom_ds, 'FrameOfReferenceUID', ''),
                 'PhysicalDeltaX': physical_delta_x,
                 'PhysicalDeltaY': physical_delta_y,
                 'ContentDate': content_date,
@@ -375,7 +420,41 @@ class DicomFileManager:
                                        .groupby('StudyUID')[spacing_cols]
                                        .transform(lambda x: x.ffill().bfill()))
 
+        # Populate AnonFrameOfReferenceUID per (StudyUID, source FOR) group using
+        # the run-local _for_map (possibly seeded from a prior keys.csv).
+        self._populate_anon_for_column()
+
         self.next_index = 0
+
+    def _populate_anon_for_column(self) -> None:
+        """Assign AnonFrameOfReferenceUID per (StudyUID, source FrameOfReferenceUID) group.
+
+        Uses self._for_map as the source of truth. Reuses entries already in the
+        map (populated by _seed_for_map_from_keys_csv on resume). Generates fresh
+        pydicom.uid.generate_uid(prefix=None) values for new groups, yielding
+        run-local 2.25-arc UIDs.
+
+        For rows whose source dataset lacks a FrameOfReferenceUID, the mapping
+        key falls back to (StudyUID, ":SeriesUID:" + SeriesUID) so coordinate-less
+        series within one study are NOT falsely linked to one another. Real DICOM
+        UIDs contain only digits and dots, so the ":SeriesUID:" infix cannot
+        collide with a real-FOR-derived key.
+        """
+        if self.dicom_df is None or self.dicom_df.empty:
+            return
+
+        def assign(row):
+            study = str(row['StudyUID'])
+            source_for = str(row.get('FrameOfReferenceUID') or '')
+            if source_for:
+                key = (study, source_for)
+            else:
+                key = (study, f":SeriesUID:{row['SeriesUID']}")
+            if key not in self._for_map:
+                self._for_map[key] = pydicom.uid.generate_uid(prefix=None)
+            return self._for_map[key]
+
+        self.dicom_df['AnonFrameOfReferenceUID'] = self.dicom_df.apply(assign, axis=1)
 
     def update_progress_from_output(self, output_directory: str, preserve_directory_structure: bool) -> Optional[int]:
         """Update progress based on existing output files
@@ -625,19 +704,36 @@ class DicomFileManager:
         ds.SeriesNumber = self._get_series_number_for_current_instance()
 
     def _copy_and_generate_uids(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, output_path: str) -> None:
-        """Remap instance UIDs deterministically; preserve SOPClassUID verbatim.
+        """Remap instance UIDs deterministically; assign a run-local per-study FOR UID.
 
         SOPClassUID identifies the registered DICOM object type (e.g. Ultrasound
         Multi-frame Image Storage) and must NOT be remapped. Study, Series, and
         SOP Instance UIDs are routed through remap_uid so the de-id output sits
         in the 2.25 OID arc and original UIDs do not leak.
 
-        FrameOfReferenceUID is regenerated from the already-remapped
-        SeriesInstanceUID. The source FOR UID is never read: copying or hashing
-        it would let recipients cluster de-id'd studies that shared a coordinate
-        system. Deriving from ds.SeriesInstanceUID keeps all instances in the
-        same de-id'd series sharing one coordinate UID (Type 1/1C compliance for
-        US IODs and intra-series spatial linkage) without leaking the source.
+        FrameOfReferenceUID is assigned per (source StudyInstanceUID, source
+        FrameOfReferenceUID) group and is generated run-locally — two separate
+        de-id runs over the same source data produce different output FORs, so
+        recipients cannot cluster de-id'd studies across exports. Within a single
+        run, two source series in one study that legitimately shared a FOR UID
+        get the SAME output FOR UID so downstream multi-series registration /
+        volumetric fusion keeps working. Coordinate-less source series within
+        one study get distinct output FOR UIDs (no false linkage).
+
+        Resume contract: when scan_directory is called with seed_keys_csv, the
+        prior export's (StudyUID, source FOR) → AnonFrameOfReferenceUID rows
+        seed self._for_map, so a resumed export reuses the prior anon FORs for
+        already-written files while minting fresh ones for new pairs.
+
+        Three-tier read path for the output FOR UID:
+          1. Primary — self.dicom_df.iloc[current_index]['AnonFrameOfReferenceUID']
+             (the precomputed column populated by _populate_anon_for_column).
+          2. Fallback — self._for_map.get((StudyUID, source FOR or
+             ":SeriesUID:<series>" sentinel)). Used by direct callers that
+             bypass scan_directory.
+          3. Last resort — mint a fresh pydicom.uid.generate_uid(prefix=None)
+             and log an error (indicates a bug; should not happen in normal
+             scan_directory flows).
         """
         if hasattr(source_ds, 'SOPClassUID') and source_ds.SOPClassUID:
             ds.SOPClassUID = source_ds.SOPClassUID
@@ -653,7 +749,40 @@ class DicomFileManager:
                 logging.error(f"{attr} not found. Generating new one for {output_path}")
                 setattr(ds, attr, remap_uid(pydicom.uid.generate_uid()))
 
-        ds.FrameOfReferenceUID = remap_uid(str(ds.SeriesInstanceUID))
+        ds.FrameOfReferenceUID = self._resolve_anon_for_uid(source_ds, output_path)
+
+    def _resolve_anon_for_uid(self, source_ds: pydicom.Dataset, output_path: str) -> str:
+        """Resolve the anonymized FOR UID via the three-tier read path.
+
+        See _copy_and_generate_uids docstring for the policy. Split out so the
+        read logic is exercised in isolation by the plumbing unit tests.
+        """
+        # Tier 1: dataframe column.
+        if (self.dicom_df is not None
+                and 0 <= self.current_index < len(self.dicom_df)
+                and 'AnonFrameOfReferenceUID' in self.dicom_df.columns):
+            candidate = self.dicom_df.iloc[self.current_index]['AnonFrameOfReferenceUID']
+            if candidate:
+                return str(candidate)
+
+        # Tier 2: in-memory map keyed by source (StudyUID, FOR).
+        study_uid = getattr(source_ds, 'StudyInstanceUID', None)
+        source_for = getattr(source_ds, 'FrameOfReferenceUID', '') or ''
+        if study_uid:
+            if source_for:
+                key = (str(study_uid), source_for)
+            else:
+                key = (str(study_uid),
+                       f":SeriesUID:{getattr(source_ds, 'SeriesInstanceUID', '')}")
+            mapped = self._for_map.get(key)
+            if mapped:
+                return mapped
+
+        # Tier 3: mint and log error — should not happen in normal flows.
+        logging.error(
+            f"AnonFrameOfReferenceUID not available; generating fallback for {output_path}"
+        )
+        return pydicom.uid.generate_uid(prefix=None)
 
     def _apply_anonymization(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
                             new_patient_name: str = "", new_patient_id: str = "") -> None:

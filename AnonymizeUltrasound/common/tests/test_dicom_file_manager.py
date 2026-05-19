@@ -172,10 +172,14 @@ class TestDicomFileManager:
         """Create a single-frame grayscale image array for testing (frames, height, width, channels)"""
         return np.random.randint(0, 255, (1, 10, 15, 1), dtype=np.uint8)
 
+    SOURCE_FOR_UID = "1.2.840.113619.2.1.1234"
+    ANON_FOR_UID = "2.25.123456789012345678901234567890"
+
     @pytest.fixture
     def manager_with_data(self, manager, temp_dir):
         """Create a manager with sample DICOM dataframe"""
         ds = self.create_test_dicom_file()
+        ds.FrameOfReferenceUID = self.SOURCE_FOR_UID
         filename = manager._generate_filename_from_dicom(ds)
         filepath = self.save_dicom_file(ds, temp_dir, filename)
 
@@ -190,6 +194,8 @@ class TestDicomFileManager:
             'SeriesUID': self.SERIES_UID,
             'SeriesDate': self.CONTENT_DATE,
             'InstanceUID': self.SOP_INSTANCE_UID,
+            'FrameOfReferenceUID': self.SOURCE_FOR_UID,
+            'AnonFrameOfReferenceUID': self.ANON_FOR_UID,
             'PhysicalDeltaX': self.PHYSICAL_DELTA_X,
             'PhysicalDeltaY': self.PHYSICAL_DELTA_Y,
             'ContentDate': self.CONTENT_DATE,
@@ -200,6 +206,9 @@ class TestDicomFileManager:
         }]
 
         manager._create_dataframe(dicom_data)
+        # Seed the in-memory map so direct _copy_and_generate_uids calls hit
+        # either the dataframe-column path or the _for_map fallback.
+        manager._for_map[(self.STUDY_UID, self.SOURCE_FOR_UID)] = self.ANON_FOR_UID
         manager.current_index = 0
         return manager
 
@@ -279,7 +288,7 @@ class TestDicomFileManager:
         filename, _, _ = manager.generate_filename_from_dicom_dataset(result['DICOMDataset'])
 
         assert result is not None
-        assert len(result) == 17
+        assert len(result) == 18
         assert result['InputPath'] == sample_dicom_filepath
         assert filename in result['OutputPath']
         assert result['AnonFilename'] == filename
@@ -1070,11 +1079,17 @@ class TestDicomFileManager:
         self, manager_with_data, temp_dir
     ):
         """Leakage guard: source FrameOfReferenceUID never appears in the output,
-        neither verbatim nor as its remap_uid hash. Hashed leakage would still let
-        recipients cluster de-id'd studies that shared a coordinate system."""
+        neither verbatim nor as its remap_uid hash. Under the run-local policy
+        the output FOR is a freshly minted 2.25 UID with no derivation from the
+        source value, so both inequality checks must hold."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        # _for_map has the test fixture's source FOR; this test uses a different
+        # one, so _copy_and_generate_uids must mint or look up by the new key.
+        manager_with_data._for_map[
+            (str(source_ds.StudyInstanceUID), "1.2.840.113619.2.1.99")
+        ] = "2.25.999999999999999999999999999"
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
@@ -1082,52 +1097,13 @@ class TestDicomFileManager:
         assert ds.FrameOfReferenceUID != "1.2.840.113619.2.1.99"
         assert ds.FrameOfReferenceUID != remap_uid("1.2.840.113619.2.1.99")
 
-    def test_copy_and_generate_uids_frame_of_reference_derived_from_remapped_series_uid(
-        self, manager_with_data, temp_dir
-    ):
-        """FrameOfReferenceUID is regenerated from the already-remapped SeriesInstanceUID.
-
-        The source FOR UID is never read; the new FOR UID is remap_uid(ds.SeriesInstanceUID),
-        keeping all instances in the same de-id'd series sharing one coordinate UID.
-        """
-        ds = pydicom.Dataset()
-        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
-        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
-        output_path = os.path.join(temp_dir, "test.dcm")
-
-        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
-
-        assert ds.FrameOfReferenceUID == remap_uid(str(ds.SeriesInstanceUID))
-        assert ds.FrameOfReferenceUID.startswith("2.25.")
-
-    def test_copy_and_generate_uids_frame_of_reference_independent_of_source_for_uid(
-        self, manager_with_data, temp_dir
-    ):
-        """Two different source FOR UIDs on the same series produce identical output FOR UIDs.
-
-        Proves the new FOR UID depends only on the remapped series UID and not at all
-        on source.FrameOfReferenceUID — the privacy guarantee.
-        """
-        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
-        output_path = os.path.join(temp_dir, "test.dcm")
-
-        ds_a = pydicom.Dataset()
-        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
-        manager_with_data._copy_and_generate_uids(ds_a, source_ds, output_path)
-
-        ds_b = pydicom.Dataset()
-        source_ds.FrameOfReferenceUID = "1.2.276.0.7230010.3.1.4.99999"
-        manager_with_data._copy_and_generate_uids(ds_b, source_ds, output_path)
-
-        assert ds_a.FrameOfReferenceUID == ds_b.FrameOfReferenceUID
-
     def test_copy_and_generate_uids_frame_of_reference_set_even_when_source_lacks_it(
         self, manager_with_data, temp_dir
     ):
         """FrameOfReferenceUID is Type 1/1C required for US IODs.
 
-        Even when source lacks one, the output must have one — derived from the
-        remapped SeriesInstanceUID so it still lives in the 2.25 arc.
+        Even when source lacks one, the output must have one — and it must live
+        in the 2.25 arc. The fallback minting path takes over in this branch.
         """
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
@@ -1141,38 +1117,464 @@ class TestDicomFileManager:
         assert ds.FrameOfReferenceUID
         assert ds.FrameOfReferenceUID.startswith("2.25.")
 
-    def test_copy_and_generate_uids_frame_of_reference_shared_within_series(
+    # ----------------------------------------------------------------------
+    # New integration tests for the run-local per-study FOR UID policy.
+    # ----------------------------------------------------------------------
+
+    def _make_source_dicom(self, temp_dir, subdir, *, sop_instance_uid,
+                           series_instance_uid, study_instance_uid,
+                           frame_of_reference_uid=None, patient_id=None):
+        """Build and save a small DICOM with controllable UIDs for FOR tests."""
+        kwargs = {
+            'SOPInstanceUID': sop_instance_uid,
+            'SeriesInstanceUID': series_instance_uid,
+            'StudyInstanceUID': study_instance_uid,
+        }
+        if patient_id is not None:
+            kwargs['PatientID'] = patient_id
+        ds = self.create_test_dicom_file(**kwargs)
+        if frame_of_reference_uid is not None:
+            ds.FrameOfReferenceUID = frame_of_reference_uid
+        elif hasattr(ds, 'FrameOfReferenceUID'):
+            delattr(ds, 'FrameOfReferenceUID')
+        nested = os.path.join(temp_dir, subdir)
+        os.makedirs(nested, exist_ok=True)
+        # Use a deterministic distinct filename per instance so files don't clobber.
+        filename = f"{sop_instance_uid.replace('.', '_')}.dcm"
+        return self.save_dicom_file(ds, nested, filename)
+
+    def test_anon_for_uid_shared_across_series_with_same_source_for_in_same_study(
+        self, manager, temp_dir
+    ):
+        """Two series in one study sharing source FOR → shared AnonFrameOfReferenceUID."""
+        study_uid = "1.2.840.113619.2.55.STUDY.A"
+        shared_for = "1.2.840.113619.2.1.FOR1"
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesA",
+            sop_instance_uid="1.2.A.1", series_instance_uid="1.2.A.SER1",
+            study_instance_uid=study_uid, frame_of_reference_uid=shared_for,
+        )
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesB",
+            sop_instance_uid="1.2.A.2", series_instance_uid="1.2.A.SER2",
+            study_instance_uid=study_uid, frame_of_reference_uid=shared_for,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['StudyUID'] == study_uid]
+        assert len(rows) == 2
+        anon_values = rows['AnonFrameOfReferenceUID'].unique()
+        assert len(anon_values) == 1
+        assert anon_values[0].startswith("2.25.")
+
+    def test_anon_for_uid_differs_for_different_source_for_in_same_study(
+        self, manager, temp_dir
+    ):
+        """Same study, different source FORs → distinct AnonFrameOfReferenceUIDs."""
+        study_uid = "1.2.840.113619.2.55.STUDY.A"
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesA",
+            sop_instance_uid="1.2.A.1", series_instance_uid="1.2.A.SER1",
+            study_instance_uid=study_uid, frame_of_reference_uid="1.2.FOR.X",
+        )
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesC",
+            sop_instance_uid="1.2.A.3", series_instance_uid="1.2.A.SER3",
+            study_instance_uid=study_uid, frame_of_reference_uid="1.2.FOR.Y",
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['StudyUID'] == study_uid]
+        anon_values = list(rows['AnonFrameOfReferenceUID'])
+        assert len(anon_values) == 2
+        assert anon_values[0] != anon_values[1]
+
+    def test_anon_for_uid_differs_across_studies_for_same_source_for(
+        self, manager, temp_dir
+    ):
+        """Coincidentally-shared source FOR across two studies → distinct anon FORs."""
+        shared_for = "1.2.840.113619.2.1.SHARED"
+        self._make_source_dicom(
+            temp_dir, "study1/seriesA",
+            sop_instance_uid="1.2.S1.1", series_instance_uid="1.2.S1.SER1",
+            study_instance_uid="1.2.STUDY.ONE", frame_of_reference_uid=shared_for,
+            patient_id="P1",
+        )
+        self._make_source_dicom(
+            temp_dir, "study2/seriesD",
+            sop_instance_uid="1.2.S2.1", series_instance_uid="1.2.S2.SER1",
+            study_instance_uid="1.2.STUDY.TWO", frame_of_reference_uid=shared_for,
+            patient_id="P2",
+        )
+
+        manager.scan_directory(temp_dir)
+
+        anon_s1 = manager.dicom_df[
+            manager.dicom_df['StudyUID'] == "1.2.STUDY.ONE"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        anon_s2 = manager.dicom_df[
+            manager.dicom_df['StudyUID'] == "1.2.STUDY.TWO"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        assert anon_s1 != anon_s2
+
+    def test_anon_for_uid_cardinality_matches_unique_source_for_per_study(
+        self, manager, temp_dir
+    ):
+        """3 unique source FORs across 5 series in one study → exactly 3 unique anon FORs."""
+        study_uid = "1.2.STUDY.MULTI"
+        spec = [
+            ("ser1", "1.2.FOR.A"),
+            ("ser2", "1.2.FOR.A"),
+            ("ser3", "1.2.FOR.B"),
+            ("ser4", "1.2.FOR.C"),
+            ("ser5", "1.2.FOR.B"),
+        ]
+        for i, (ser_label, for_uid) in enumerate(spec):
+            self._make_source_dicom(
+                temp_dir, f"study/{ser_label}",
+                sop_instance_uid=f"1.2.INST.{i}",
+                series_instance_uid=f"1.2.SER.{i}",
+                study_instance_uid=study_uid,
+                frame_of_reference_uid=for_uid,
+            )
+
+        manager.scan_directory(temp_dir)
+
+        nunique = manager.dicom_df.groupby('StudyUID')[
+            'AnonFrameOfReferenceUID'
+        ].nunique()
+        assert nunique[study_uid] == 3
+
+    def test_anon_for_uid_shared_across_instances_in_same_series(
+        self, manager, temp_dir
+    ):
+        """Two instances in one source series → shared AnonFrameOfReferenceUID."""
+        study_uid = "1.2.STUDY.ABC"
+        series_uid = "1.2.SER.SAME"
+        for_uid = "1.2.FOR.SAME"
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.1",
+            series_instance_uid=series_uid,
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=for_uid,
+        )
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.2",
+            series_instance_uid=series_uid,
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=for_uid,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['SeriesUID'] == series_uid]
+        assert len(rows) == 2
+        assert rows.iloc[0]['AnonFrameOfReferenceUID'] == rows.iloc[1]['AnonFrameOfReferenceUID']
+
+    def test_anon_for_uid_emitted_when_source_lacks_for_and_does_not_link_coordinateless_series(
+        self, manager, temp_dir
+    ):
+        """Two series in one study with no source FOR → both get UIDs but they differ.
+
+        Type 1/1C compliance: every output instance has a non-empty 2.25 UID.
+        Also: a missing source FOR must NOT be silently coalesced into a shared
+        anon UID across two coordinate-less series — that would be a false link.
+        """
+        study_uid = "1.2.STUDY.NO_FOR"
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.X",
+            series_instance_uid="1.2.SER.X",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=None,
+        )
+        self._make_source_dicom(
+            temp_dir, "study/ser2",
+            sop_instance_uid="1.2.INST.Y",
+            series_instance_uid="1.2.SER.Y",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=None,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['StudyUID'] == study_uid]
+        anon_values = list(rows['AnonFrameOfReferenceUID'])
+        assert len(anon_values) == 2
+        assert all(v and v.startswith("2.25.") for v in anon_values)
+        assert anon_values[0] != anon_values[1]
+
+    def test_anon_for_uid_does_not_leak_source_value(self, manager, temp_dir):
+        """Integration leakage guard: output FOR ≠ source verbatim AND ≠ remap_uid(source)."""
+        leak_for = "1.2.840.113619.2.1.99"
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.LEAK",
+            series_instance_uid="1.2.SER.LEAK",
+            study_instance_uid="1.2.STUDY.LEAK",
+            frame_of_reference_uid=leak_for,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        anon_for = manager.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+        assert anon_for != leak_for
+        assert anon_for != remap_uid(leak_for)
+        assert anon_for.startswith("2.25.")
+
+    def test_anon_for_uid_is_run_local_not_deterministic(self, temp_dir):
+        """Two separate DicomFileManager runs over identical input → different anon FORs."""
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.RL",
+            series_instance_uid="1.2.SER.RL",
+            study_instance_uid="1.2.STUDY.RL",
+            frame_of_reference_uid="1.2.FOR.RL",
+        )
+
+        m1 = DicomFileManager()
+        m1.scan_directory(temp_dir)
+        anon_first = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        m2 = DicomFileManager()
+        m2.scan_directory(temp_dir)
+        anon_second = m2.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        assert anon_first != anon_second
+        assert anon_first.startswith("2.25.")
+        assert anon_second.startswith("2.25.")
+
+    def test_anon_for_uid_resume_reuses_prior_keys_csv_mapping(self, temp_dir):
+        """Resume: scan with seed_keys_csv from a prior run → prior anon FOR is reused."""
+        # First run.
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.RESUME",
+            series_instance_uid="1.2.SER.RESUME",
+            study_instance_uid="1.2.STUDY.RESUME",
+            frame_of_reference_uid="1.2.FOR.RESUME",
+        )
+        m1 = DicomFileManager()
+        m1.scan_directory(temp_dir)
+        prior_keys_csv = os.path.join(temp_dir, "keys.csv")
+        m1.build_csv_dataframe(temp_dir).to_csv(prior_keys_csv, index=False)
+        prior_anon = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        # Second run with the seed.
+        m2 = DicomFileManager()
+        m2.scan_directory(temp_dir, seed_keys_csv=prior_keys_csv)
+
+        # Filter out the rescanned keys.csv itself (only .dcm rows match).
+        new_anon = m2.dicom_df[
+            m2.dicom_df['StudyUID'] == "1.2.STUDY.RESUME"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        assert new_anon == prior_anon
+
+    def test_anon_for_uid_resume_mints_new_for_unseen_pairs(self, temp_dir):
+        """Resume seeds Study1; scanning Study1+Study2 → Study1 reuses, Study2 fresh."""
+        study1_subdir = os.path.join(temp_dir, "input1")
+        os.makedirs(study1_subdir)
+        self._make_source_dicom(
+            study1_subdir, "studyA",
+            sop_instance_uid="1.2.S1.INST",
+            series_instance_uid="1.2.S1.SER",
+            study_instance_uid="1.2.STUDY.SEEDED",
+            frame_of_reference_uid="1.2.FOR.SEEDED",
+        )
+        m1 = DicomFileManager()
+        m1.scan_directory(study1_subdir)
+        prior_keys_csv = os.path.join(temp_dir, "keys.csv")
+        m1.build_csv_dataframe(study1_subdir).to_csv(prior_keys_csv, index=False)
+        seeded_anon = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        # Second run scans a directory containing BOTH studies.
+        combined_subdir = os.path.join(temp_dir, "input2")
+        os.makedirs(combined_subdir)
+        # Recreate the seeded study so its files exist in this new input root.
+        self._make_source_dicom(
+            combined_subdir, "studyA",
+            sop_instance_uid="1.2.S1.INST",
+            series_instance_uid="1.2.S1.SER",
+            study_instance_uid="1.2.STUDY.SEEDED",
+            frame_of_reference_uid="1.2.FOR.SEEDED",
+        )
+        self._make_source_dicom(
+            combined_subdir, "studyB",
+            sop_instance_uid="1.2.S2.INST",
+            series_instance_uid="1.2.S2.SER",
+            study_instance_uid="1.2.STUDY.UNSEEN",
+            frame_of_reference_uid="1.2.FOR.UNSEEN",
+            patient_id="P2",
+        )
+
+        m2 = DicomFileManager()
+        m2.scan_directory(combined_subdir, seed_keys_csv=prior_keys_csv)
+
+        seeded_row_anon = m2.dicom_df[
+            m2.dicom_df['StudyUID'] == "1.2.STUDY.SEEDED"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        unseen_row_anon = m2.dicom_df[
+            m2.dicom_df['StudyUID'] == "1.2.STUDY.UNSEEN"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+
+        assert seeded_row_anon == seeded_anon
+        assert unseen_row_anon != seeded_anon
+        assert unseen_row_anon.startswith("2.25.")
+
+    def test_anon_for_uid_resume_degrades_gracefully_for_old_keys_csv(self, temp_dir):
+        """A keys.csv missing FOR columns → no exception; all rows minted fresh."""
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.OLDCSV",
+            series_instance_uid="1.2.SER.OLDCSV",
+            study_instance_uid="1.2.STUDY.OLDCSV",
+            frame_of_reference_uid="1.2.FOR.OLDCSV",
+        )
+        old_csv = os.path.join(temp_dir, "old_keys.csv")
+        # Synthesize an older keys.csv without the new columns.
+        pd.DataFrame([{
+            'InputPath': 'x.dcm',
+            'OutputPath': 'x.dcm',
+            'StudyUID': '1.2.STUDY.OLDCSV',
+            'SeriesUID': '1.2.SER.OLDCSV',
+            'AnonStudyUID': '2.25.111',
+        }]).to_csv(old_csv, index=False)
+
+        m = DicomFileManager()
+        m.scan_directory(temp_dir, seed_keys_csv=old_csv)
+
+        rows = m.dicom_df[m.dicom_df['StudyUID'] == "1.2.STUDY.OLDCSV"]
+        assert len(rows) == 1
+        anon = rows.iloc[0]['AnonFrameOfReferenceUID']
+        assert anon.startswith("2.25.")
+        # No partial seeding from the old csv was applied for FOR.
+        assert ("1.2.STUDY.OLDCSV", "1.2.FOR.OLDCSV") in m._for_map
+
+    def test_anon_for_uid_columns_in_keys_csv(self, manager, temp_dir):
+        """Both new columns persist into the keys.csv-ready dataframe."""
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.CSV",
+            series_instance_uid="1.2.SER.CSV",
+            study_instance_uid="1.2.STUDY.CSV",
+            frame_of_reference_uid="1.2.FOR.CSV",
+        )
+
+        manager.scan_directory(temp_dir)
+        csv_df = manager.build_csv_dataframe(temp_dir)
+
+        assert csv_df is not None
+        assert 'FrameOfReferenceUID' in csv_df.columns
+        assert 'AnonFrameOfReferenceUID' in csv_df.columns
+        assert 'DICOMDataset' not in csv_df.columns
+
+    # ----------------------------------------------------------------------
+    # Unit-level _copy_and_generate_uids three-tier read path tests.
+    # ----------------------------------------------------------------------
+
+    def test_copy_and_generate_uids_uses_anon_for_from_dataframe(
         self, manager_with_data, temp_dir
     ):
-        """Two instances in the same source series get the same output FOR UID.
-
-        Uses DIFFERENT source.FrameOfReferenceUID values across the two datasets
-        so the current (pre-fix) behavior — which derives from source FOR UID —
-        would produce DIFFERENT outputs and fail this test, surfacing the bug.
-        """
+        """Primary read path: AnonFrameOfReferenceUID column wins."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
-        shared_series_uid = "1.2.840.113619.2.55.3.604688432.781.1591781234.500"
+        # Sentinel that does NOT match the fixture-seeded _for_map value,
+        # so we know the column is what was read.
+        manager_with_data.dicom_df.at[0, 'AnonFrameOfReferenceUID'] = "2.25.SENTINEL"
 
-        source_a = pydicom.Dataset()
-        source_a.SOPClassUID = "1.2.840.10008.5.1.4.1.1.6.1"
-        source_a.SOPInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.501"
-        source_a.SeriesInstanceUID = shared_series_uid
-        source_a.StudyInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.502"
-        source_a.FrameOfReferenceUID = "1.2.840.113619.2.1.111"
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        source_b = pydicom.Dataset()
-        source_b.SOPClassUID = "1.2.840.10008.5.1.4.1.1.6.1"
-        source_b.SOPInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.503"
-        source_b.SeriesInstanceUID = shared_series_uid
-        source_b.StudyInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.502"
-        source_b.FrameOfReferenceUID = "1.2.840.113619.2.1.222"
+        assert ds.FrameOfReferenceUID == "2.25.SENTINEL"
 
-        ds_a = pydicom.Dataset()
-        ds_b = pydicom.Dataset()
-        manager_with_data._copy_and_generate_uids(ds_a, source_a, output_path)
-        manager_with_data._copy_and_generate_uids(ds_b, source_b, output_path)
+    def test_copy_and_generate_uids_falls_back_to_for_map_when_df_column_missing(
+        self, manager_with_data, temp_dir
+    ):
+        """Fallback path: when the dataframe column is absent, _for_map is consulted."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+        # Drop the column so the primary path can't fire.
+        manager_with_data.dicom_df = manager_with_data.dicom_df.drop(
+            columns=['AnonFrameOfReferenceUID']
+        )
+        manager_with_data._for_map[
+            (str(source_ds.StudyInstanceUID), str(source_ds.FrameOfReferenceUID))
+        ] = "2.25.MAPSENTINEL"
 
-        assert ds_a.FrameOfReferenceUID == ds_b.FrameOfReferenceUID
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID == "2.25.MAPSENTINEL"
+
+    def test_copy_and_generate_uids_last_resort_mints_for_when_no_mapping_available(
+        self, manager_with_data, temp_dir, caplog
+    ):
+        """Last-resort fallback: no dataframe column AND no _for_map entry → mint + log error."""
+        ds = pydicom.Dataset()
+        # Construct a source_ds whose (StudyUID, FOR) is not in the manager's
+        # seeded map and that has a brand-new FOR not in the column.
+        source_ds = pydicom.Dataset()
+        source_ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.6.1"
+        source_ds.SOPInstanceUID = "1.2.NOMAP.INST"
+        source_ds.SeriesInstanceUID = "1.2.NOMAP.SER"
+        source_ds.StudyInstanceUID = "1.2.NOMAP.STUDY"
+        source_ds.FrameOfReferenceUID = "1.2.NOMAP.FOR"
+        # Drop the column AND clear the map.
+        manager_with_data.dicom_df = manager_with_data.dicom_df.drop(
+            columns=['AnonFrameOfReferenceUID']
+        )
+        manager_with_data._for_map.clear()
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        with caplog.at_level(logging.ERROR):
+            manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID
+        assert ds.FrameOfReferenceUID.startswith("2.25.")
+        assert any("AnonFrameOfReferenceUID" in r.message for r in caplog.records)
+
+    # ----------------------------------------------------------------------
+    # End-to-end save → read round-trip.
+    # ----------------------------------------------------------------------
+
+    def test_save_anonymized_dicom_emits_shared_for_uid_for_co_located_series(
+        self, manager, temp_dir, sample_image_array_single_frame
+    ):
+        """Two series sharing source FOR in one study → saved files share output FOR."""
+        study_uid = "1.2.STUDY.E2E"
+        shared_for = "1.2.FOR.E2E"
+        self._make_source_dicom(
+            temp_dir, "study/serA",
+            sop_instance_uid="1.2.INST.E2E.A",
+            series_instance_uid="1.2.SER.E2E.A",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=shared_for,
+        )
+        self._make_source_dicom(
+            temp_dir, "study/serB",
+            sop_instance_uid="1.2.INST.E2E.B",
+            series_instance_uid="1.2.SER.E2E.B",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=shared_for,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        outputs = []
+        for idx in range(len(manager.dicom_df)):
+            manager.current_index = idx
+            out_path = os.path.join(temp_dir, "out", f"out_{idx}.dcm")
+            manager.save_anonymized_dicom(sample_image_array_single_frame, out_path)
+            outputs.append(out_path)
+
+        a = pydicom.dcmread(outputs[0])
+        b = pydicom.dcmread(outputs[1])
+        assert a.FrameOfReferenceUID == b.FrameOfReferenceUID
+        assert a.FrameOfReferenceUID.startswith("2.25.")
 
     def test_apply_anonymization_computes_age_in_years_from_birthdate(self, manager_with_data):
         """When source has BirthDate+StudyDate but no PatientAge, age is computed in years."""
