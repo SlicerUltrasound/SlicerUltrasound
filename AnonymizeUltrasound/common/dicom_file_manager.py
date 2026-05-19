@@ -632,11 +632,12 @@ class DicomFileManager:
         SOP Instance UIDs are routed through remap_uid so the de-id output sits
         in the 2.25 OID arc and original UIDs do not leak.
 
-        FrameOfReferenceUID is remapped (not generated) when present so spatial
-        linkage between de-id'd datasets in 3D/4D ultrasound and registration
-        workflows is preserved. When the source lacks it, the output is left
-        without one — inventing a synthetic frame UID would falsely link
-        otherwise-unrelated datasets.
+        FrameOfReferenceUID is regenerated from the already-remapped
+        SeriesInstanceUID. The source FOR UID is never read: copying or hashing
+        it would let recipients cluster de-id'd studies that shared a coordinate
+        system. Deriving from ds.SeriesInstanceUID keeps all instances in the
+        same de-id'd series sharing one coordinate UID (Type 1/1C compliance for
+        US IODs and intra-series spatial linkage) without leaking the source.
         """
         if hasattr(source_ds, 'SOPClassUID') and source_ds.SOPClassUID:
             ds.SOPClassUID = source_ds.SOPClassUID
@@ -652,10 +653,7 @@ class DicomFileManager:
                 logging.error(f"{attr} not found. Generating new one for {output_path}")
                 setattr(ds, attr, remap_uid(pydicom.uid.generate_uid()))
 
-        # FrameOfReferenceUID is conditional: remap if present, omit otherwise.
-        src_for_uid = getattr(source_ds, 'FrameOfReferenceUID', None)
-        if src_for_uid:
-            ds.FrameOfReferenceUID = remap_uid(str(src_for_uid))
+        ds.FrameOfReferenceUID = remap_uid(str(ds.SeriesInstanceUID))
 
     def _apply_anonymization(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
                             new_patient_name: str = "", new_patient_id: str = "") -> None:

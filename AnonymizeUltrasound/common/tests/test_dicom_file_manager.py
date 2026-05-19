@@ -1066,49 +1066,12 @@ class TestDicomFileManager:
 
         assert len(caplog.records) == 0
 
-    def test_copy_and_generate_uids_remaps_frame_of_reference_uid(self, manager_with_data, temp_dir):
-        """FrameOfReferenceUID present in source is remapped via remap_uid (PS3.15 E.1.1 action U)."""
-        ds = pydicom.Dataset()
-        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
-        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
-        output_path = os.path.join(temp_dir, "test.dcm")
-
-        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
-
-        assert ds.FrameOfReferenceUID == remap_uid("1.2.840.113619.2.1.99")
-        assert ds.FrameOfReferenceUID.startswith("2.25.")
-
-    def test_copy_and_generate_uids_frame_of_reference_remap_deterministic(self, manager_with_data, temp_dir):
-        """Same source FrameOfReferenceUID yields the same remapped output (cross-dataset linkage)."""
-        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
-        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
-        output_path = os.path.join(temp_dir, "test.dcm")
-
-        ds_a = pydicom.Dataset()
-        ds_b = pydicom.Dataset()
-        manager_with_data._copy_and_generate_uids(ds_a, source_ds, output_path)
-        manager_with_data._copy_and_generate_uids(ds_b, source_ds, output_path)
-
-        assert ds_a.FrameOfReferenceUID == ds_b.FrameOfReferenceUID
-
-    def test_copy_and_generate_uids_omits_frame_of_reference_when_source_lacks_it(
-        self, manager_with_data, temp_dir
-    ):
-        """When the source has no FrameOfReferenceUID, the output must not invent one."""
-        ds = pydicom.Dataset()
-        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
-        if hasattr(source_ds, 'FrameOfReferenceUID'):
-            delattr(source_ds, 'FrameOfReferenceUID')
-        output_path = os.path.join(temp_dir, "test.dcm")
-
-        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
-
-        assert not hasattr(ds, 'FrameOfReferenceUID')
-
     def test_copy_and_generate_uids_does_not_copy_frame_of_reference_verbatim(
         self, manager_with_data, temp_dir
     ):
-        """Leakage guard: source FrameOfReferenceUID never appears verbatim in the de-id output."""
+        """Leakage guard: source FrameOfReferenceUID never appears in the output,
+        neither verbatim nor as its remap_uid hash. Hashed leakage would still let
+        recipients cluster de-id'd studies that shared a coordinate system."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
@@ -1117,6 +1080,99 @@ class TestDicomFileManager:
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
         assert ds.FrameOfReferenceUID != "1.2.840.113619.2.1.99"
+        assert ds.FrameOfReferenceUID != remap_uid("1.2.840.113619.2.1.99")
+
+    def test_copy_and_generate_uids_frame_of_reference_derived_from_remapped_series_uid(
+        self, manager_with_data, temp_dir
+    ):
+        """FrameOfReferenceUID is regenerated from the already-remapped SeriesInstanceUID.
+
+        The source FOR UID is never read; the new FOR UID is remap_uid(ds.SeriesInstanceUID),
+        keeping all instances in the same de-id'd series sharing one coordinate UID.
+        """
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID == remap_uid(str(ds.SeriesInstanceUID))
+        assert ds.FrameOfReferenceUID.startswith("2.25.")
+
+    def test_copy_and_generate_uids_frame_of_reference_independent_of_source_for_uid(
+        self, manager_with_data, temp_dir
+    ):
+        """Two different source FOR UIDs on the same series produce identical output FOR UIDs.
+
+        Proves the new FOR UID depends only on the remapped series UID and not at all
+        on source.FrameOfReferenceUID — the privacy guarantee.
+        """
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        ds_a = pydicom.Dataset()
+        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        manager_with_data._copy_and_generate_uids(ds_a, source_ds, output_path)
+
+        ds_b = pydicom.Dataset()
+        source_ds.FrameOfReferenceUID = "1.2.276.0.7230010.3.1.4.99999"
+        manager_with_data._copy_and_generate_uids(ds_b, source_ds, output_path)
+
+        assert ds_a.FrameOfReferenceUID == ds_b.FrameOfReferenceUID
+
+    def test_copy_and_generate_uids_frame_of_reference_set_even_when_source_lacks_it(
+        self, manager_with_data, temp_dir
+    ):
+        """FrameOfReferenceUID is Type 1/1C required for US IODs.
+
+        Even when source lacks one, the output must have one — derived from the
+        remapped SeriesInstanceUID so it still lives in the 2.25 arc.
+        """
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'FrameOfReferenceUID'):
+            delattr(source_ds, 'FrameOfReferenceUID')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'FrameOfReferenceUID')
+        assert ds.FrameOfReferenceUID
+        assert ds.FrameOfReferenceUID.startswith("2.25.")
+
+    def test_copy_and_generate_uids_frame_of_reference_shared_within_series(
+        self, manager_with_data, temp_dir
+    ):
+        """Two instances in the same source series get the same output FOR UID.
+
+        Uses DIFFERENT source.FrameOfReferenceUID values across the two datasets
+        so the current (pre-fix) behavior — which derives from source FOR UID —
+        would produce DIFFERENT outputs and fail this test, surfacing the bug.
+        """
+        output_path = os.path.join(temp_dir, "test.dcm")
+        shared_series_uid = "1.2.840.113619.2.55.3.604688432.781.1591781234.500"
+
+        source_a = pydicom.Dataset()
+        source_a.SOPClassUID = "1.2.840.10008.5.1.4.1.1.6.1"
+        source_a.SOPInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.501"
+        source_a.SeriesInstanceUID = shared_series_uid
+        source_a.StudyInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.502"
+        source_a.FrameOfReferenceUID = "1.2.840.113619.2.1.111"
+
+        source_b = pydicom.Dataset()
+        source_b.SOPClassUID = "1.2.840.10008.5.1.4.1.1.6.1"
+        source_b.SOPInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.503"
+        source_b.SeriesInstanceUID = shared_series_uid
+        source_b.StudyInstanceUID = "1.2.840.113619.2.55.3.604688432.781.1591781234.502"
+        source_b.FrameOfReferenceUID = "1.2.840.113619.2.1.222"
+
+        ds_a = pydicom.Dataset()
+        ds_b = pydicom.Dataset()
+        manager_with_data._copy_and_generate_uids(ds_a, source_a, output_path)
+        manager_with_data._copy_and_generate_uids(ds_b, source_b, output_path)
+
+        assert ds_a.FrameOfReferenceUID == ds_b.FrameOfReferenceUID
 
     def test_apply_anonymization_computes_age_in_years_from_birthdate(self, manager_with_data):
         """When source has BirthDate+StudyDate but no PatientAge, age is computed in years."""
