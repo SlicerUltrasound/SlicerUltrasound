@@ -302,7 +302,7 @@ class DicomProcessor:
             new_patient_id = anon_filename.split('_')[0]
 
             os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
-            self.dicom_manager.save_anonymized_dicom(
+            anonymized_ds = self.dicom_manager.save_anonymized_dicom(
                 image_array=masked_image_array,
                 output_path=final_output_path,
                 new_patient_name=new_patient_name,
@@ -310,12 +310,15 @@ class DicomProcessor:
                 labels=None
             )
 
-            # Save header
-            if headers_folder:
+            # Save header — pass the anonymized Dataset so the JSON sidecar
+            # is serialized from the same source of truth as the saved .dcm
+            # (remapped UIDs, run-local FOR, trimmed TransducerData).
+            if headers_folder and anonymized_ds is not None:
                 self.dicom_manager.save_anonymized_dicom_header(
                     current_dicom_record=row,
                     output_filename=anon_filename,
-                    headers_directory=headers_folder
+                    headers_directory=headers_folder,
+                    anonymized_dataset=anonymized_ds,
                 )
 
             # Save sequence info JSON
@@ -630,10 +633,16 @@ class DicomProcessor:
 
 
     def _save_sequence_info(self, final_output_path: str, row, mask_config: Optional[dict]):
-        """Save sequence info JSON"""
+        """Save sequence info JSON.
+
+        SOPInstanceUID is the anonymized UID (row.AnonSOPInstanceUID, populated
+        in DicomFileManager._extract_dicom_info via remap_uid), not the source.
+        Reading from row.DICOMDataset would leak the original UID into the
+        sidecar next to an anonymized .dcm.
+        """
         if not self.config.no_mask_generation and not self.config.phi_only_mode:
             sequence_info = {
-                'SOPInstanceUID': getattr(row.DICOMDataset, 'SOPInstanceUID', 'None') or 'None',
+                'SOPInstanceUID': getattr(row, 'AnonSOPInstanceUID', '') or 'None',
                 'GrayscaleConversion': False
             }
 

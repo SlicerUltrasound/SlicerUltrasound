@@ -2307,13 +2307,16 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
     def saveDicomFile(self, dicomFilePath, new_patient_name='', new_patient_id='', labels=None):
         """
         Save the current ultrasound sequence as an anonymized DICOM file.
+
+        Returns the in-memory anonymized pydicom.Dataset so the header sidecar
+        in exportDicom() can serialize from it (preventing source UID leaks).
         """
         parameterNode = self.getParameterNode()
 
         # Collect image data from sequence browser as a numpy array
         image_array = self._collect_image_data_from_sequence(parameterNode)
 
-        self.dicom_manager.save_anonymized_dicom(
+        return self.dicom_manager.save_anonymized_dicom(
             image_array=image_array,
             output_path=dicomFilePath,
             new_patient_name=new_patient_name,
@@ -2381,11 +2384,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             - Saves sequence information and annotations to JSON file
             - Optionally saves original DICOM headers with partial anonymization
         """
-        # Record sequence information to a dictionary. This will be saved in the annotations JSON file.
+        # Record sequence information to a dictionary. This will be saved in the
+        # annotations JSON file. SOPInstanceUID is the anonymized UID
+        # (AnonSOPInstanceUID column populated at scan time); reading from
+        # DICOMDataset would leak the source UID into the sidecar.
         current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
-        SOPInstanceUID = current_dicom_record.DICOMDataset.SOPInstanceUID if current_dicom_record is not None else "None"
-        if SOPInstanceUID is None:
-            SOPInstanceUID = "None"
+        SOPInstanceUID = getattr(current_dicom_record, 'AnonSOPInstanceUID', '') or 'None'
 
         sequence_info = {
             'SOPInstanceUID': SOPInstanceUID,
@@ -2407,10 +2411,18 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         dicom_file_path = self.dicom_manager.generate_output_filepath(
             output_directory, current_dicom_record.OutputPath, preserve_directory_structure)
 
-        self.saveDicomFile(dicom_file_path, new_patient_name, new_patient_id, labels)
+        anonymized_ds = self.saveDicomFile(dicom_file_path, new_patient_name, new_patient_id, labels)
 
-        # Save original DICOM header to a json file. This may not be completely anonymized.
-        dicom_header_file_path = self.dicom_manager.save_anonymized_dicom_header(current_dicom_record, output_filename, headers_directory)
+        # Save DICOM header JSON, serializing from the in-memory anonymized
+        # Dataset so the sidecar contains only remapped UIDs and trimmed
+        # TransducerData — never the original source values.
+        if anonymized_ds is not None:
+            dicom_header_file_path = self.dicom_manager.save_anonymized_dicom_header(
+                current_dicom_record, output_filename, headers_directory,
+                anonymized_dataset=anonymized_ds,
+            )
+        else:
+            dicom_header_file_path = None
 
         # Add mask parameters to sequenceInfo
         for key, value in self.maskParameters.items():
@@ -2686,8 +2698,20 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         processor = DicomProcessor(config, self.dicom_manager)
         processor.initialize_model()
 
-        # Scan directory
-        num_files = self.dicom_manager.scan_directory(input_folder, config.skip_single_frame, config.hash_patient_id)
+        # Scan directory. Resume safety: when headers_folder already has a
+        # keys.csv from a prior batch run, seed scan_directory with it so the
+        # anonymized FrameOfReferenceUID mapping is preserved across the
+        # resumed export. Otherwise previously-written .dcm files and the
+        # rewritten keys.csv would disagree.
+        prior_keys_csv = None
+        if headers_folder:
+            candidate = os.path.join(headers_folder, 'keys.csv')
+            if os.path.exists(candidate):
+                prior_keys_csv = candidate
+        num_files = self.dicom_manager.scan_directory(
+            input_folder, config.skip_single_frame, config.hash_patient_id,
+            seed_keys_csv=prior_keys_csv,
+        )
 
         # Save keys.csv
         self._write_keys_csv(headers_folder, input_folder)

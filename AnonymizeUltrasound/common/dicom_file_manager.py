@@ -161,8 +161,12 @@ class DicomFileManager:
         """
         dicom_data = []
 
-        # Seed _for_map BEFORE _create_dataframe assigns the column, so seeded
-        # mappings are consulted instead of regenerated.
+        # Reset _for_map before seeding so a long-lived DicomFileManager (e.g.
+        # the Slicer logic singleton) doesn't carry mappings between unrelated
+        # scans — that would re-use anonymized FOR UIDs across exports and
+        # break run-local unlinkability. Seeding uses setdefault, so the
+        # reset-then-seed order preserves the resume contract.
+        self._for_map = {}
         self._seed_for_map_from_keys_csv(seed_keys_csv)
 
         for root, dirs, files in os.walk(input_folder):
@@ -582,9 +586,14 @@ class DicomFileManager:
         return self.next_index < len(self.dicom_df)
 
     def save_anonymized_dicom(self, image_array: np.ndarray, output_path: str,
-                            new_patient_name: str = '', new_patient_id: str = '', labels: Optional[List[str]] = None) -> None:
+                            new_patient_name: str = '', new_patient_id: str = '', labels: Optional[List[str]] = None) -> Optional[pydicom.Dataset]:
         """
-        Save image array as anonymized DICOM file.
+        Save image array as anonymized DICOM file and return the in-memory anon Dataset.
+
+        The return value lets callers feed the same anonymized Dataset into
+        `save_anonymized_dicom_header`, so the JSON sidecar serializes from
+        the same source of truth as the saved .dcm — preventing source UIDs
+        and untrimmed TransducerData from leaking into the header file.
 
         Args:
             image_array: Numpy array containing image data (frames, height, width, channels)
@@ -592,18 +601,23 @@ class DicomFileManager:
             new_patient_name: New patient name for anonymization
             new_patient_id: New patient ID for anonymization
             labels: List of labels to add to the DICOM file
+
+        Returns:
+            The anonymized pydicom.Dataset on success, or None when the call
+            fails its pre-conditions (no dataframe, invalid current_index,
+            None image array).
         """
         if self.dicom_df is None:
             logging.error("No DICOM dataframe available")
-            return
+            return None
 
         if self.current_index >= len(self.dicom_df):
             logging.error("No current DICOM record available")
-            return
+            return None
 
         if image_array is None:
             logging.error("Image array is None")
-            return
+            return None
 
         current_record = self.dicom_df.iloc[self.current_index]
         source_dataset = current_record.DICOMDataset
@@ -629,6 +643,8 @@ class DicomFileManager:
 
         # Create and save file
         self._create_and_save_dicom_file(anonymized_ds, output_path)
+
+        return anonymized_ds
 
     def _create_base_dicom_dataset(self, image_array: np.ndarray, current_record: dict) -> pydicom.Dataset:
         """Create base DICOM dataset with image dimensions and basic attributes."""
@@ -882,7 +898,11 @@ class DicomFileManager:
         if delta_days < 365:
             months = int(delta_days // 30.4375)
             return f"{months:03d}M"
-        years = int(delta_days // 365.25)
+        # Calendar-year math avoids the int(365 // 365.25) == 0 boundary bug
+        # that would report a patient exactly one year old as "000Y".
+        years = study_date.year - birth_date.year
+        if (study_date.month, study_date.day) < (birth_date.month, birth_date.day):
+            years -= 1
         return '090Y' if years >= 90 else f"{years:03d}Y"
 
     def _shift_date(self, date_str: str, offset: int) -> str:
@@ -1051,37 +1071,55 @@ class DicomFileManager:
 
         return f"{patient_id}_{instance_id}.dcm", patient_id, instance_id
 
-    def save_anonymized_dicom_header(self, current_dicom_record, output_filename: str, headers_directory: Optional[str] = None) -> Optional[str]:
+    def save_anonymized_dicom_header(
+        self,
+        current_dicom_record,
+        output_filename: str,
+        headers_directory: Optional[str] = None,
+        *,
+        anonymized_dataset: pydicom.Dataset,
+    ) -> Optional[str]:
         """
         Save anonymized DICOM header information as a JSON file.
 
-        This method extracts DICOM header information from the current record,
-        applies partial anonymization to sensitive fields, and saves the result
-        as a JSON file alongside the anonymized DICOM file.
+        Serializes from `anonymized_dataset` — the in-memory Dataset returned
+        by `save_anonymized_dicom` — so the JSON sidecar contains the same
+        remapped UIDs, run-local FrameOfReferenceUID, and trimmed
+        TransducerData as the saved .dcm. Serializing from the source dataset
+        would leak the original UIDs and full TransducerData into the sidecar
+        next to an anonymized .dcm.
+
+        The patient-name override (using output_filename) and partial
+        birth-date scrub (keep year, set month/day to 01-01) are preserved
+        so the JSON's PatientName/PatientBirthDate columns stay consistent
+        across runs and don't expose the new_patient_id even when the anon
+        Dataset's PatientName is set to something else.
 
         Args:
-            current_dicom_record: Current DICOM record from the dataframe containing
-                                the DICOM dataset and metadata
-            headers_directory: Directory path where header JSON files will be saved.
-                            If None, no header file is created
-            output_filename: Base filename for the output (used for patient name anonymization)
+            current_dicom_record: Current DICOM record from the dataframe. Used
+                only for input validation (the dataset comes from
+                `anonymized_dataset`); retained so the kwarg contract matches
+                the long-standing call sites.
+            output_filename: Base filename for the output (drives PatientName
+                anonymization).
+            headers_directory: Directory path where header JSON files will be
+                saved. If None, no header file is created.
+            anonymized_dataset: The in-memory pydicom Dataset returned by
+                save_anonymized_dicom. Required; passing the source dataset
+                would defeat the de-id invariant.
 
         Returns:
-            str: Full path to the saved JSON header file
-            None: If headers_directory is None or saving fails
-
-        Note:
-            - Creates necessary output directories if they don't exist
-            - Applies partial anonymization to patient name and birth date
-            - Patient name is replaced with the output filename (without extension)
-            - Birth date is truncated to year only with "0101" appended
-            - Uses convertToJsonCompatible for handling DICOM-specific data types
+            str: Full path to the saved JSON header file.
+            None: If headers_directory is None.
         """
         if current_dicom_record is None:
             raise ValueError("Current DICOM record is required")
 
         if output_filename is None or output_filename == "":
             raise ValueError("Output filename is required")
+
+        if anonymized_dataset is None:
+            raise ValueError("anonymized_dataset is required to avoid source UID leak")
 
         if headers_directory is None:
             return None
@@ -1094,18 +1132,20 @@ class DicomFileManager:
         os.makedirs(os.path.dirname(dicom_header_filepath), exist_ok=True)
 
         with open(dicom_header_filepath, 'w') as outfile:
-            if self.dicom_df is not None:
-                anonymized_header = self.dicom_header_to_dict(current_dicom_record.DICOMDataset)
+            anonymized_header = self.dicom_header_to_dict(anonymized_dataset)
 
-                # Anonymize patient name
-                if "Patient's Name" in anonymized_header:
-                    anonymized_header["Patient's Name"] = output_filename.split(".")[0]
+            if "Patient's Name" in anonymized_header:
+                anonymized_header["Patient's Name"] = output_filename.split(".")[0]
 
-                # Partially anonymize birth date
-                if "Patient's Birth Date" in anonymized_header:
-                    anonymized_header["Patient's Birth Date"] = anonymized_header["Patient's Birth Date"][:4] + "0101"
+            # Partial birth-date scrub: source DS retains the original
+            # PatientBirthDate, so derive the year-only value from there.
+            source_birth = getattr(
+                current_dicom_record.DICOMDataset, 'PatientBirthDate', ''
+            ) or ''
+            if "Patient's Birth Date" in anonymized_header and source_birth:
+                anonymized_header["Patient's Birth Date"] = str(source_birth)[:4] + "0101"
 
-                json.dump(anonymized_header, outfile, default=self._convert_to_json_compatible)
+            json.dump(anonymized_header, outfile, default=self._convert_to_json_compatible)
 
         return dicom_header_filepath
 
