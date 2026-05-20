@@ -13,6 +13,7 @@ import json
 
 # Import the module under test
 from ..dicom_file_manager import DicomFileManager
+from ..uid_remap import remap_uid
 
 class TestDicomFileManager:
     """Test suite for DicomFileManager class"""
@@ -171,10 +172,14 @@ class TestDicomFileManager:
         """Create a single-frame grayscale image array for testing (frames, height, width, channels)"""
         return np.random.randint(0, 255, (1, 10, 15, 1), dtype=np.uint8)
 
+    SOURCE_FOR_UID = "1.2.840.113619.2.1.1234"
+    ANON_FOR_UID = "2.25.123456789012345678901234567890"
+
     @pytest.fixture
     def manager_with_data(self, manager, temp_dir):
         """Create a manager with sample DICOM dataframe"""
         ds = self.create_test_dicom_file()
+        ds.FrameOfReferenceUID = self.SOURCE_FOR_UID
         filename = manager._generate_filename_from_dicom(ds)
         filepath = self.save_dicom_file(ds, temp_dir, filename)
 
@@ -189,6 +194,8 @@ class TestDicomFileManager:
             'SeriesUID': self.SERIES_UID,
             'SeriesDate': self.CONTENT_DATE,
             'InstanceUID': self.SOP_INSTANCE_UID,
+            'FrameOfReferenceUID': self.SOURCE_FOR_UID,
+            'AnonFrameOfReferenceUID': self.ANON_FOR_UID,
             'PhysicalDeltaX': self.PHYSICAL_DELTA_X,
             'PhysicalDeltaY': self.PHYSICAL_DELTA_Y,
             'ContentDate': self.CONTENT_DATE,
@@ -199,6 +206,9 @@ class TestDicomFileManager:
         }]
 
         manager._create_dataframe(dicom_data)
+        # Seed the in-memory map so direct _copy_and_generate_uids calls hit
+        # either the dataframe-column path or the _for_map fallback.
+        manager._for_map[(self.STUDY_UID, self.SOURCE_FOR_UID)] = self.ANON_FOR_UID
         manager.current_index = 0
         return manager
 
@@ -278,7 +288,7 @@ class TestDicomFileManager:
         filename, _, _ = manager.generate_filename_from_dicom_dataset(result['DICOMDataset'])
 
         assert result is not None
-        assert len(result) == 14
+        assert len(result) == 18
         assert result['InputPath'] == sample_dicom_filepath
         assert filename in result['OutputPath']
         assert result['AnonFilename'] == filename
@@ -286,6 +296,9 @@ class TestDicomFileManager:
         assert result['StudyUID'] == self.STUDY_UID
         assert result['SeriesUID'] == self.SERIES_UID
         assert result['InstanceUID'] == self.SOP_INSTANCE_UID
+        assert result['AnonStudyUID'] == remap_uid(self.STUDY_UID)
+        assert result['AnonSeriesUID'] == remap_uid(self.SERIES_UID)
+        assert result['AnonSOPInstanceUID'] == remap_uid(self.SOP_INSTANCE_UID)
         assert result['ContentDate'] == self.CONTENT_DATE
         assert result['ContentTime'] == self.CONTENT_TIME
         assert result['Patch'] is False
@@ -784,33 +797,38 @@ class TestDicomFileManager:
         assert hasattr(ds, 'SeriesInstanceUID')
 
     def test_copy_and_generate_uids_with_source_uids(self, manager_with_data, temp_dir):
-        """Test _copy_and_generate_uids with existing UIDs in source"""
+        """Source instance UIDs are remapped via remap_uid; SOPClassUID stays verbatim."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        # Should copy existing UIDs
+        # SOPClassUID identifies the registered DICOM object type — NOT remapped.
         assert ds.SOPClassUID == source_ds.SOPClassUID
-        assert ds.SOPInstanceUID == source_ds.SOPInstanceUID
-        assert ds.StudyInstanceUID == source_ds.StudyInstanceUID
-        # SeriesInstanceUID should now be copied from source
-        assert ds.SeriesInstanceUID == source_ds.SeriesInstanceUID
+        # Study/Series/SOP Instance UIDs are deterministically remapped.
+        assert ds.SOPInstanceUID == remap_uid(str(source_ds.SOPInstanceUID))
+        assert ds.SeriesInstanceUID == remap_uid(str(source_ds.SeriesInstanceUID))
+        assert ds.StudyInstanceUID == remap_uid(str(source_ds.StudyInstanceUID))
+        # Outputs must live in the 2.25.* arc.
+        assert ds.SOPInstanceUID.startswith("2.25.")
+        assert ds.SeriesInstanceUID.startswith("2.25.")
+        assert ds.StudyInstanceUID.startswith("2.25.")
 
     def test_copy_and_generate_uids_missing_source_uids(self, manager_with_data, temp_dir):
-        """Test _copy_and_generate_uids with missing UIDs in source"""
+        """When source UIDs are missing, instance UIDs land in the 2.25 arc."""
         ds = pydicom.Dataset()
         source_ds = pydicom.Dataset()  # Empty dataset
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        # Should generate new UIDs
+        # SOPClassUID falls back to pydicom-generated; not constrained to 2.25.
         assert hasattr(ds, 'SOPClassUID')
-        assert hasattr(ds, 'SOPInstanceUID')
-        assert hasattr(ds, 'StudyInstanceUID')
-        assert hasattr(ds, 'SeriesInstanceUID')
+        # Study/Series/SOP Instance UIDs are routed through remap_uid even on fallback.
+        assert ds.SOPInstanceUID.startswith("2.25.")
+        assert ds.StudyInstanceUID.startswith("2.25.")
+        assert ds.SeriesInstanceUID.startswith("2.25.")
 
     def test_apply_anonymization_with_new_patient_info(self, manager_with_data):
         """Test _apply_anonymization with new patient information"""
@@ -1057,6 +1075,663 @@ class TestDicomFileManager:
 
         assert len(caplog.records) == 0
 
+    def test_copy_and_generate_uids_does_not_copy_frame_of_reference_verbatim(
+        self, manager_with_data, temp_dir
+    ):
+        """Leakage guard: source FrameOfReferenceUID never appears in the output,
+        neither verbatim nor as its remap_uid hash. Under the run-local policy
+        the output FOR is a freshly minted 2.25 UID with no derivation from the
+        source value, so both inequality checks must hold."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.FrameOfReferenceUID = "1.2.840.113619.2.1.99"
+        # _for_map has the test fixture's source FOR; this test uses a different
+        # one, so _copy_and_generate_uids must mint or look up by the new key.
+        manager_with_data._for_map[
+            (str(source_ds.StudyInstanceUID), "1.2.840.113619.2.1.99")
+        ] = "2.25.999999999999999999999999999"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID != "1.2.840.113619.2.1.99"
+        assert ds.FrameOfReferenceUID != remap_uid("1.2.840.113619.2.1.99")
+
+    def test_copy_and_generate_uids_frame_of_reference_set_even_when_source_lacks_it(
+        self, manager_with_data, temp_dir
+    ):
+        """FrameOfReferenceUID is Type 1/1C required for US IODs.
+
+        Even when source lacks one, the output must have one — and it must live
+        in the 2.25 arc. The fallback minting path takes over in this branch.
+        """
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        if hasattr(source_ds, 'FrameOfReferenceUID'):
+            delattr(source_ds, 'FrameOfReferenceUID')
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert hasattr(ds, 'FrameOfReferenceUID')
+        assert ds.FrameOfReferenceUID
+        assert ds.FrameOfReferenceUID.startswith("2.25.")
+
+    # ----------------------------------------------------------------------
+    # New integration tests for the run-local per-study FOR UID policy.
+    # ----------------------------------------------------------------------
+
+    def _make_source_dicom(self, temp_dir, subdir, *, sop_instance_uid,
+                           series_instance_uid, study_instance_uid,
+                           frame_of_reference_uid=None, patient_id=None):
+        """Build and save a small DICOM with controllable UIDs for FOR tests."""
+        kwargs = {
+            'SOPInstanceUID': sop_instance_uid,
+            'SeriesInstanceUID': series_instance_uid,
+            'StudyInstanceUID': study_instance_uid,
+        }
+        if patient_id is not None:
+            kwargs['PatientID'] = patient_id
+        ds = self.create_test_dicom_file(**kwargs)
+        if frame_of_reference_uid is not None:
+            ds.FrameOfReferenceUID = frame_of_reference_uid
+        elif hasattr(ds, 'FrameOfReferenceUID'):
+            delattr(ds, 'FrameOfReferenceUID')
+        nested = os.path.join(temp_dir, subdir)
+        os.makedirs(nested, exist_ok=True)
+        # Use a deterministic distinct filename per instance so files don't clobber.
+        filename = f"{sop_instance_uid.replace('.', '_')}.dcm"
+        return self.save_dicom_file(ds, nested, filename)
+
+    def test_anon_for_uid_shared_across_series_with_same_source_for_in_same_study(
+        self, manager, temp_dir
+    ):
+        """Two series in one study sharing source FOR → shared AnonFrameOfReferenceUID."""
+        study_uid = "1.2.840.113619.2.55.STUDY.A"
+        shared_for = "1.2.840.113619.2.1.FOR1"
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesA",
+            sop_instance_uid="1.2.A.1", series_instance_uid="1.2.A.SER1",
+            study_instance_uid=study_uid, frame_of_reference_uid=shared_for,
+        )
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesB",
+            sop_instance_uid="1.2.A.2", series_instance_uid="1.2.A.SER2",
+            study_instance_uid=study_uid, frame_of_reference_uid=shared_for,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['StudyUID'] == study_uid]
+        assert len(rows) == 2
+        anon_values = rows['AnonFrameOfReferenceUID'].unique()
+        assert len(anon_values) == 1
+        assert anon_values[0].startswith("2.25.")
+
+    def test_anon_for_uid_differs_for_different_source_for_in_same_study(
+        self, manager, temp_dir
+    ):
+        """Same study, different source FORs → distinct AnonFrameOfReferenceUIDs."""
+        study_uid = "1.2.840.113619.2.55.STUDY.A"
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesA",
+            sop_instance_uid="1.2.A.1", series_instance_uid="1.2.A.SER1",
+            study_instance_uid=study_uid, frame_of_reference_uid="1.2.FOR.X",
+        )
+        self._make_source_dicom(
+            temp_dir, "studyA/seriesC",
+            sop_instance_uid="1.2.A.3", series_instance_uid="1.2.A.SER3",
+            study_instance_uid=study_uid, frame_of_reference_uid="1.2.FOR.Y",
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['StudyUID'] == study_uid]
+        anon_values = list(rows['AnonFrameOfReferenceUID'])
+        assert len(anon_values) == 2
+        assert anon_values[0] != anon_values[1]
+
+    def test_anon_for_uid_differs_across_studies_for_same_source_for(
+        self, manager, temp_dir
+    ):
+        """Coincidentally-shared source FOR across two studies → distinct anon FORs."""
+        shared_for = "1.2.840.113619.2.1.SHARED"
+        self._make_source_dicom(
+            temp_dir, "study1/seriesA",
+            sop_instance_uid="1.2.S1.1", series_instance_uid="1.2.S1.SER1",
+            study_instance_uid="1.2.STUDY.ONE", frame_of_reference_uid=shared_for,
+            patient_id="P1",
+        )
+        self._make_source_dicom(
+            temp_dir, "study2/seriesD",
+            sop_instance_uid="1.2.S2.1", series_instance_uid="1.2.S2.SER1",
+            study_instance_uid="1.2.STUDY.TWO", frame_of_reference_uid=shared_for,
+            patient_id="P2",
+        )
+
+        manager.scan_directory(temp_dir)
+
+        anon_s1 = manager.dicom_df[
+            manager.dicom_df['StudyUID'] == "1.2.STUDY.ONE"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        anon_s2 = manager.dicom_df[
+            manager.dicom_df['StudyUID'] == "1.2.STUDY.TWO"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        assert anon_s1 != anon_s2
+
+    def test_anon_for_uid_cardinality_matches_unique_source_for_per_study(
+        self, manager, temp_dir
+    ):
+        """3 unique source FORs across 5 series in one study → exactly 3 unique anon FORs."""
+        study_uid = "1.2.STUDY.MULTI"
+        spec = [
+            ("ser1", "1.2.FOR.A"),
+            ("ser2", "1.2.FOR.A"),
+            ("ser3", "1.2.FOR.B"),
+            ("ser4", "1.2.FOR.C"),
+            ("ser5", "1.2.FOR.B"),
+        ]
+        for i, (ser_label, for_uid) in enumerate(spec):
+            self._make_source_dicom(
+                temp_dir, f"study/{ser_label}",
+                sop_instance_uid=f"1.2.INST.{i}",
+                series_instance_uid=f"1.2.SER.{i}",
+                study_instance_uid=study_uid,
+                frame_of_reference_uid=for_uid,
+            )
+
+        manager.scan_directory(temp_dir)
+
+        nunique = manager.dicom_df.groupby('StudyUID')[
+            'AnonFrameOfReferenceUID'
+        ].nunique()
+        assert nunique[study_uid] == 3
+
+    def test_anon_for_uid_shared_across_instances_in_same_series(
+        self, manager, temp_dir
+    ):
+        """Two instances in one source series → shared AnonFrameOfReferenceUID."""
+        study_uid = "1.2.STUDY.ABC"
+        series_uid = "1.2.SER.SAME"
+        for_uid = "1.2.FOR.SAME"
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.1",
+            series_instance_uid=series_uid,
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=for_uid,
+        )
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.2",
+            series_instance_uid=series_uid,
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=for_uid,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['SeriesUID'] == series_uid]
+        assert len(rows) == 2
+        assert rows.iloc[0]['AnonFrameOfReferenceUID'] == rows.iloc[1]['AnonFrameOfReferenceUID']
+
+    def test_anon_for_uid_emitted_when_source_lacks_for_and_does_not_link_coordinateless_series(
+        self, manager, temp_dir
+    ):
+        """Two series in one study with no source FOR → both get UIDs but they differ.
+
+        Type 1/1C compliance: every output instance has a non-empty 2.25 UID.
+        Also: a missing source FOR must NOT be silently coalesced into a shared
+        anon UID across two coordinate-less series — that would be a false link.
+        """
+        study_uid = "1.2.STUDY.NO_FOR"
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.X",
+            series_instance_uid="1.2.SER.X",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=None,
+        )
+        self._make_source_dicom(
+            temp_dir, "study/ser2",
+            sop_instance_uid="1.2.INST.Y",
+            series_instance_uid="1.2.SER.Y",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=None,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        rows = manager.dicom_df[manager.dicom_df['StudyUID'] == study_uid]
+        anon_values = list(rows['AnonFrameOfReferenceUID'])
+        assert len(anon_values) == 2
+        assert all(v and v.startswith("2.25.") for v in anon_values)
+        assert anon_values[0] != anon_values[1]
+
+    def test_anon_for_uid_does_not_leak_source_value(self, manager, temp_dir):
+        """Integration leakage guard: output FOR ≠ source verbatim AND ≠ remap_uid(source)."""
+        leak_for = "1.2.840.113619.2.1.99"
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.LEAK",
+            series_instance_uid="1.2.SER.LEAK",
+            study_instance_uid="1.2.STUDY.LEAK",
+            frame_of_reference_uid=leak_for,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        anon_for = manager.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+        assert anon_for != leak_for
+        assert anon_for != remap_uid(leak_for)
+        assert anon_for.startswith("2.25.")
+
+    def test_anon_for_uid_is_run_local_not_deterministic(self, temp_dir):
+        """Two separate DicomFileManager runs over identical input → different anon FORs."""
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.RL",
+            series_instance_uid="1.2.SER.RL",
+            study_instance_uid="1.2.STUDY.RL",
+            frame_of_reference_uid="1.2.FOR.RL",
+        )
+
+        m1 = DicomFileManager()
+        m1.scan_directory(temp_dir)
+        anon_first = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        m2 = DicomFileManager()
+        m2.scan_directory(temp_dir)
+        anon_second = m2.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        assert anon_first != anon_second
+        assert anon_first.startswith("2.25.")
+        assert anon_second.startswith("2.25.")
+
+    def test_anon_for_uid_resume_reuses_prior_keys_csv_mapping(self, temp_dir):
+        """Resume: scan with seed_keys_csv from a prior run → prior anon FOR is reused."""
+        # First run.
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.RESUME",
+            series_instance_uid="1.2.SER.RESUME",
+            study_instance_uid="1.2.STUDY.RESUME",
+            frame_of_reference_uid="1.2.FOR.RESUME",
+        )
+        m1 = DicomFileManager()
+        m1.scan_directory(temp_dir)
+        prior_keys_csv = os.path.join(temp_dir, "keys.csv")
+        m1.build_csv_dataframe(temp_dir).to_csv(prior_keys_csv, index=False)
+        prior_anon = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        # Second run with the seed.
+        m2 = DicomFileManager()
+        m2.scan_directory(temp_dir, seed_keys_csv=prior_keys_csv)
+
+        # Filter out the rescanned keys.csv itself (only .dcm rows match).
+        new_anon = m2.dicom_df[
+            m2.dicom_df['StudyUID'] == "1.2.STUDY.RESUME"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        assert new_anon == prior_anon
+
+    def test_anon_for_uid_resume_mints_new_for_unseen_pairs(self, temp_dir):
+        """Resume seeds Study1; scanning Study1+Study2 → Study1 reuses, Study2 fresh."""
+        study1_subdir = os.path.join(temp_dir, "input1")
+        os.makedirs(study1_subdir)
+        self._make_source_dicom(
+            study1_subdir, "studyA",
+            sop_instance_uid="1.2.S1.INST",
+            series_instance_uid="1.2.S1.SER",
+            study_instance_uid="1.2.STUDY.SEEDED",
+            frame_of_reference_uid="1.2.FOR.SEEDED",
+        )
+        m1 = DicomFileManager()
+        m1.scan_directory(study1_subdir)
+        prior_keys_csv = os.path.join(temp_dir, "keys.csv")
+        m1.build_csv_dataframe(study1_subdir).to_csv(prior_keys_csv, index=False)
+        seeded_anon = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        # Second run scans a directory containing BOTH studies.
+        combined_subdir = os.path.join(temp_dir, "input2")
+        os.makedirs(combined_subdir)
+        # Recreate the seeded study so its files exist in this new input root.
+        self._make_source_dicom(
+            combined_subdir, "studyA",
+            sop_instance_uid="1.2.S1.INST",
+            series_instance_uid="1.2.S1.SER",
+            study_instance_uid="1.2.STUDY.SEEDED",
+            frame_of_reference_uid="1.2.FOR.SEEDED",
+        )
+        self._make_source_dicom(
+            combined_subdir, "studyB",
+            sop_instance_uid="1.2.S2.INST",
+            series_instance_uid="1.2.S2.SER",
+            study_instance_uid="1.2.STUDY.UNSEEN",
+            frame_of_reference_uid="1.2.FOR.UNSEEN",
+            patient_id="P2",
+        )
+
+        m2 = DicomFileManager()
+        m2.scan_directory(combined_subdir, seed_keys_csv=prior_keys_csv)
+
+        seeded_row_anon = m2.dicom_df[
+            m2.dicom_df['StudyUID'] == "1.2.STUDY.SEEDED"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+        unseen_row_anon = m2.dicom_df[
+            m2.dicom_df['StudyUID'] == "1.2.STUDY.UNSEEN"
+        ]['AnonFrameOfReferenceUID'].iloc[0]
+
+        assert seeded_row_anon == seeded_anon
+        assert unseen_row_anon != seeded_anon
+        assert unseen_row_anon.startswith("2.25.")
+
+    def test_anon_for_uid_resume_degrades_gracefully_for_old_keys_csv(self, temp_dir):
+        """A keys.csv missing FOR columns → no exception; all rows minted fresh."""
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.OLDCSV",
+            series_instance_uid="1.2.SER.OLDCSV",
+            study_instance_uid="1.2.STUDY.OLDCSV",
+            frame_of_reference_uid="1.2.FOR.OLDCSV",
+        )
+        old_csv = os.path.join(temp_dir, "old_keys.csv")
+        # Synthesize an older keys.csv without the new columns.
+        pd.DataFrame([{
+            'InputPath': 'x.dcm',
+            'OutputPath': 'x.dcm',
+            'StudyUID': '1.2.STUDY.OLDCSV',
+            'SeriesUID': '1.2.SER.OLDCSV',
+            'AnonStudyUID': '2.25.111',
+        }]).to_csv(old_csv, index=False)
+
+        m = DicomFileManager()
+        m.scan_directory(temp_dir, seed_keys_csv=old_csv)
+
+        rows = m.dicom_df[m.dicom_df['StudyUID'] == "1.2.STUDY.OLDCSV"]
+        assert len(rows) == 1
+        anon = rows.iloc[0]['AnonFrameOfReferenceUID']
+        assert anon.startswith("2.25.")
+        # No partial seeding from the old csv was applied for FOR.
+        assert ("1.2.STUDY.OLDCSV", "1.2.FOR.OLDCSV") in m._for_map
+
+    def test_anon_for_uid_columns_in_keys_csv(self, manager, temp_dir):
+        """Both new columns persist into the keys.csv-ready dataframe."""
+        self._make_source_dicom(
+            temp_dir, "study/ser1",
+            sop_instance_uid="1.2.INST.CSV",
+            series_instance_uid="1.2.SER.CSV",
+            study_instance_uid="1.2.STUDY.CSV",
+            frame_of_reference_uid="1.2.FOR.CSV",
+        )
+
+        manager.scan_directory(temp_dir)
+        csv_df = manager.build_csv_dataframe(temp_dir)
+
+        assert csv_df is not None
+        assert 'FrameOfReferenceUID' in csv_df.columns
+        assert 'AnonFrameOfReferenceUID' in csv_df.columns
+        assert 'DICOMDataset' not in csv_df.columns
+
+    # ----------------------------------------------------------------------
+    # Unit-level _copy_and_generate_uids three-tier read path tests.
+    # ----------------------------------------------------------------------
+
+    def test_copy_and_generate_uids_uses_anon_for_from_dataframe(
+        self, manager_with_data, temp_dir
+    ):
+        """Primary read path: AnonFrameOfReferenceUID column wins."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+        # Sentinel that does NOT match the fixture-seeded _for_map value,
+        # so we know the column is what was read.
+        manager_with_data.dicom_df.at[0, 'AnonFrameOfReferenceUID'] = "2.25.SENTINEL"
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID == "2.25.SENTINEL"
+
+    def test_copy_and_generate_uids_falls_back_to_for_map_when_df_column_missing(
+        self, manager_with_data, temp_dir
+    ):
+        """Fallback path: when the dataframe column is absent, _for_map is consulted."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        output_path = os.path.join(temp_dir, "test.dcm")
+        # Drop the column so the primary path can't fire.
+        manager_with_data.dicom_df = manager_with_data.dicom_df.drop(
+            columns=['AnonFrameOfReferenceUID']
+        )
+        manager_with_data._for_map[
+            (str(source_ds.StudyInstanceUID), str(source_ds.FrameOfReferenceUID))
+        ] = "2.25.MAPSENTINEL"
+
+        manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID == "2.25.MAPSENTINEL"
+
+    def test_copy_and_generate_uids_last_resort_mints_for_when_no_mapping_available(
+        self, manager_with_data, temp_dir, caplog
+    ):
+        """Last-resort fallback: no dataframe column AND no _for_map entry → mint + log error."""
+        ds = pydicom.Dataset()
+        # Construct a source_ds whose (StudyUID, FOR) is not in the manager's
+        # seeded map and that has a brand-new FOR not in the column.
+        source_ds = pydicom.Dataset()
+        source_ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.6.1"
+        source_ds.SOPInstanceUID = "1.2.NOMAP.INST"
+        source_ds.SeriesInstanceUID = "1.2.NOMAP.SER"
+        source_ds.StudyInstanceUID = "1.2.NOMAP.STUDY"
+        source_ds.FrameOfReferenceUID = "1.2.NOMAP.FOR"
+        # Drop the column AND clear the map.
+        manager_with_data.dicom_df = manager_with_data.dicom_df.drop(
+            columns=['AnonFrameOfReferenceUID']
+        )
+        manager_with_data._for_map.clear()
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        with caplog.at_level(logging.ERROR):
+            manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
+
+        assert ds.FrameOfReferenceUID
+        assert ds.FrameOfReferenceUID.startswith("2.25.")
+        assert any("AnonFrameOfReferenceUID" in r.message for r in caplog.records)
+
+    # ----------------------------------------------------------------------
+    # End-to-end save → read round-trip.
+    # ----------------------------------------------------------------------
+
+    def test_save_anonymized_dicom_emits_shared_for_uid_for_co_located_series(
+        self, manager, temp_dir, sample_image_array_single_frame
+    ):
+        """Two series sharing source FOR in one study → saved files share output FOR."""
+        study_uid = "1.2.STUDY.E2E"
+        shared_for = "1.2.FOR.E2E"
+        self._make_source_dicom(
+            temp_dir, "study/serA",
+            sop_instance_uid="1.2.INST.E2E.A",
+            series_instance_uid="1.2.SER.E2E.A",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=shared_for,
+        )
+        self._make_source_dicom(
+            temp_dir, "study/serB",
+            sop_instance_uid="1.2.INST.E2E.B",
+            series_instance_uid="1.2.SER.E2E.B",
+            study_instance_uid=study_uid,
+            frame_of_reference_uid=shared_for,
+        )
+
+        manager.scan_directory(temp_dir)
+
+        outputs = []
+        for idx in range(len(manager.dicom_df)):
+            manager.current_index = idx
+            out_path = os.path.join(temp_dir, "out", f"out_{idx}.dcm")
+            manager.save_anonymized_dicom(sample_image_array_single_frame, out_path)
+            outputs.append(out_path)
+
+        a = pydicom.dcmread(outputs[0])
+        b = pydicom.dcmread(outputs[1])
+        assert a.FrameOfReferenceUID == b.FrameOfReferenceUID
+        assert a.FrameOfReferenceUID.startswith("2.25.")
+
+    def test_apply_anonymization_computes_age_in_years_from_birthdate(self, manager_with_data):
+        """When source has BirthDate+StudyDate but no PatientAge, age is computed in years."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19800101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "040Y"
+
+    def test_apply_anonymization_computes_age_in_months_for_infant(self, manager_with_data):
+        """Infant age (>=31 days, <365) is computed in months using 30.4375 days/month."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "20191215"
+        source_ds.StudyDate = "20200615"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "006M"
+
+    def test_apply_anonymization_computes_age_in_days_for_newborn(self, manager_with_data):
+        """Newborn age (<31 days) is computed in days, zero-padded to three digits."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "20200115"
+        source_ds.StudyDate = "20200125"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "010D"
+
+    def test_apply_anonymization_computed_age_capped_at_90y(self, manager_with_data):
+        """Computed age >= 90 years is capped at '090Y' per HIPAA Safe Harbor."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19200101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "090Y"
+
+    def test_apply_anonymization_preserves_existing_patient_age_does_not_recompute(
+        self, manager_with_data
+    ):
+        """Source PatientAge wins over a (different) BirthDate-derived value — no overwrite."""
+        ds = pydicom.Dataset()
+        ds.PatientAge = "045Y"
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19500101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "045Y"
+
+    def test_apply_anonymization_missing_birthdate_no_age_set_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """With no PatientAge and no BirthDate, PatientAge is left absent and a warning is logged."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.StudyDate = "20200101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message for r in caplog.records)
+
+    def test_apply_anonymization_missing_studydate_no_age_set_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """With no PatientAge and no StudyDate, PatientAge is left absent and a warning is logged."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19800101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message for r in caplog.records)
+
+    def test_apply_anonymization_birthdate_after_studydate_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """If BirthDate is after StudyDate (data error), no age is set and a warning is logged."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "20200101"
+        source_ds.StudyDate = "20190101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message or "BirthDate" in r.message
+                   for r in caplog.records)
+
+    def test_apply_anonymization_malformed_birthdate_logs_warning(
+        self, manager_with_data, caplog
+    ):
+        """A non-parseable BirthDate yields no PatientAge and logs a warning (not an error)."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "BADDATE"
+        source_ds.StudyDate = "20200101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert any("PatientAge" in r.message or "BirthDate" in r.message
+                   for r in caplog.records)
+
+    def test_apply_anonymization_empty_birthdate_no_age_set_no_error(
+        self, manager_with_data, caplog
+    ):
+        """Empty BirthDate is a valid 'no value' state — no age set, no ERROR-level log."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = ""
+        source_ds.StudyDate = "20200101"
+
+        with caplog.at_level(logging.WARNING):
+            manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert not hasattr(ds, 'PatientAge')
+        assert all(r.levelno < logging.ERROR for r in caplog.records)
+
+    def test_apply_anonymization_clears_birthdate_when_age_computed(self, manager_with_data):
+        """PatientBirthDate is still cleared to '' even when PatientAge is computed from it."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "TEST123"
+        source_ds.PatientBirthDate = "19800101"
+        source_ds.StudyDate = "20200101"
+
+        manager_with_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientBirthDate == ""
+        assert ds.PatientAge == "040Y"
+
     def test_copy_source_metadata_preserves_transducer_type(self, manager_with_data, temp_dir):
         """Test TransducerType present in source is preserved in de-id output"""
         ds = pydicom.Dataset()
@@ -1119,8 +1794,8 @@ class TestDicomFileManager:
         assert hasattr(ds, 'TransducerData')
         assert ds.TransducerData == ""
 
-    def test_copy_source_metadata_preserves_transducer_data_serial(self, manager_with_data, temp_dir):
-        """TransducerData in de-id retains the raw source value, including the serial segment"""
+    def test_copy_source_metadata_strips_transducer_data_serial(self, manager_with_data, temp_dir):
+        """Comma-delimited TransducerData is trimmed to the leading model segment."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.TransducerData = "SC6-1s,JK9U41102597"
@@ -1128,10 +1803,10 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert ds.TransducerData == "SC6-1s,JK9U41102597"
+        assert ds.TransducerData == "SC6-1s"
 
-    def test_copy_source_metadata_preserves_transducer_data_backslash(self, manager_with_data, temp_dir):
-        """Backslash-delimited TransducerData is preserved element-wise in the de-id DICOM"""
+    def test_copy_source_metadata_strips_transducer_data_backslash(self, manager_with_data, temp_dir):
+        """Backslash-delimited TransducerData (VR LO MultiValue) collapses to the first segment string."""
         from pydicom.multival import MultiValue
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
@@ -1140,10 +1815,10 @@ class TestDicomFileManager:
 
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
-        assert list(ds.TransducerData) == ["S4-1U", "UNUSED", "UNUSED"]
+        assert ds.TransducerData == "S4-1U"
 
     def test_copy_source_metadata_preserves_transducer_data_case(self, manager_with_data, temp_dir):
-        """TransducerData model segment in de-id preserves original case (unlike TransducerModel DataFrame column)"""
+        """A single-segment TransducerData (no delimiter) survives unchanged with original case."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         source_ds.TransducerData = "C1-5"
@@ -1152,6 +1827,85 @@ class TestDicomFileManager:
         manager_with_data._copy_source_metadata(ds, source_ds, output_path)
 
         assert ds.TransducerData == "C1-5"
+
+    def test_copy_source_metadata_strips_transducer_data_sp5_cb3c(self, manager_with_data, temp_dir):
+        """User example: 'SP5-1s,CB3C' -> 'SP5-1s'."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "SP5-1s,CB3C"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SP5-1s"
+
+    def test_copy_source_metadata_strips_transducer_data_sc6_jk9(self, manager_with_data, temp_dir):
+        """User example: 'SC6-1s,JK9' -> 'SC6-1s'."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "SC6-1s,JK9"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SC6-1s"
+
+    def test_copy_source_metadata_strips_transducer_data_only_delimiters(self, manager_with_data, temp_dir):
+        """Pathological all-delimiter input becomes empty."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = "\\\\"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == ""
+
+    def test_copy_source_metadata_strips_transducer_data_with_whitespace(self, manager_with_data, temp_dir):
+        """Internal whitespace around the leading segment is stripped."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.TransducerData = " SC6-1s ,02597"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.TransducerData == "SC6-1s"
+
+    def test_copy_source_metadata_preserves_manufacturer(self, manager_with_data, temp_dir):
+        """Manufacturer (0008,0070) round-trips verbatim — regression lock."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.Manufacturer = "GE Healthcare"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.Manufacturer == "GE Healthcare"
+
+    def test_copy_source_metadata_preserves_manufacturer_model_name(self, manager_with_data, temp_dir):
+        """ManufacturerModelName (0008,1090) round-trips verbatim — regression lock."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.ManufacturerModelName = "Vivid E95"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.ManufacturerModelName == "Vivid E95"
+
+    def test_copy_source_metadata_preserves_ge_vivid_pair(self, manager_with_data, temp_dir):
+        """Most common GE configuration: both vendor/model survive intact together."""
+        ds = pydicom.Dataset()
+        source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
+        source_ds.Manufacturer = "GE Healthcare"
+        source_ds.ManufacturerModelName = "Vivid E95"
+        output_path = os.path.join(temp_dir, "test.dcm")
+
+        manager_with_data._copy_source_metadata(ds, source_ds, output_path)
+
+        assert ds.Manufacturer == "GE Healthcare"
+        assert ds.ManufacturerModelName == "Vivid E95"
 
     def test_apply_anonymization_generates_uids_when_none_provided(self, manager_with_data):
         """Test that _apply_anonymization generates UIDs when no patient info provided"""
@@ -1368,9 +2122,8 @@ class TestDicomFileManager:
         assert len(result) == 3
         assert all(isinstance(item, str) for item in result)
 
-    # Test that SeriesInstanceUID is now passed through from source
-    def test_copy_and_generate_uids_passes_through_series_uid(self, manager_with_data, temp_dir):
-        """Test that SeriesInstanceUID is copied from source when present"""
+    def test_copy_and_generate_uids_remaps_series_uid(self, manager_with_data, temp_dir):
+        """SeriesInstanceUID is remapped via remap_uid when source provides one."""
         ds = pydicom.Dataset()
         source_ds = manager_with_data.dicom_df.iloc[0].DICOMDataset
         output_path = os.path.join(temp_dir, "test.dcm")
@@ -1379,18 +2132,18 @@ class TestDicomFileManager:
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        assert ds.SeriesInstanceUID == original_series_uid
+        assert ds.SeriesInstanceUID == remap_uid(str(original_series_uid))
+        assert ds.SeriesInstanceUID != original_series_uid
 
     def test_copy_and_generate_uids_generates_series_uid_when_missing(self, manager_with_data, temp_dir):
-        """Test that SeriesInstanceUID is freshly generated when source lacks it"""
+        """When SeriesInstanceUID is missing, the fallback still lands in the 2.25 arc."""
         ds = pydicom.Dataset()
         source_ds = pydicom.Dataset()  # empty — no SeriesInstanceUID
         output_path = os.path.join(temp_dir, "test.dcm")
 
         manager_with_data._copy_and_generate_uids(ds, source_ds, output_path)
 
-        assert hasattr(ds, 'SeriesInstanceUID')
-        assert ds.SeriesInstanceUID != ""
+        assert ds.SeriesInstanceUID.startswith("2.25.")
 
     @patch('pydicom.dataset.FileDataset.save_as')
     def test_create_and_save_dicom_file(self, mock_save_as, manager_with_data, temp_dir):
@@ -1522,7 +2275,8 @@ class TestDicomFileManager:
         result = manager_with_data.save_anonymized_dicom_header(
             current_record,
             output_filename,
-            headers_directory
+            headers_directory,
+            anonymized_dataset=current_record.DICOMDataset,
         )
 
         assert result is not None
@@ -1540,7 +2294,8 @@ class TestDicomFileManager:
         result_path = manager_with_data.save_anonymized_dicom_header(
             current_record,
             output_filename,
-            headers_directory
+            headers_directory,
+            anonymized_dataset=current_record.DICOMDataset,
         )
 
         # Read the JSON file and verify anonymization
@@ -1560,7 +2315,8 @@ class TestDicomFileManager:
         result_path = manager_with_data.save_anonymized_dicom_header(
             current_record,
             output_filename,
-            headers_directory
+            headers_directory,
+            anonymized_dataset=current_record.DICOMDataset,
         )
 
         # Read the JSON file and verify anonymization
@@ -1575,7 +2331,8 @@ class TestDicomFileManager:
         result = manager_with_data.save_anonymized_dicom_header(
             current_record,
             "test.dcm",
-            None
+            None,
+            anonymized_dataset=current_record.DICOMDataset,
         )
 
         assert result is None
@@ -1588,25 +2345,29 @@ class TestDicomFileManager:
             manager_with_data.save_anonymized_dicom_header(
                 current_record,
                 "",
-                headers_directory
+                headers_directory,
+                anonymized_dataset=current_record.DICOMDataset,
             )
 
         with pytest.raises(ValueError, match="Output filename is required"):
             manager_with_data.save_anonymized_dicom_header(
                 current_record,
                 "",
-                headers_directory
+                headers_directory,
+                anonymized_dataset=current_record.DICOMDataset,
             )
 
     def test_save_anonymized_dicom_header_raises_error_when_no_record(self, manager_with_data, temp_dir):
         headers_directory = os.path.join(temp_dir, "headers")
         current_record = None
+        real_record = manager_with_data.dicom_df.iloc[0]
 
         with pytest.raises(ValueError, match="Current DICOM record is required"):
             manager_with_data.save_anonymized_dicom_header(
                 current_record,
                 "test.dcm",
-                headers_directory
+                headers_directory,
+                anonymized_dataset=real_record.DICOMDataset,
             )
 
     def test_save_anonymized_dicom_header_flatten_directory_structure(self, manager_with_data, temp_dir):
@@ -1618,7 +2379,8 @@ class TestDicomFileManager:
         result_path = manager_with_data.save_anonymized_dicom_header(
             current_record,
             "test.dcm",
-            headers_directory
+            headers_directory,
+            anonymized_dataset=current_record.DICOMDataset,
         )
 
         expected_path = os.path.join(headers_directory, "test_DICOMHeader.json")
@@ -1700,6 +2462,9 @@ class TestBuildCsvDataframe:
             'StudyUID': 'S1',
             'SeriesUID': 'Se1',
             'InstanceUID': 'I1',
+            'AnonStudyUID': '2.25.111',
+            'AnonSeriesUID': '2.25.222',
+            'AnonSOPInstanceUID': '2.25.333',
             'PhysicalDeltaX': 0.1,
             'PhysicalDeltaY': 0.1,
             'ContentDate': '20240101',
@@ -1775,6 +2540,385 @@ class TestBuildCsvDataframe:
         df_no_slash = manager.build_csv_dataframe(self.ROOT)
 
         assert df_slash.iloc[0]['InputPath'] == df_no_slash.iloc[0]['InputPath']
+
+    def test_anon_uid_columns_pass_through_unchanged(self, manager):
+        """Anon* UID columns are persisted verbatim — not subject to the InputPath relative rewrite."""
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        assert 'AnonStudyUID' in df.columns
+        assert 'AnonSeriesUID' in df.columns
+        assert 'AnonSOPInstanceUID' in df.columns
+        assert df.iloc[0]['AnonStudyUID'] == '2.25.111'
+        assert df.iloc[0]['AnonSeriesUID'] == '2.25.222'
+        assert df.iloc[0]['AnonSOPInstanceUID'] == '2.25.333'
+
+    def test_dataframe_columns_match_constant_ordering(self, manager):
+        """build_csv_dataframe preserves DICOM_DATAFRAME_COLUMNS ordering minus DICOMDataset."""
+        abs_path = os.path.join(self.ROOT, 'a', 'IM001.dcm')
+        self._populate(manager, [self._make_row(abs_path)])
+
+        df = manager.build_csv_dataframe(self.ROOT)
+
+        expected = [c for c in DicomFileManager.DICOM_DATAFRAME_COLUMNS if c != 'DICOMDataset']
+        assert list(df.columns) == expected
+
+
+class TestRedScaffolding:
+    """RED scaffolding for the de-id review fixes.
+
+    These tests fail on the current code and pass once the corresponding
+    GREEN step lands. Grouped by reviewer finding so each block can be
+    pointed at its production fix.
+    """
+
+    PATIENT_ID = "REDPATIENT"
+    PATIENT_NAME = "Red^Scaffold^Test"
+    STUDY_UID = "1.2.840.RED.STUDY"
+    SERIES_UID = "1.2.840.RED.SERIES"
+    SOP_INSTANCE_UID = "1.2.840.RED.SOP"
+    SOURCE_FOR_UID = "1.2.840.RED.FOR"
+    ANON_FOR_UID = "2.25.RED.ANONFOR"
+    TRANSDUCER_DATA = "SC6-1s,SERIAL12345"
+    TRANSDUCER_MODEL = "sc6-1s"
+    FILE_NAME = "red_test.dcm"
+
+    @pytest.fixture
+    def manager(self):
+        return DicomFileManager()
+
+    @pytest.fixture
+    def temp_dir(self):
+        d = tempfile.mkdtemp()
+        yield d
+        shutil.rmtree(d)
+
+    def _make_source_ds(self, *, sop_uid=None, series_uid=None,
+                        study_uid=None, for_uid=None,
+                        patient_id=None, patient_name=None,
+                        transducer_data=None):
+        """Build a minimal source DICOM dataset for the RED tests."""
+        helper = TestDicomFileManager()
+        ds = helper.create_test_dicom_file(
+            PatientID=patient_id or self.PATIENT_ID,
+            PatientName=patient_name or self.PATIENT_NAME,
+            StudyInstanceUID=study_uid or self.STUDY_UID,
+            SeriesInstanceUID=series_uid or self.SERIES_UID,
+            SOPInstanceUID=sop_uid or self.SOP_INSTANCE_UID,
+            TransducerData=transducer_data or self.TRANSDUCER_DATA,
+        )
+        ds.FrameOfReferenceUID = for_uid or self.SOURCE_FOR_UID
+        return ds
+
+    @pytest.fixture
+    def manager_with_red_data(self, manager, temp_dir):
+        """Populate manager.dicom_df with one row that has all Anon* columns set."""
+        helper = TestDicomFileManager()
+        ds = self._make_source_ds()
+        filename = manager._generate_filename_from_dicom(ds)
+        filepath = helper.save_dicom_file(ds, temp_dir, filename)
+
+        dicom_data = [{
+            'InputPath': filepath,
+            'OutputPath': os.path.relpath(filepath, temp_dir),
+            'AnonFilename': self.FILE_NAME,
+            'PatientUID': self.PATIENT_ID,
+            'StudyUID': self.STUDY_UID,
+            'SeriesUID': self.SERIES_UID,
+            'InstanceUID': self.SOP_INSTANCE_UID,
+            'AnonStudyUID': remap_uid(self.STUDY_UID),
+            'AnonSeriesUID': remap_uid(self.SERIES_UID),
+            'AnonSOPInstanceUID': remap_uid(self.SOP_INSTANCE_UID),
+            'FrameOfReferenceUID': self.SOURCE_FOR_UID,
+            'AnonFrameOfReferenceUID': self.ANON_FOR_UID,
+            'PhysicalDeltaX': 0.1,
+            'PhysicalDeltaY': 0.15,
+            'ContentDate': "20240101",
+            'ContentTime': "120000",
+            'Patch': False,
+            'TransducerModel': self.TRANSDUCER_MODEL,
+            'DICOMDataset': ds,
+        }]
+
+        manager._create_dataframe(dicom_data)
+        manager._for_map[(self.STUDY_UID, self.SOURCE_FOR_UID)] = self.ANON_FOR_UID
+        manager.current_index = 0
+        return manager
+
+    @pytest.fixture
+    def sample_image_array(self):
+        return np.random.randint(0, 255, (1, 10, 15, 1), dtype=np.uint8)
+
+    # ------------------------------------------------------------------
+    # F1 — _DICOMHeader.json must serialize from the anonymized dataset.
+    # ------------------------------------------------------------------
+
+    def test_save_anonymized_dicom_returns_anonymized_dataset(
+        self, manager_with_red_data, temp_dir, sample_image_array
+    ):
+        """save_anonymized_dicom must return the in-memory anonymized DS so
+        the header sidecar can serialize from the same source of truth as the
+        saved .dcm. Currently returns None — RED."""
+        output_path = os.path.join(temp_dir, "out.dcm")
+        # _populate_anon_for_column mints the actual run-local FOR UID
+        # during _create_dataframe; assert against whatever it minted, not a
+        # fixture sentinel.
+        expected_anon_for = manager_with_red_data.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+        result = manager_with_red_data.save_anonymized_dicom(
+            sample_image_array, output_path,
+            new_patient_name="anon_pt", new_patient_id="ANON_PID"
+        )
+
+        assert isinstance(result, pydicom.Dataset)
+        assert result.PatientID == "ANON_PID"
+        assert result.SOPInstanceUID == remap_uid(self.SOP_INSTANCE_UID)
+        assert result.StudyInstanceUID == remap_uid(self.STUDY_UID)
+        assert result.SeriesInstanceUID == remap_uid(self.SERIES_UID)
+        assert result.FrameOfReferenceUID == expected_anon_for
+        assert result.FrameOfReferenceUID.startswith("2.25.")
+
+    def test_save_anonymized_dicom_header_accepts_anonymized_dataset_kwarg(
+        self, manager_with_red_data, temp_dir, sample_image_array
+    ):
+        """save_anonymized_dicom_header must accept anonymized_dataset kwarg.
+        Currently no such param — RED with TypeError."""
+        headers_dir = os.path.join(temp_dir, "headers")
+        output_path = os.path.join(temp_dir, "out.dcm")
+        anon_ds = manager_with_red_data.save_anonymized_dicom(
+            sample_image_array, output_path,
+            new_patient_name="anon_pt", new_patient_id="ANON_PID"
+        )
+
+        result_path = manager_with_red_data.save_anonymized_dicom_header(
+            manager_with_red_data.dicom_df.iloc[0],
+            "anon_pt.dcm",
+            headers_dir,
+            anonymized_dataset=anon_ds,
+        )
+        assert result_path is not None
+        assert os.path.exists(result_path)
+
+    def test_header_json_does_not_leak_source_uids(
+        self, manager_with_red_data, temp_dir, sample_image_array
+    ):
+        """The header JSON sidecar must contain remapped UIDs and must NOT
+        contain any original source UID values."""
+        headers_dir = os.path.join(temp_dir, "headers")
+        output_path = os.path.join(temp_dir, "out.dcm")
+        expected_anon_for = manager_with_red_data.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+        anon_ds = manager_with_red_data.save_anonymized_dicom(
+            sample_image_array, output_path,
+            new_patient_name="anon_pt", new_patient_id="ANON_PID"
+        )
+        result_path = manager_with_red_data.save_anonymized_dicom_header(
+            manager_with_red_data.dicom_df.iloc[0],
+            "anon_pt.dcm",
+            headers_dir,
+            anonymized_dataset=anon_ds,
+        )
+
+        with open(result_path) as f:
+            serialized = f.read()
+
+        assert self.STUDY_UID not in serialized
+        assert self.SERIES_UID not in serialized
+        assert self.SOP_INSTANCE_UID not in serialized
+        assert self.SOURCE_FOR_UID not in serialized
+        assert remap_uid(self.STUDY_UID) in serialized
+        assert remap_uid(self.SERIES_UID) in serialized
+        assert remap_uid(self.SOP_INSTANCE_UID) in serialized
+        assert expected_anon_for in serialized
+
+    def test_header_json_uses_trimmed_transducer_data(
+        self, manager_with_red_data, temp_dir, sample_image_array
+    ):
+        """The header JSON sidecar must contain only the trimmed first
+        segment of TransducerData. The source's vendor serial number must
+        not leak."""
+        headers_dir = os.path.join(temp_dir, "headers")
+        output_path = os.path.join(temp_dir, "out.dcm")
+        anon_ds = manager_with_red_data.save_anonymized_dicom(
+            sample_image_array, output_path,
+            new_patient_name="anon_pt", new_patient_id="ANON_PID"
+        )
+        result_path = manager_with_red_data.save_anonymized_dicom_header(
+            manager_with_red_data.dicom_df.iloc[0],
+            "anon_pt.dcm",
+            headers_dir,
+            anonymized_dataset=anon_ds,
+        )
+
+        with open(result_path) as f:
+            serialized = f.read()
+
+        assert "SERIAL12345" not in serialized
+        assert "SC6-1s" in serialized
+
+    # ------------------------------------------------------------------
+    # F4 — _for_map must be cleared at start of each scan_directory call.
+    # ------------------------------------------------------------------
+
+    def test_scan_directory_clears_for_map_between_unrelated_scans(self, temp_dir):
+        """Two scans of unrelated studies on one DicomFileManager must NOT
+        share _for_map entries. Currently entries from scan #1 persist into
+        scan #2 — RED."""
+        helper = TestDicomFileManager()
+
+        # Scan 1 input.
+        scan1_dir = os.path.join(temp_dir, "scan1")
+        os.makedirs(scan1_dir)
+        ds1 = helper.create_test_dicom_file(
+            StudyInstanceUID="1.2.RED.STUDY.A",
+            SeriesInstanceUID="1.2.RED.SER.A",
+            SOPInstanceUID="1.2.RED.SOP.A",
+        )
+        ds1.FrameOfReferenceUID = "1.2.RED.FOR.A"
+        helper.save_dicom_file(ds1, scan1_dir, "a.dcm")
+
+        # Scan 2 input — completely different study.
+        scan2_dir = os.path.join(temp_dir, "scan2")
+        os.makedirs(scan2_dir)
+        ds2 = helper.create_test_dicom_file(
+            StudyInstanceUID="1.2.RED.STUDY.B",
+            SeriesInstanceUID="1.2.RED.SER.B",
+            SOPInstanceUID="1.2.RED.SOP.B",
+        )
+        ds2.FrameOfReferenceUID = "1.2.RED.FOR.B"
+        helper.save_dicom_file(ds2, scan2_dir, "b.dcm")
+
+        m = DicomFileManager()
+        m.scan_directory(scan1_dir)
+        scan1_keys = set(m._for_map.keys())
+        assert ("1.2.RED.STUDY.A", "1.2.RED.FOR.A") in scan1_keys
+
+        # Re-scan a different directory on the same manager.
+        m.scan_directory(scan2_dir)
+
+        # After scan #2, _for_map must contain ONLY scan #2's entries.
+        # Currently scan #1's entries persist — RED.
+        assert ("1.2.RED.STUDY.A", "1.2.RED.FOR.A") not in m._for_map
+        assert ("1.2.RED.STUDY.B", "1.2.RED.FOR.B") in m._for_map
+
+    def test_scan_directory_remints_anon_for_when_rescanning_same_study(self, temp_dir):
+        """Run-local unlinkability: scanning the same study twice on one manager
+        without seed_keys_csv must yield a different anonymized FOR UID the
+        second time. Currently the second scan reuses the first scan's
+        _for_map entry — RED."""
+        helper = TestDicomFileManager()
+        ds = helper.create_test_dicom_file(
+            StudyInstanceUID="1.2.RED.STUDY.RESCAN",
+            SeriesInstanceUID="1.2.RED.SER.RESCAN",
+            SOPInstanceUID="1.2.RED.SOP.RESCAN",
+        )
+        ds.FrameOfReferenceUID = "1.2.RED.FOR.RESCAN"
+        helper.save_dicom_file(ds, temp_dir, "rescan.dcm")
+
+        m = DicomFileManager()
+        m.scan_directory(temp_dir)
+        first_anon = m.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        # Re-scan the same directory on the same manager — no seed.
+        m.scan_directory(temp_dir)
+        second_anon = m.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+
+        assert first_anon != second_anon
+        assert first_anon.startswith("2.25.")
+        assert second_anon.startswith("2.25.")
+
+    def test_scan_directory_preserves_seeded_mapping_after_reset(self, temp_dir):
+        """Reset-then-seed ordering must not break the resume contract:
+        when a seed_keys_csv is provided, the seeded entries survive the
+        reset and the second scan reuses them."""
+        helper = TestDicomFileManager()
+        ds = helper.create_test_dicom_file(
+            StudyInstanceUID="1.2.RED.STUDY.RESUME",
+            SeriesInstanceUID="1.2.RED.SER.RESUME",
+            SOPInstanceUID="1.2.RED.SOP.RESUME",
+        )
+        ds.FrameOfReferenceUID = "1.2.RED.FOR.RESUME"
+        helper.save_dicom_file(ds, temp_dir, "resume.dcm")
+
+        m1 = DicomFileManager()
+        m1.scan_directory(temp_dir)
+        prior_anon = m1.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+        prior_keys = os.path.join(temp_dir, "keys.csv")
+        m1.build_csv_dataframe(temp_dir).to_csv(prior_keys, index=False)
+
+        # Second scan on a DIFFERENT manager with the seed CSV.
+        m2 = DicomFileManager()
+        # Pre-pollute m2._for_map with stale entries to verify they get cleared
+        # before seeding so they don't shadow seeded mappings.
+        m2._for_map[("1.2.STALE.STUDY", "1.2.STALE.FOR")] = "2.25.STALE"
+        m2.scan_directory(temp_dir, seed_keys_csv=prior_keys)
+
+        rescanned_anon = m2.dicom_df.iloc[0]['AnonFrameOfReferenceUID']
+        assert rescanned_anon == prior_anon
+        # Stale entry must have been cleared by the reset-then-seed sequence.
+        assert ("1.2.STALE.STUDY", "1.2.STALE.FOR") not in m2._for_map
+
+    # ------------------------------------------------------------------
+    # F5 — PatientAge calendar-year math at the exact one-year boundary.
+    # ------------------------------------------------------------------
+
+    def test_compute_patient_age_returns_001y_at_exact_one_year(self, manager_with_red_data):
+        """A patient exactly 365 days old (no leap year between dates) is one
+        calendar year old and must yield '001Y'. Current `int(365 // 365.25)`
+        returns 0 → '000Y' — RED."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "REDPATIENT"
+        source_ds.PatientBirthDate = "20210601"  # 2021 non-leap
+        source_ds.StudyDate = "20220601"          # exactly 365 days later
+
+        manager_with_red_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "001Y"
+
+    def test_compute_patient_age_handles_leap_spanning_one_year(self, manager_with_red_data):
+        """A patient born 2020-02-15 and studied 2021-02-15 spans a leap day
+        (delta_days = 366). Both old and new math return '001Y'; this guards
+        against accidentally over-correcting."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "REDPATIENT"
+        source_ds.PatientBirthDate = "20200215"
+        source_ds.StudyDate = "20210215"
+
+        manager_with_red_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "001Y"
+
+    def test_compute_patient_age_returns_months_when_birthday_not_yet(
+        self, manager_with_red_data
+    ):
+        """Birthday hasn't arrived yet: 2020-06-01 → 2021-05-31 is 364 days.
+        Falls into the months branch with current code (`< 365`) and must
+        keep doing so after the fix."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "REDPATIENT"
+        source_ds.PatientBirthDate = "20200601"
+        source_ds.StudyDate = "20210531"
+
+        manager_with_red_data._apply_anonymization(ds, source_ds)
+
+        # 364 / 30.4375 ≈ 11.96 → 11M (current behavior is correct here).
+        assert ds.PatientAge == "011M"
+
+    def test_compute_patient_age_at_two_years_exact(self, manager_with_red_data):
+        """delta_days = 731 (one leap year between 2-year span) must yield
+        '002Y'. Regression test for the years branch under the new math."""
+        ds = pydicom.Dataset()
+        source_ds = pydicom.Dataset()
+        source_ds.PatientID = "REDPATIENT"
+        source_ds.PatientBirthDate = "20190601"
+        source_ds.StudyDate = "20210601"  # 2020 was a leap year → 731 days
+
+        manager_with_red_data._apply_anonymization(ds, source_ds)
+
+        assert ds.PatientAge == "002Y"
 
 
 if __name__ == "__main__":

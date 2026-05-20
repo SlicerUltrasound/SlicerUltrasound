@@ -13,6 +13,7 @@ set(MODULE_PYTHON_SCRIPTS
   common/masking.py
   common/overview_generator.py
   common/progress_reporter.py
+  common/uid_remap.py
   )
 
 set(MODULE_PYTHON_RESOURCES

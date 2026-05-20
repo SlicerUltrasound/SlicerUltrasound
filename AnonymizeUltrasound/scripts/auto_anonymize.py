@@ -121,8 +121,21 @@ def main():
     processor.initialize_model()
     overview_manifest = []
 
-    # Scan directory
-    num_files = dicom_manager.scan_directory(args.input_dir, config.skip_single_frame, config.hash_patient_id)
+    # Scan directory. On resume (when args.headers_dir already contains a
+    # keys.csv from a prior run), seed scan_directory with that CSV so the
+    # (StudyUID, FrameOfReferenceUID) → AnonFrameOfReferenceUID mapping is
+    # preserved. Without this, previously-exported files keep their old
+    # anon FOR while newly-processed files get a fresh one, and the rewritten
+    # keys.csv would no longer match the on-disk .dcm contents.
+    prior_keys_csv = None
+    if args.headers_dir:
+        candidate = os.path.join(args.headers_dir, 'keys.csv')
+        if os.path.exists(candidate):
+            prior_keys_csv = candidate
+    num_files = dicom_manager.scan_directory(
+        args.input_dir, config.skip_single_frame, config.hash_patient_id,
+        seed_keys_csv=prior_keys_csv,
+    )
     logger.info(f"Found {num_files} DICOM files")
 
     # Save keys.csv

@@ -12,6 +12,7 @@ import datetime
 import json
 from pydicom.dataset import FileMetaDataset
 from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
+from .uid_remap import remap_uid
 
 
 class DicomFileManager:
@@ -74,6 +75,11 @@ class DicomFileManager:
         'StudyUID',
         'SeriesUID',
         'InstanceUID',
+        'AnonStudyUID',
+        'AnonSeriesUID',
+        'AnonSOPInstanceUID',
+        'FrameOfReferenceUID',
+        'AnonFrameOfReferenceUID',
         'PhysicalDeltaX',
         'PhysicalDeltaY',
         'ContentDate',
@@ -93,6 +99,10 @@ class DicomFileManager:
         self.input_folder = None
         self.next_index = 0
         self.current_index = 0
+        # Maps (source StudyInstanceUID, source FrameOfReferenceUID) → run-local
+        # anonymized FOR UID. Populated by _populate_anon_for_column or seeded
+        # from a prior export's keys.csv via _seed_for_map_from_keys_csv.
+        self._for_map: dict[tuple[str, str], str] = {}
 
     def _first_transducer_segment(self, raw) -> str:
         """Return the first segment of a TransducerData-like value with case preserved.
@@ -131,7 +141,9 @@ class DicomFileManager:
         segment = self._first_transducer_segment(raw)
         return segment.lower() if segment else 'unknown'
 
-    def scan_directory(self, input_folder: str, skip_single_frame: bool = False, hash_patient_id: bool = True) -> int:
+    def scan_directory(self, input_folder: str, skip_single_frame: bool = False,
+                       hash_patient_id: bool = True,
+                       seed_keys_csv: Optional[str] = None) -> int:
         """
         Scan directory for DICOM files and create dataframe
 
@@ -139,11 +151,23 @@ class DicomFileManager:
             input_folder: Directory to scan
             skip_single_frame: Skip single frame DICOM files (AnonymizeUltrasound)
             hash_patient_id: If True, hash the patient ID
+            seed_keys_csv: Optional path to a prior export's keys.csv. When
+                provided, the (StudyUID, source FOR) → AnonFrameOfReferenceUID
+                mapping from that file pre-populates self._for_map so a resumed
+                export reuses the same anon FOR UIDs as the prior partial run.
 
         Returns:
             Number of DICOM files found
         """
         dicom_data = []
+
+        # Reset _for_map before seeding so a long-lived DicomFileManager (e.g.
+        # the Slicer logic singleton) doesn't carry mappings between unrelated
+        # scans — that would re-use anonymized FOR UIDs across exports and
+        # break run-local unlinkability. Seeding uses setdefault, so the
+        # reset-then-seed order preserves the resume contract.
+        self._for_map = {}
+        self._seed_for_map_from_keys_csv(seed_keys_csv)
 
         for root, dirs, files in os.walk(input_folder):
             # Sort to ensure consistent processing order
@@ -163,6 +187,34 @@ class DicomFileManager:
         self._create_dataframe(dicom_data)
 
         return len(self.dicom_df) if self.dicom_df is not None else 0
+
+    def _seed_for_map_from_keys_csv(self, path: Optional[str]) -> None:
+        """Pre-populate self._for_map from an existing export's keys.csv.
+
+        Enables resume safety: skipped + newly written files in a resumed export
+        share one (StudyUID, source FOR) → AnonFrameOfReferenceUID mapping.
+        Silently no-ops if path is None/empty/missing or the keys.csv lacks the
+        FrameOfReferenceUID / AnonFrameOfReferenceUID columns (older export
+        pre-dating this change). Existing entries in self._for_map are not
+        overwritten — first-seen wins (use setdefault).
+        """
+        if not path or not os.path.exists(path):
+            return
+        prior = pd.read_csv(path, dtype=str).fillna('')
+        required = {'StudyUID', 'FrameOfReferenceUID', 'AnonFrameOfReferenceUID'}
+        if not required.issubset(prior.columns):
+            return
+        for _, row in prior.iterrows():
+            study = row['StudyUID']
+            source_for = row['FrameOfReferenceUID']
+            anon = row['AnonFrameOfReferenceUID']
+            if not (study and anon):
+                continue
+            if source_for:
+                key = (study, source_for)
+            else:
+                key = (study, f":SeriesUID:{row.get('SeriesUID', '')}")
+            self._for_map.setdefault(key, anon)
 
     def get_number_of_instances(self) -> int:
         """Get number of instances in dataframe"""
@@ -253,6 +305,10 @@ class DicomFileManager:
                 'StudyUID': study_uid,
                 'SeriesUID': series_uid,
                 'InstanceUID': instance_uid,
+                'AnonStudyUID': remap_uid(str(study_uid)) if study_uid else '',
+                'AnonSeriesUID': remap_uid(str(series_uid)) if series_uid else '',
+                'AnonSOPInstanceUID': remap_uid(str(instance_uid)) if instance_uid else '',
+                'FrameOfReferenceUID': getattr(dicom_ds, 'FrameOfReferenceUID', ''),
                 'PhysicalDeltaX': physical_delta_x,
                 'PhysicalDeltaY': physical_delta_y,
                 'ContentDate': content_date,
@@ -368,7 +424,41 @@ class DicomFileManager:
                                        .groupby('StudyUID')[spacing_cols]
                                        .transform(lambda x: x.ffill().bfill()))
 
+        # Populate AnonFrameOfReferenceUID per (StudyUID, source FOR) group using
+        # the run-local _for_map (possibly seeded from a prior keys.csv).
+        self._populate_anon_for_column()
+
         self.next_index = 0
+
+    def _populate_anon_for_column(self) -> None:
+        """Assign AnonFrameOfReferenceUID per (StudyUID, source FrameOfReferenceUID) group.
+
+        Uses self._for_map as the source of truth. Reuses entries already in the
+        map (populated by _seed_for_map_from_keys_csv on resume). Generates fresh
+        pydicom.uid.generate_uid(prefix=None) values for new groups, yielding
+        run-local 2.25-arc UIDs.
+
+        For rows whose source dataset lacks a FrameOfReferenceUID, the mapping
+        key falls back to (StudyUID, ":SeriesUID:" + SeriesUID) so coordinate-less
+        series within one study are NOT falsely linked to one another. Real DICOM
+        UIDs contain only digits and dots, so the ":SeriesUID:" infix cannot
+        collide with a real-FOR-derived key.
+        """
+        if self.dicom_df is None or self.dicom_df.empty:
+            return
+
+        def assign(row):
+            study = str(row['StudyUID'])
+            source_for = str(row.get('FrameOfReferenceUID') or '')
+            if source_for:
+                key = (study, source_for)
+            else:
+                key = (study, f":SeriesUID:{row['SeriesUID']}")
+            if key not in self._for_map:
+                self._for_map[key] = pydicom.uid.generate_uid(prefix=None)
+            return self._for_map[key]
+
+        self.dicom_df['AnonFrameOfReferenceUID'] = self.dicom_df.apply(assign, axis=1)
 
     def update_progress_from_output(self, output_directory: str, preserve_directory_structure: bool) -> Optional[int]:
         """Update progress based on existing output files
@@ -496,9 +586,14 @@ class DicomFileManager:
         return self.next_index < len(self.dicom_df)
 
     def save_anonymized_dicom(self, image_array: np.ndarray, output_path: str,
-                            new_patient_name: str = '', new_patient_id: str = '', labels: Optional[List[str]] = None) -> None:
+                            new_patient_name: str = '', new_patient_id: str = '', labels: Optional[List[str]] = None) -> Optional[pydicom.Dataset]:
         """
-        Save image array as anonymized DICOM file.
+        Save image array as anonymized DICOM file and return the in-memory anon Dataset.
+
+        The return value lets callers feed the same anonymized Dataset into
+        `save_anonymized_dicom_header`, so the JSON sidecar serializes from
+        the same source of truth as the saved .dcm — preventing source UIDs
+        and untrimmed TransducerData from leaking into the header file.
 
         Args:
             image_array: Numpy array containing image data (frames, height, width, channels)
@@ -506,18 +601,23 @@ class DicomFileManager:
             new_patient_name: New patient name for anonymization
             new_patient_id: New patient ID for anonymization
             labels: List of labels to add to the DICOM file
+
+        Returns:
+            The anonymized pydicom.Dataset on success, or None when the call
+            fails its pre-conditions (no dataframe, invalid current_index,
+            None image array).
         """
         if self.dicom_df is None:
             logging.error("No DICOM dataframe available")
-            return
+            return None
 
         if self.current_index >= len(self.dicom_df):
             logging.error("No current DICOM record available")
-            return
+            return None
 
         if image_array is None:
             logging.error("Image array is None")
-            return
+            return None
 
         current_record = self.dicom_df.iloc[self.current_index]
         source_dataset = current_record.DICOMDataset
@@ -543,6 +643,8 @@ class DicomFileManager:
 
         # Create and save file
         self._create_and_save_dicom_file(anonymized_ds, output_path)
+
+        return anonymized_ds
 
     def _create_base_dicom_dataset(self, image_array: np.ndarray, current_record: dict) -> pydicom.Dataset:
         """Create base DICOM dataset with image dimensions and basic attributes."""
@@ -594,13 +696,21 @@ class DicomFileManager:
             ds.PixelSpacing = [f"{delta_x_mm:.14f}", f"{delta_y_mm:.14f}"]
 
     def _copy_source_metadata(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, output_path: str) -> None:
-        """Copy metadata from source dataset."""
+        """Copy metadata from source dataset.
+
+        TransducerData is reduced to its leading model segment (e.g. "SC6-1s")
+        so vendor serial numbers do not leak via 0018,5010. TransducerType and
+        ManufacturerModelName are preserved verbatim — downstream tooling and
+        Butterfly Network device routing depend on those exact values.
+        """
         for tag in self.DICOM_TAGS_TO_COPY:
             if hasattr(source_ds, tag):
                 setattr(ds, tag, getattr(source_ds, tag))
 
         for tag in self.DICOM_TAGS_PRESERVE_OR_BLANK:
             value = getattr(source_ds, tag, '') or ''
+            if tag == 'TransducerData':
+                value = self._first_transducer_segment(value)
             setattr(ds, tag, value)
 
         # Handle UIDs
@@ -610,36 +720,85 @@ class DicomFileManager:
         ds.SeriesNumber = self._get_series_number_for_current_instance()
 
     def _copy_and_generate_uids(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, output_path: str) -> None:
-        """Copy or generate required UIDs."""
-        # Copy or generate SOPClassUID
+        """Remap instance UIDs deterministically; assign a run-local per-study FOR UID.
+
+        SOPClassUID identifies the registered DICOM object type (e.g. Ultrasound
+        Multi-frame Image Storage) and must NOT be remapped. Study, Series, and
+        SOP Instance UIDs are routed through remap_uid so the de-id output sits
+        in the 2.25 OID arc and original UIDs do not leak.
+
+        FrameOfReferenceUID is assigned per (source StudyInstanceUID, source
+        FrameOfReferenceUID) group and is generated run-locally — two separate
+        de-id runs over the same source data produce different output FORs, so
+        recipients cannot cluster de-id'd studies across exports. Within a single
+        run, two source series in one study that legitimately shared a FOR UID
+        get the SAME output FOR UID so downstream multi-series registration /
+        volumetric fusion keeps working. Coordinate-less source series within
+        one study get distinct output FOR UIDs (no false linkage).
+
+        Resume contract: when scan_directory is called with seed_keys_csv, the
+        prior export's (StudyUID, source FOR) → AnonFrameOfReferenceUID rows
+        seed self._for_map, so a resumed export reuses the prior anon FORs for
+        already-written files while minting fresh ones for new pairs.
+
+        Three-tier read path for the output FOR UID:
+          1. Primary — self.dicom_df.iloc[current_index]['AnonFrameOfReferenceUID']
+             (the precomputed column populated by _populate_anon_for_column).
+          2. Fallback — self._for_map.get((StudyUID, source FOR or
+             ":SeriesUID:<series>" sentinel)). Used by direct callers that
+             bypass scan_directory.
+          3. Last resort — mint a fresh pydicom.uid.generate_uid(prefix=None)
+             and log an error (indicates a bug; should not happen in normal
+             scan_directory flows).
+        """
         if hasattr(source_ds, 'SOPClassUID') and source_ds.SOPClassUID:
             ds.SOPClassUID = source_ds.SOPClassUID
         else:
             logging.error(f"SOPClassUID not found. Generating new one for {output_path}")
             ds.SOPClassUID = pydicom.uid.generate_uid()
 
-        # Copy or generate SOPInstanceUID
-        if hasattr(source_ds, 'SOPInstanceUID') and source_ds.SOPInstanceUID:
-            ds.SOPInstanceUID = source_ds.SOPInstanceUID
-        else:
-            logging.error(f"SOPInstanceUID not found. Generating new one for {output_path}")
-            ds.SOPInstanceUID = pydicom.uid.generate_uid()
+        for attr in ('SOPInstanceUID', 'SeriesInstanceUID', 'StudyInstanceUID'):
+            src_val = getattr(source_ds, attr, None)
+            if src_val:
+                setattr(ds, attr, remap_uid(str(src_val)))
+            else:
+                logging.error(f"{attr} not found. Generating new one for {output_path}")
+                setattr(ds, attr, remap_uid(pydicom.uid.generate_uid()))
 
-        # Copy or generate SeriesInstanceUID. Pass-through preserves series-level
-        # linkage between source and de-id outputs; callers must accept that
-        # ultrasound-machine UID reuse may cause viewer collisions downstream.
-        if hasattr(source_ds, 'SeriesInstanceUID') and source_ds.SeriesInstanceUID:
-            ds.SeriesInstanceUID = source_ds.SeriesInstanceUID
-        else:
-            logging.error(f"SeriesInstanceUID not found. Generating new one for {output_path}")
-            ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+        ds.FrameOfReferenceUID = self._resolve_anon_for_uid(source_ds, output_path)
 
-        # Copy or generate StudyInstanceUID
-        if hasattr(source_ds, 'StudyInstanceUID') and source_ds.StudyInstanceUID:
-            ds.StudyInstanceUID = source_ds.StudyInstanceUID
-        else:
-            logging.error(f"StudyInstanceUID not found. Generating new one for {output_path}")
-            ds.StudyInstanceUID = pydicom.uid.generate_uid()
+    def _resolve_anon_for_uid(self, source_ds: pydicom.Dataset, output_path: str) -> str:
+        """Resolve the anonymized FOR UID via the three-tier read path.
+
+        See _copy_and_generate_uids docstring for the policy. Split out so the
+        read logic is exercised in isolation by the plumbing unit tests.
+        """
+        # Tier 1: dataframe column.
+        if (self.dicom_df is not None
+                and 0 <= self.current_index < len(self.dicom_df)
+                and 'AnonFrameOfReferenceUID' in self.dicom_df.columns):
+            candidate = self.dicom_df.iloc[self.current_index]['AnonFrameOfReferenceUID']
+            if candidate:
+                return str(candidate)
+
+        # Tier 2: in-memory map keyed by source (StudyUID, FOR).
+        study_uid = getattr(source_ds, 'StudyInstanceUID', None)
+        source_for = getattr(source_ds, 'FrameOfReferenceUID', '') or ''
+        if study_uid:
+            if source_for:
+                key = (str(study_uid), source_for)
+            else:
+                key = (str(study_uid),
+                       f":SeriesUID:{getattr(source_ds, 'SeriesInstanceUID', '')}")
+            mapped = self._for_map.get(key)
+            if mapped:
+                return mapped
+
+        # Tier 3: mint and log error — should not happen in normal flows.
+        logging.error(
+            f"AnonFrameOfReferenceUID not available; generating fallback for {output_path}"
+        )
+        return pydicom.uid.generate_uid(prefix=None)
 
     def _apply_anonymization(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
                             new_patient_name: str = "", new_patient_id: str = "") -> None:
@@ -651,9 +810,15 @@ class DicomFileManager:
         ds.ReferringPhysicianName = ""
         ds.AccessionNumber = ""
 
-        # HIPAA Safe Harbor: aggregate ages >89 years to "090Y".
-        if hasattr(ds, 'PatientAge'):
+        # HIPAA Safe Harbor: aggregate ages >89 years to "090Y". When the
+        # source has no PatientAge, derive it from StudyDate - PatientBirthDate
+        # so the demographic survives de-id when only PatientBirthDate was set.
+        if hasattr(ds, 'PatientAge') and ds.PatientAge:
             ds.PatientAge = self._cap_patient_age(ds.PatientAge)
+        else:
+            computed = self._compute_patient_age_from_birthdate(source_ds)
+            if computed is not None:
+                ds.PatientAge = computed
 
         # Apply date shifting for anonymization
         self._apply_date_shifting(ds, source_ds)
@@ -687,6 +852,58 @@ class DicomFileManager:
 
         years = int(age_str[:3])
         return '090Y' if years >= 90 else age_str
+
+    def _compute_patient_age_from_birthdate(self, source_ds: pydicom.Dataset) -> Optional[str]:
+        """Compute DICOM AS PatientAge from source StudyDate - PatientBirthDate.
+
+        Used only when the source dataset has no PatientAge — trusts the source
+        value when present. Returns ``None`` (and logs a warning) if the math
+        can't be performed: missing/empty dates, malformed dates, or a birth
+        date after the study date. Output units are picked by the magnitude of
+        the delta to keep the value clinically meaningful:
+
+        * ``< 31 days``  -> ``nnnD``
+        * ``< 365 days`` -> ``nnnM`` using 30.4375 days/month
+        * else           -> ``nnnY`` using 365.25 days/year, capped at ``090Y``
+          per HIPAA Safe Harbor §164.514(b)(2)(i)(C).
+        """
+        study_date_str = getattr(source_ds, 'StudyDate', None)
+        birth_date_str = getattr(source_ds, 'PatientBirthDate', None)
+        if not study_date_str or not birth_date_str:
+            logging.warning(
+                "PatientAge not set: source has no usable PatientBirthDate+StudyDate"
+            )
+            return None
+
+        try:
+            study_date = datetime.datetime.strptime(str(study_date_str), "%Y%m%d")
+            birth_date = datetime.datetime.strptime(str(birth_date_str), "%Y%m%d")
+        except ValueError:
+            logging.warning(
+                f"PatientAge not set: could not parse PatientBirthDate={birth_date_str!r} "
+                f"or StudyDate={study_date_str!r} as %Y%m%d"
+            )
+            return None
+
+        if study_date < birth_date:
+            logging.warning(
+                "PatientAge not set: PatientBirthDate is after StudyDate "
+                f"(birth={birth_date_str}, study={study_date_str})"
+            )
+            return None
+
+        delta_days = (study_date - birth_date).days
+        if delta_days < 31:
+            return f"{delta_days:03d}D"
+        if delta_days < 365:
+            months = int(delta_days // 30.4375)
+            return f"{months:03d}M"
+        # Calendar-year math avoids the int(365 // 365.25) == 0 boundary bug
+        # that would report a patient exactly one year old as "000Y".
+        years = study_date.year - birth_date.year
+        if (study_date.month, study_date.day) < (birth_date.month, birth_date.day):
+            years -= 1
+        return '090Y' if years >= 90 else f"{years:03d}Y"
 
     def _shift_date(self, date_str: str, offset: int) -> str:
         """Shift a single date by the given offset."""
@@ -854,37 +1071,55 @@ class DicomFileManager:
 
         return f"{patient_id}_{instance_id}.dcm", patient_id, instance_id
 
-    def save_anonymized_dicom_header(self, current_dicom_record, output_filename: str, headers_directory: Optional[str] = None) -> Optional[str]:
+    def save_anonymized_dicom_header(
+        self,
+        current_dicom_record,
+        output_filename: str,
+        headers_directory: Optional[str] = None,
+        *,
+        anonymized_dataset: pydicom.Dataset,
+    ) -> Optional[str]:
         """
         Save anonymized DICOM header information as a JSON file.
 
-        This method extracts DICOM header information from the current record,
-        applies partial anonymization to sensitive fields, and saves the result
-        as a JSON file alongside the anonymized DICOM file.
+        Serializes from `anonymized_dataset` — the in-memory Dataset returned
+        by `save_anonymized_dicom` — so the JSON sidecar contains the same
+        remapped UIDs, run-local FrameOfReferenceUID, and trimmed
+        TransducerData as the saved .dcm. Serializing from the source dataset
+        would leak the original UIDs and full TransducerData into the sidecar
+        next to an anonymized .dcm.
+
+        The patient-name override (using output_filename) and partial
+        birth-date scrub (keep year, set month/day to 01-01) are preserved
+        so the JSON's PatientName/PatientBirthDate columns stay consistent
+        across runs and don't expose the new_patient_id even when the anon
+        Dataset's PatientName is set to something else.
 
         Args:
-            current_dicom_record: Current DICOM record from the dataframe containing
-                                the DICOM dataset and metadata
-            headers_directory: Directory path where header JSON files will be saved.
-                            If None, no header file is created
-            output_filename: Base filename for the output (used for patient name anonymization)
+            current_dicom_record: Current DICOM record from the dataframe. Used
+                only for input validation (the dataset comes from
+                `anonymized_dataset`); retained so the kwarg contract matches
+                the long-standing call sites.
+            output_filename: Base filename for the output (drives PatientName
+                anonymization).
+            headers_directory: Directory path where header JSON files will be
+                saved. If None, no header file is created.
+            anonymized_dataset: The in-memory pydicom Dataset returned by
+                save_anonymized_dicom. Required; passing the source dataset
+                would defeat the de-id invariant.
 
         Returns:
-            str: Full path to the saved JSON header file
-            None: If headers_directory is None or saving fails
-
-        Note:
-            - Creates necessary output directories if they don't exist
-            - Applies partial anonymization to patient name and birth date
-            - Patient name is replaced with the output filename (without extension)
-            - Birth date is truncated to year only with "0101" appended
-            - Uses convertToJsonCompatible for handling DICOM-specific data types
+            str: Full path to the saved JSON header file.
+            None: If headers_directory is None.
         """
         if current_dicom_record is None:
             raise ValueError("Current DICOM record is required")
 
         if output_filename is None or output_filename == "":
             raise ValueError("Output filename is required")
+
+        if anonymized_dataset is None:
+            raise ValueError("anonymized_dataset is required to avoid source UID leak")
 
         if headers_directory is None:
             return None
@@ -897,18 +1132,20 @@ class DicomFileManager:
         os.makedirs(os.path.dirname(dicom_header_filepath), exist_ok=True)
 
         with open(dicom_header_filepath, 'w') as outfile:
-            if self.dicom_df is not None:
-                anonymized_header = self.dicom_header_to_dict(current_dicom_record.DICOMDataset)
+            anonymized_header = self.dicom_header_to_dict(anonymized_dataset)
 
-                # Anonymize patient name
-                if "Patient's Name" in anonymized_header:
-                    anonymized_header["Patient's Name"] = output_filename.split(".")[0]
+            if "Patient's Name" in anonymized_header:
+                anonymized_header["Patient's Name"] = output_filename.split(".")[0]
 
-                # Partially anonymize birth date
-                if "Patient's Birth Date" in anonymized_header:
-                    anonymized_header["Patient's Birth Date"] = anonymized_header["Patient's Birth Date"][:4] + "0101"
+            # Partial birth-date scrub: source DS retains the original
+            # PatientBirthDate, so derive the year-only value from there.
+            source_birth = getattr(
+                current_dicom_record.DICOMDataset, 'PatientBirthDate', ''
+            ) or ''
+            if "Patient's Birth Date" in anonymized_header and source_birth:
+                anonymized_header["Patient's Birth Date"] = str(source_birth)[:4] + "0101"
 
-                json.dump(anonymized_header, outfile, default=self._convert_to_json_compatible)
+            json.dump(anonymized_header, outfile, default=self._convert_to_json_compatible)
 
         return dicom_header_filepath
 
