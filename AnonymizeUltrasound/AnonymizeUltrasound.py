@@ -89,7 +89,7 @@ from common.inference import load_model, preprocess_image, get_device, download_
 from common.dicom_processor import DicomProcessor, ProcessingConfig
 from common.progress_reporter import SlicerProgressReporter
 from common.overview_generator import OverviewGenerator
-from common.logging import setup_logging
+from common import log_management as au_logging
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -165,6 +165,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     EVAL_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/EvalOverviewDir"
     EVAL_MODEL_PATH_SETTING = "AnonymizeUltrasound/EvalModelPath"
     EVAL_DEVICE_SETTING = "AnonymizeUltrasound/EvalDevice"
+    LOGGING_ENABLED_SETTING = "AnonymizeUltrasound/LoggingEnabled" # logging settings key
+    LOGGING_LEVEL_SETTING = "AnonymizeUltrasound/LoggingLevel"
+    LOGGING_DIR_SETTING = "AnonymizeUltrasound/LoggingDirectory"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -247,6 +250,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.outputDirectoryButton.connect("directoryChanged(QString)",
                                               lambda newValue: self.onSettingChanged(self.OUTPUT_FOLDER_SETTING, newValue))
 
+        # Headers folder: initialize from settings and connect for saving
         headersFolder = settings.value(self.HEADERS_FOLDER_SETTING)
         if headersFolder:
             if os.path.exists(headersFolder):
@@ -263,14 +267,49 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.importDicomButton.connect("clicked(bool)", self.onImportDicomButton)
 
         # Workflow control buttons
-
         self.ui.nextButton.clicked.connect(self.onNextButton)
         self.ui.prevButton.clicked.connect(self.onPreviousButton)
         self.ui.defineMaskButton.toggled.connect(self.onMaskLandmarksButton)
         self.ui.exportButton.clicked.connect(self.onExportScanButton)
         self.ui.exportAndNextButton.clicked.connect(self.onExportAndNextButton)
 
-        # Settings widgets
+        # Logging settings
+        try:
+            enabled_val = settings.value(self.LOGGING_ENABLED_SETTING)
+            self.ui.enableFileLoggingCheckBox.checked = bool(enabled_val and str(enabled_val).lower() == "true")
+            self.ui.enableFileLoggingCheckBox.connect("toggled(bool)", self.onEnableFileLoggingToggled)
+        except Exception as e:
+            logging.warning(f"Failed to connect enableFileLoggingCheckBox: {e}")
+
+        try:
+            level_val = settings.value(self.LOGGING_LEVEL_SETTING)
+            if not level_val:
+                level_val = "INFO"
+            if level_val not in ["DEBUG", "INFO", "WARNING", "ERROR"]:
+                level_val = "INFO"
+            index = self.ui.logLevelComboBox.findText(level_val)
+            if index >= 0:
+                self.ui.logLevelComboBox.setCurrentIndex(index)
+            self.ui.logLevelComboBox.currentTextChanged.connect(
+                lambda newValue: self.onSettingChanged(self.LOGGING_LEVEL_SETTING, newValue)
+            )
+        except Exception as e:
+            logging.warning(f"Failed to initialize log level: {e}")
+
+        try:
+            dir_val = settings.value(self.LOGGING_DIR_SETTING, "")
+            default_docs = os.path.join(os.path.expanduser("~"), "Documents")
+            if dir_val and os.path.exists(dir_val):
+                self.ui.logDirectoryButton.directory = dir_val
+            else:
+                if os.path.exists(default_docs):
+                    self.ui.logDirectoryButton.directory = default_docs
+            self.ui.logDirectoryButton.connect(
+                'directoryChanged(QString)',
+                lambda newValue: self.onSettingChanged(self.LOGGING_DIR_SETTING, newValue)
+            )
+        except Exception as e:
+            logging.warning(f"Failed to initialize log directory button: {e}")
 
         preserveDirectoryStructure = settings.value(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING)
         if preserveDirectoryStructure and preserveDirectoryStructure.lower() == "true":
@@ -279,6 +318,32 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.preserveDirectoryStructureCheckBox.checked = False
         self.ui.preserveDirectoryStructureCheckBox.connect('toggled(bool)',
                                                           lambda newValue: self.on_critical_setting_changed(self.PRESERVE_DIRECTORY_STRUCTURE_SETTING, str(newValue)))
+
+    def onEnableFileLoggingToggled(self, enabled):
+        logging.debug(f"Enable file logging toggled: {enabled}")
+        # Align with module pattern: obtain settings locally where used
+        settings = slicer.app.settings()
+        settings.setValue(self.LOGGING_ENABLED_SETTING, str(enabled))
+        # Start/stop file logging in a minimal, isolated way
+        try:
+            # Ensure we see the latest helpers after a reload
+            import importlib
+            try:
+                importlib.reload(au_logging)
+            except Exception as _reload_err:
+                logging.debug(f"Could not reload logging helpers: {_reload_err}")
+
+            if enabled:
+                level = settings.value(self.LOGGING_LEVEL_SETTING, "INFO")
+                directory = settings.value(self.LOGGING_DIR_SETTING, "") or None
+                # ctkDirectoryButton may hold the current directory even if setting not yet saved
+                if not directory and hasattr(self.ui, 'logDirectoryButton'):
+                    directory = self.ui.logDirectoryButton.directory
+                au_logging.start_file_logging("AnonymizeUltrasound", level=level, directory=directory or '')
+            else:
+                au_logging.stop_file_logging("AnonymizeUltrasound")
+        except Exception as e:
+            logging.warning(f"Failed to toggle file logging: {e}")
 
         enableMaskCache = settings.value(self.ENABLE_MASK_CACHE_SETTING)
         if enableMaskCache and enableMaskCache.lower() == "true":
