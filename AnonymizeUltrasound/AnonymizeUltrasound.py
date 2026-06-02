@@ -90,6 +90,7 @@ from common.dicom_processor import DicomProcessor, ProcessingConfig
 from common.progress_reporter import SlicerProgressReporter
 from common.overview_generator import OverviewGenerator
 from common.logging import setup_logging
+from common.version_info import get_provenance
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -2391,9 +2392,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
         SOPInstanceUID = getattr(current_dicom_record, 'AnonSOPInstanceUID', '') or 'None'
 
+        provenance = get_provenance()
         sequence_info = {
             'SOPInstanceUID': SOPInstanceUID,
-            'GrayscaleConversion': False
+            'GrayscaleConversion': False,
+            'git_sha': provenance['git_sha'],
+            'git_dirty': provenance['git_dirty'],
         }
 
         # Create output directory if it doesn't exist

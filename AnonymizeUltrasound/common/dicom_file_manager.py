@@ -13,6 +13,7 @@ import json
 from pydicom.dataset import FileMetaDataset
 from pydicom.encaps import generate_pixel_data_frame, decode_data_sequence
 from .uid_remap import remap_uid
+from .version_info import apply_provenance_tag
 
 
 class DicomFileManager:
@@ -640,6 +641,11 @@ class DicomFileManager:
 
         # Compress and set pixel data
         self._set_compressed_pixel_data(anonymized_ds, image_array)
+
+        # Embed git provenance as a private tag so the on-disk .dcm, the
+        # returned Dataset, and any downstream header sidecar all carry the
+        # same build identity.
+        apply_provenance_tag(anonymized_ds)
 
         # Create and save file
         self._create_and_save_dicom_file(anonymized_ds, output_path)
