@@ -174,3 +174,138 @@ def test_is_export_complete_requires_both_files(tmp_path):
     assert is_export_complete(str(tmp_path), row, preserve_directory_structure=False) is False
 
 
+# ---------------------------------------------------------------------------
+# The staged export pair
+# ---------------------------------------------------------------------------
+
+MASK_PARAMS = {'mask_type': 'rectangle', 'rectangle_left': 1, 'rectangle_right': 5,
+               'rectangle_top': 1, 'rectangle_bottom': 3}
+
+
+@pytest.fixture
+def scanned_manager(tmp_path):
+    input_dir = str(tmp_path / 'input')
+    write_dataset(make_dataset(), input_dir, 'source.dcm')
+    manager = DicomFileManager()
+    assert manager.scan_directory(input_dir, False, key_store=KeyStore()) == 1
+    manager.current_index = 0
+    return manager
+
+
+@pytest.fixture
+def output_root(tmp_path):
+    root = tmp_path / 'output'
+    root.mkdir()
+    return str(root)
+
+
+@pytest.fixture
+def image():
+    return np.zeros((2, 4, 6, 1), dtype=np.uint8)
+
+
+def _no_temp_files(root):
+    return not any(name.count('.tmp-') for _, _, files in os.walk(root) for name in files)
+
+
+def test_export_instance_writes_the_pair_and_leaves_no_temp_files(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0]
+
+    result = export_instance(scanned_manager, row, image, output_root=output_root, prefix='PROJ',
+                             mask_params=MASK_PARAMS, labels=['Label A'])
+
+    assert os.path.isfile(result.dicom_path) and os.path.isfile(result.json_path)
+    assert os.path.basename(result.dicom_path) == row['AnonFilename']
+    assert result.json_path == result.dicom_path[:-4] + '.json'
+    assert _no_temp_files(output_root)
+    assert sorted(os.listdir(output_root)) == sorted([row['AnonFilename'], row['AnonFilename'][:-4] + '.json'])
+
+    ds = pydicom.dcmread(result.dicom_path)
+    assert ds.SOPInstanceUID == row['AnonSOPInstanceUID']
+    assert ds.PatientID == row['AnonPatientID']
+    assert ds.PatientName == 'PROJ_' + row['AnonPatientID']
+    assert ds.PatientIdentityRemoved == 'YES'
+
+    with open(result.json_path, encoding='utf-8') as handle:
+        sidecar = json.load(handle)
+    assert sidecar['SOPInstanceUID'] == row['AnonSOPInstanceUID']
+    assert sidecar['AnnotationLabels'] == ['Label A']
+    assert sidecar['GrayscaleConversion'] is False
+    assert isinstance(sidecar['git_sha'], str) and isinstance(sidecar['git_dirty'], bool)
+    for key, value in MASK_PARAMS.items():
+        assert sidecar[key] == value
+    assert is_export_complete(output_root, row)
+
+
+def test_export_instance_without_prefix_uses_the_pseudonym_as_name(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0]
+    result = export_instance(scanned_manager, row, image, output_root=output_root)
+    ds = pydicom.dcmread(result.dicom_path, stop_before_pixels=True)
+    assert ds.PatientName == row['AnonPatientID']
+    with open(result.json_path, encoding='utf-8') as handle:
+        assert 'AnnotationLabels' not in json.load(handle)
+
+
+def test_export_instance_failure_after_dicom_staging_leaves_prior_pair_intact(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0]
+    dicom_final = os.path.join(output_root, row['AnonFilename'])
+    json_final = dicom_final[:-4] + '.json'
+    with open(dicom_final, 'wb') as handle:
+        handle.write(b'prior-dicom')
+    with open(json_final, 'w', encoding='utf-8') as handle:
+        handle.write('prior-json')
+
+    with patch.object(export.json, 'dump', side_effect=RuntimeError('boom')):
+        with pytest.raises(ExportError):
+            export_instance(scanned_manager, row, image, output_root=output_root)
+
+    with open(dicom_final, 'rb') as handle:
+        assert handle.read() == b'prior-dicom'
+    with open(json_final, encoding='utf-8') as handle:
+        assert handle.read() == 'prior-json'
+    assert _no_temp_files(output_root)
+
+
+def test_export_instance_rejects_a_staged_file_that_does_not_match_the_row(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0].copy()
+    row['AnonSOPInstanceUID'] = '2.25.1'
+
+    with pytest.raises(ExportError):
+        export_instance(scanned_manager, row, image, output_root=output_root)
+
+    assert os.listdir(output_root) == []
+
+
+def test_export_instance_raises_when_the_manager_cannot_save(scanned_manager, output_root):
+    row = scanned_manager.dicom_df.iloc[0]
+    with pytest.raises(ExportError):
+        export_instance(scanned_manager, row, None, output_root=output_root)
+    assert os.listdir(output_root) == []
+
+
+def test_re_export_replaces_both_files_and_keeps_the_sop_uid(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0]
+    first = export_instance(scanned_manager, row, image, output_root=output_root, labels=['One'])
+    second = export_instance(scanned_manager, row, image, output_root=output_root, labels=['Two'])
+
+    assert first.dicom_path == second.dicom_path
+    assert pydicom.dcmread(second.dicom_path, stop_before_pixels=True).SOPInstanceUID == row['AnonSOPInstanceUID']
+    with open(second.json_path, encoding='utf-8') as handle:
+        assert json.load(handle)['AnnotationLabels'] == ['Two']
+    assert len(os.listdir(output_root)) == 2
+
+
+def test_export_instance_preserves_the_input_tree_when_asked(tmp_path, image):
+    input_dir = str(tmp_path / 'input')
+    write_dataset(make_dataset(), os.path.join(input_dir, 'siteA', 'visit1'), 'source.dcm')
+    manager = DicomFileManager()
+    manager.scan_directory(input_dir, False, key_store=KeyStore())
+    manager.current_index = 0
+    row = manager.dicom_df.iloc[0]
+    output_root = str(tmp_path / 'output')
+    os.makedirs(output_root)
+
+    result = export_instance(manager, row, image, output_root=output_root, preserve_directory_structure=True)
+
+    assert result.dicom_path == os.path.join(os.path.realpath(output_root), 'siteA', 'visit1', row['AnonFilename'])
+    assert is_export_complete(output_root, row, preserve_directory_structure=True)
