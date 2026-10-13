@@ -73,14 +73,16 @@
             <item row="3" column="0">
               <widget class="QLabel" name="label_6">
                 <property name="text">
-                  <string>Headers folder: </string>
+                  <string>Keys directory (restricted – coordinator only; holds keys.csv): </string>
                 </property>
               </widget>
             </item>
             <item row="3" column="1">
               <widget class="ctkDirectoryButton" name="headersDirectoryButton">
                 <property name="toolTip">
-                  <string>Original DICOM headers will be saved here. May contain PHI!</string>
+                  <string>keys.csv, the mapping from every exported file back to its source, is read
+                    and written here. Restrict this directory to the research coordinator. It must
+                    not be inside the input or output directory.</string>
                 </property>
               </widget>
             </item>
@@ -130,15 +132,16 @@
             <item row="2" column="0">
               <widget class="QLabel" name="label_5">
                 <property name="text">
-                  <string>Patient Name Prefix (required): </string>
+                  <string>Project label (optional): </string>
                 </property>
               </widget>
             </item>
             <item row="2" column="1">
               <widget class="QLineEdit" name="namePrefixLineEdit">
                 <property name="toolTip">
-                  <string>All patient names will start with this text if Patient ID hashing is
-                    selected. Required.</string>
+                  <string>Optional non-identifying project label, 1 to 16 letters, digits, "_" or "-".
+                    It is put in front of the patient pseudonym in PatientName. Leave empty to
+                    use the pseudonym alone.</string>
                 </property>
               </widget>
             </item>
@@ -344,17 +347,6 @@
               <widget class="QCheckBox" name="continueProgressCheckBox">
                 <property name="text">
                   <string>Continue progress (skip input if matching output exists)</string>
-                </property>
-              </widget>
-            </item>
-            <item>
-              <widget class="QCheckBox" name="hashPatientIdCheckBox">
-                <property name="toolTip">
-                  <string>Should only be unchecked if the input DICOM files are already have
-                    anonymized headers</string>
-                </property>
-                <property name="text">
-                  <string>Hash Patient ID (deidentify patient)</string>
                 </property>
               </widget>
             </item>

@@ -389,17 +389,17 @@ class TestExportDicomProvenance:
         assert isinstance(loaded["git_sha"], str)
         assert isinstance(loaded["git_dirty"], bool)
 
-        # --- Wiring guard: exportDicom imports + uses the helper ----------
+        # --- Wiring guard: the sidecar writer imports + uses the helper ----
         module_src = (
-            _Path(__file__).resolve().parents[1] / "AnonymizeUltrasound.py"
+            _Path(__file__).resolve().parents[1] / "common" / "export.py"
         ).read_text()
-        assert "from common.version_info import" in module_src, (
-            "AnonymizeUltrasound.py must import the provenance helper from "
-            "common.version_info (Step 4 wiring missing)"
+        assert "from .version_info import get_provenance" in module_src, (
+            "common/export.py must import the provenance helper from "
+            "common.version_info"
         )
         assert "'git_sha'" in module_src and "'git_dirty'" in module_src, (
-            "exportDicom must emit both git_sha and git_dirty keys into "
-            "sequence_info (Step 4 wiring missing)"
+            "the annotation JSON writer in common/export.py must emit both "
+            "git_sha and git_dirty keys"
         )
 
     def test_export_dicom_writes_git_sha_private_tag(self, tmp_path):
@@ -437,3 +437,44 @@ class TestExportDicomProvenance:
 
         assert loaded["git_sha"] == "b" * 40
         assert loaded["git_dirty"] is True
+
+class TestInteractiveExportWiring:
+    """Source-level guards for the interactive Import/Export path.
+
+    ``AnonymizeUltrasound.py`` imports ``slicer`` at module level, so the
+    widget cannot be instantiated here; these tests read the module source,
+    the .ui file and the CMake list instead.
+    """
+
+    MODULE_DIR = _Path(__file__).resolve().parents[1]
+
+    def _module_source(self):
+        return (self.MODULE_DIR / "AnonymizeUltrasound.py").read_text()
+
+    def _ui_source(self):
+        return (self.MODULE_DIR / "Resources" / "UI" / "AnonymizeUltrasound.ui").read_text()
+
+    def test_prefix_is_not_prefilled_from_the_input_folder(self):
+        assert "namePrefixLineEdit.text = inputDirectory" not in self._module_source()
+
+    def test_patient_id_is_always_replaced(self):
+        src = self._module_source()
+        assert "hashPatientIdCheckBox" not in src
+        assert "HASH_PATIENT_ID" not in src
+        assert "hashPatientIdCheckBox" not in self._ui_source()
+
+    def test_header_json_is_not_written(self):
+        assert "save_anonymized_dicom_header" not in self._module_source()
+
+    def test_module_uses_the_export_and_key_store_modules(self):
+        src = self._module_source()
+        assert "from common.export import" in src
+        assert "from common.key_store import" in src
+        assert "KeysLock" in src and "KeyStore.load" in src
+        assert "export_instance(" in src
+
+    def test_cmake_lists_the_common_modules(self):
+        cmake = (self.MODULE_DIR / "CMakeLists.txt").read_text()
+        assert "common/key_store.py" in cmake
+        assert "common/export.py" in cmake
+        assert "uid_remap" not in cmake
