@@ -136,6 +136,7 @@ class DicomFileManager:
         self.key_store: Optional[KeyStore] = None
         self.issuers_of_patient_id: Set[str] = set()
         self.skipped_unsupported_sop_class = 0
+        # SOPInstanceUID -> (file path, source identifiers) of every listed instance.
         self._seen_instances = {}
 
     def _first_transducer_segment(self, raw) -> str:
@@ -190,7 +191,8 @@ class DicomFileManager:
             Number of DICOM files found
 
         Raises:
-            KeysFileError: a scanned instance contradicts a mapping already in the store.
+            KeysFileError: a scanned instance contradicts a mapping already in the store,
+                or two files share a SOPInstanceUID but disagree on their source identifiers.
         """
         self.reset()
         self.key_store = key_store if key_store is not None else KeyStore()
@@ -247,7 +249,8 @@ class DicomFileManager:
                 already listed
 
         Raises:
-            KeysFileError: the instance contradicts a mapping already in the store.
+            KeysFileError: the instance contradicts a mapping already in the store,
+                or repeats a listed SOPInstanceUID with different source identifiers.
         """
         try:
             dicom_ds = pydicom.dcmread(file_path, stop_before_pixels=True)
@@ -259,19 +262,24 @@ class DicomFileManager:
             return None
         source_ids, issuer, fields = parsed
 
-        listed_from = self._seen_instances.get(source_ids['InstanceUID'])
-        if listed_from is not None:
-            logging.info(f"Skipping {file_path}: its SOPInstanceUID is already listed "
-                         f"from {listed_from}")
-            return None
-
         if issuer:
             self.issuers_of_patient_id.add(issuer)
+
+        listed = self._seen_instances.get(source_ids['InstanceUID'])
+        if listed is not None:
+            listed_path, listed_ids = listed
+            if listed_ids != source_ids:
+                raise KeysFileError(
+                    f"{file_path}: SOPInstanceUID is already listed from {listed_path} "
+                    "with different source identifiers")
+            logging.info(f"Skipping {file_path}: its SOPInstanceUID is already listed "
+                         f"from {listed_path}")
+            return None
 
         # keys.csv paths are relative to the input folder and use '/' on every platform.
         relative_input = os.path.relpath(file_path, input_folder).replace(os.sep, '/')
         keys_row = self._record_mapping(source_ids, relative_input)
-        self._seen_instances[source_ids['InstanceUID']] = file_path
+        self._seen_instances[source_ids['InstanceUID']] = (file_path, source_ids)
 
         return {
             **keys_row,

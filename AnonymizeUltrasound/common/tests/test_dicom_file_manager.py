@@ -324,6 +324,26 @@ class TestDicomFileManager:
         assert count == 1
         assert manager.dicom_df.iloc[0]['InputPath'] == os.path.join(temp_dir, 'copy', 'a.dcm')
 
+    @pytest.mark.parametrize('attribute', ['PatientID', 'StudyInstanceUID', 'SeriesInstanceUID',
+                                           'FrameOfReferenceUID'])
+    def test_scan_directory_raises_when_a_duplicated_instance_disagrees(self, manager, temp_dir, attribute):
+        with pytest.raises(KeysFileError) as info:
+            self._scan(manager, temp_dir, {
+                'a.dcm': make_dataset(),
+                'copy/a.dcm': make_dataset(**{attribute: SOURCE_UID_ROOT + '.99'}),
+            })
+        message = str(info.value)
+        assert os.path.join(temp_dir, 'a.dcm') in message
+        assert os.path.join(temp_dir, 'copy', 'a.dcm') in message
+
+    def test_scan_directory_collects_the_issuer_of_a_duplicated_instance(self, manager, temp_dir):
+        count = self._scan(manager, temp_dir, {
+            'a.dcm': make_dataset(IssuerOfPatientID='HOSP_A'),
+            'copy/a.dcm': make_dataset(IssuerOfPatientID='HOSP_B'),
+        })
+        assert count == 1
+        assert manager.issuers_of_patient_id == {'HOSP_A', 'HOSP_B'}
+
     def test_save_keys_csv_writes_the_store(self, manager, temp_dir):
         store = KeyStore()
         self._scan(manager, temp_dir, {'siteA/a.dcm': make_dataset()}, key_store=store)
