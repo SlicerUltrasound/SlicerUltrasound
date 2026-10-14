@@ -201,14 +201,18 @@ def test_save_writes_the_union_of_prior_and_recorded_rows(tmp_path):
     assert [r['InstanceUID'] for r in KeyStore.load(path).rows()] == ['1.2.3.3', '1.2.3.5']
 
 
-def test_record_upserts_paths_of_a_known_instance():
+def test_record_updates_input_path_but_keeps_output_path_of_a_known_instance():
     store = KeyStore()
-    store.record(_row())
-    store.record(_row(InputPath='moved/a.dcm', OutputPath='moved/' + uid_to_filename('2.25.13')))
+    first = store.record(_row())
+    assert first == _row()
+
+    moved = store.record(_row(InputPath='moved/a.dcm', OutputPath='moved/' + uid_to_filename('2.25.13')))
 
     rows = store.rows()
     assert len(rows) == 1
     assert rows[0]['InputPath'] == 'moved/a.dcm'
+    assert rows[0]['OutputPath'] == 'site/' + uid_to_filename('2.25.13')
+    assert moved == rows[0]
 
 
 def test_record_rejects_a_known_instance_under_another_series():

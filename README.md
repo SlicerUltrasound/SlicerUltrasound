@@ -200,7 +200,7 @@ This module reads a folder of ultrasound cine loops in DICOM format and iterates
 - `InputPath` and `OutputPath` are relative to the input and output folders.
 - `PatientUID`, `StudyUID`, `SeriesUID`, `InstanceUID` and `FrameOfReferenceUID` are the source values; the `Anon*` columns are the exported values; `DateShiftDays` is the patient's date offset.
 - Import reads the file, checks that every mapping is complete and one-to-one, adds the newly scanned instances and writes the file back atomically. A file that does not pass the checks is left untouched and the Import is refused.
-- One `keys.csv` holds the patients of a single patient-identifier authority: Import is refused when the scanned files carry more than one `IssuerOfPatientID`.
+- Use one keys directory per patient-identifier authority. Import is refused when the files of one Import carry more than one `IssuerOfPatientID`; the check covers that Import only, not earlier Imports into the same keys directory.
 - A row reserves the mapping of an instance; it does not prove that the instance was exported. The two files in the output folder do.
 
 Options under Settings collapsible button:

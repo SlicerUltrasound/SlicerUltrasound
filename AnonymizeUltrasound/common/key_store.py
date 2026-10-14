@@ -46,13 +46,16 @@ KEYS_CSV_COLUMNS = [
     'DateShiftDays',
 ]
 OPTIONAL_COLUMNS = {'FrameOfReferenceUID'}
-ANON_UID_COLUMNS = ('AnonStudyUID', 'AnonSeriesUID', 'AnonSOPInstanceUID', 'AnonFrameOfReferenceUID')
+ANON_UID_COLUMNS = (
+    'AnonStudyUID', 'AnonSeriesUID', 'AnonSOPInstanceUID', 'AnonFrameOfReferenceUID',
+)
 
 DATE_SHIFT_MIN_DAYS = 1
 DATE_SHIFT_MAX_DAYS = 1095
 
 UNSUPPORTED_FORMAT_MESSAGE = (
-    'keys.csv has an unsupported format; choose an empty keys directory and an empty output directory'
+    'keys.csv has an unsupported format; '
+    'choose an empty keys directory and an empty output directory'
 )
 
 _HEX32 = re.compile(r'^[0-9a-f]{32}$')
@@ -128,7 +131,9 @@ def _validate_row(row: Dict[str, object], where: str) -> Dict[str, str]:
     missing = [column for column in KEYS_CSV_COLUMNS if column not in row]
     if missing:
         raise KeysFileError(f'{where}: missing column(s) {", ".join(missing)}')
-    clean = {column: ('' if row[column] is None else str(row[column])) for column in KEYS_CSV_COLUMNS}
+    clean = {
+        column: ('' if row[column] is None else str(row[column])) for column in KEYS_CSV_COLUMNS
+    }
 
     for column in KEYS_CSV_COLUMNS:
         if column not in OPTIONAL_COLUMNS and clean[column] == '':
@@ -143,9 +148,11 @@ def _validate_row(row: Dict[str, object], where: str) -> Dict[str, str]:
         shift = int(clean['DateShiftDays'])
     except ValueError:
         raise KeysFileError(f'{where}: DateShiftDays is not an integer') from None
-    if str(shift) != clean['DateShiftDays'] or not DATE_SHIFT_MIN_DAYS <= shift <= DATE_SHIFT_MAX_DAYS:
+    in_range = DATE_SHIFT_MIN_DAYS <= shift <= DATE_SHIFT_MAX_DAYS
+    if str(shift) != clean['DateShiftDays'] or not in_range:
         raise KeysFileError(
-            f'{where}: DateShiftDays must be an integer from {DATE_SHIFT_MIN_DAYS} to {DATE_SHIFT_MAX_DAYS}'
+            f'{where}: DateShiftDays must be an integer from '
+            f'{DATE_SHIFT_MIN_DAYS} to {DATE_SHIFT_MAX_DAYS}'
         )
 
     try:
@@ -155,8 +162,11 @@ def _validate_row(row: Dict[str, object], where: str) -> Dict[str, str]:
     if clean['AnonFilename'] != expected_filename:
         raise KeysFileError(f'{where}: AnonFilename does not match AnonSOPInstanceUID')
     output_path = clean['OutputPath']
-    if not is_plain_relative_path(output_path) or posixpath.basename(output_path) != clean['AnonFilename']:
-        raise KeysFileError(f'{where}: OutputPath must be a plain relative path ending in AnonFilename')
+    if (not is_plain_relative_path(output_path)
+            or posixpath.basename(output_path) != clean['AnonFilename']):
+        raise KeysFileError(
+            f'{where}: OutputPath must be a plain relative path ending in AnonFilename'
+        )
     return clean
 
 
@@ -196,7 +206,8 @@ class KeyStore:
         if not os.path.exists(path):
             return store
         try:
-            frame = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False, encoding='utf-8')
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False,
+                                encoding='utf-8')
         except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as error:
             raise KeysFileError(UNSUPPORTED_FORMAT_MESSAGE) from error
         if list(frame.columns) != KEYS_CSV_COLUMNS:
@@ -237,7 +248,8 @@ class KeyStore:
 
     def frame_of_reference(self, study_uid: str, source_for: str, series_uid: str) -> str:
         """Return the anonymized FrameOfReferenceUID for (study, source FOR or series)."""
-        return self._mint(self._frames, self._reverse['frame'], _frame_key(study_uid, source_for, series_uid))
+        key = _frame_key(study_uid, source_for, series_uid)
+        return self._mint(self._frames, self._reverse['frame'], key)
 
     @staticmethod
     def _mint(mapping: dict, reverse: dict, key) -> str:
@@ -249,29 +261,39 @@ class KeyStore:
 
     # -- rows -------------------------------------------------------------------
 
-    def record(self, row: Dict[str, object]) -> None:
-        """Add or update the row of one instance; raise if it contradicts the store."""
-        self._record(row, str(row.get('InputPath') or 'scanned instance'))
+    def record(self, row: Dict[str, object]) -> Dict[str, str]:
+        """Add or update the row of one instance and return it as stored.
+
+        A known instance keeps its ``OutputPath``: the export location does not
+        move when the source file does. Raises when the row contradicts the store.
+        """
+        return self._record(row, str(row.get('InputPath') or 'scanned instance'))
 
     def rows(self) -> List[Dict[str, str]]:
         return [dict(row) for row in self._rows.values()]
 
-    def _record(self, row: Dict[str, object], where: str) -> None:
+    def _record(self, row: Dict[str, object], where: str) -> Dict[str, str]:
         clean = _validate_row(row, where)
+        known = self._rows.get(clean['InstanceUID'])
+        if known is not None:
+            clean['OutputPath'] = known['OutputPath']
         shift = int(clean['DateShiftDays'])
         frame_key = _frame_key(clean['StudyUID'], clean['FrameOfReferenceUID'], clean['SeriesUID'])
+        reverse = self._reverse
         bindings = [
             (self._patients, clean['PatientUID'], (clean['AnonPatientID'], shift), 'PatientUID'),
             (self._studies, clean['StudyUID'], clean['AnonStudyUID'], 'StudyUID'),
             (self._series, clean['SeriesUID'], clean['AnonSeriesUID'], 'SeriesUID'),
-            (self._instances, clean['InstanceUID'], (clean['AnonSOPInstanceUID'], clean['AnonFilename']),
-             'InstanceUID'),
+            (self._instances, clean['InstanceUID'],
+             (clean['AnonSOPInstanceUID'], clean['AnonFilename']), 'InstanceUID'),
             (self._frames, frame_key, clean['AnonFrameOfReferenceUID'], 'FrameOfReferenceUID'),
-            (self._reverse['patient'], clean['AnonPatientID'], clean['PatientUID'], 'AnonPatientID'),
-            (self._reverse['study'], clean['AnonStudyUID'], clean['StudyUID'], 'AnonStudyUID'),
-            (self._reverse['series'], clean['AnonSeriesUID'], clean['SeriesUID'], 'AnonSeriesUID'),
-            (self._reverse['instance'], clean['AnonSOPInstanceUID'], clean['InstanceUID'], 'AnonSOPInstanceUID'),
-            (self._reverse['frame'], clean['AnonFrameOfReferenceUID'], frame_key, 'AnonFrameOfReferenceUID'),
+            (reverse['patient'], clean['AnonPatientID'], clean['PatientUID'], 'AnonPatientID'),
+            (reverse['study'], clean['AnonStudyUID'], clean['StudyUID'], 'AnonStudyUID'),
+            (reverse['series'], clean['AnonSeriesUID'], clean['SeriesUID'], 'AnonSeriesUID'),
+            (reverse['instance'], clean['AnonSOPInstanceUID'], clean['InstanceUID'],
+             'AnonSOPInstanceUID'),
+            (reverse['frame'], clean['AnonFrameOfReferenceUID'], frame_key,
+             'AnonFrameOfReferenceUID'),
             (self._study_patient, clean['StudyUID'], clean['PatientUID'], 'StudyUID'),
             (self._series_study, clean['SeriesUID'], clean['StudyUID'], 'SeriesUID'),
             (self._instance_series, clean['InstanceUID'], clean['SeriesUID'], 'InstanceUID'),
@@ -283,6 +305,7 @@ class KeyStore:
         for mapping, key, value, _ in bindings:
             mapping[key] = value
         self._rows[clean['InstanceUID']] = clean
+        return dict(clean)
 
     # -- persistence ----------------------------------------------------------
 

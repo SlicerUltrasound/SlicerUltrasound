@@ -580,6 +580,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 inputDirectory, outputDirectory, keysDirectory,
                 skip_single_frame=self.ui.skipSingleframeCheckBox.checked)
         except (ExportError, KeysFileError, OSError) as e:
+            self.set_processing_mode(False)
             self._parameterNode.status = AnonymizerStatus.INITIAL
             self.ui.statusLabel.text = "Import failed. Nothing was changed."
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", str(e))
@@ -972,6 +973,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         try:
             result = self.logic.export_current(prefix, annotationLabels, preserve_directory_structure)
         except ExportError as e:
+            currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
             dialog.close()
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", str(e))
             return False

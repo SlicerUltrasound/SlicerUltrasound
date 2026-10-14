@@ -12,7 +12,7 @@ import pydicom
 from PIL import Image
 from pydicom.dataset import FileMetaDataset
 
-from .export import is_export_complete
+from .export import DICOM_EXTENSIONS, is_export_complete
 from .key_store import KEYS_CSV_COLUMNS, KeyStore, KeysFileError
 from .version_info import apply_provenance_tag, get_provenance
 
@@ -39,12 +39,12 @@ class DicomFileManager:
         next_index (int): Index of next file to process
         current_index (int): Index of currently loaded file
         key_store (KeyStore): Mapping used by the last scan
-        issuers_of_patient_id (set): Distinct non-empty IssuerOfPatientID values seen by the last scan
+        issuers_of_patient_id (set): Distinct non-empty IssuerOfPatientID values of the last scan
         skipped_unsupported_sop_class (int): Files the last scan skipped for their SOP class
     """
 
-    # Define allowed DICOM file extensions (case-insensitive)
-    DICOM_EXTENSIONS = {'.dcm', '.dicom'}
+    # Allowed DICOM file extensions (case-insensitive); the set export.py also scans for.
+    DICOM_EXTENSIONS = DICOM_EXTENSIONS
 
     # SOP classes an export can be built from. Anything else is skipped at scan time.
     SUPPORTED_SOP_CLASSES = {
@@ -87,8 +87,10 @@ class DicomFileManager:
         'DopplerCorrectionAngle', 'SteeringAngle',
         'DopplerSampleVolumeXPositionRetired', 'DopplerSampleVolumeXPosition',
         'DopplerSampleVolumeYPositionRetired', 'DopplerSampleVolumeYPosition',
-        'TMLinePositionX0Retired', 'TMLinePositionX0', 'TMLinePositionY0Retired', 'TMLinePositionY0',
-        'TMLinePositionX1Retired', 'TMLinePositionX1', 'TMLinePositionY1Retired', 'TMLinePositionY1',
+        'TMLinePositionX0Retired', 'TMLinePositionX0',
+        'TMLinePositionY0Retired', 'TMLinePositionY0',
+        'TMLinePositionX1Retired', 'TMLinePositionX1',
+        'TMLinePositionY1Retired', 'TMLinePositionY1',
         'PixelComponentOrganization', 'PixelComponentMask',
         'PixelComponentRangeStart', 'PixelComponentRangeStop',
         'PixelComponentPhysicalUnits', 'PixelComponentDataType',
@@ -224,7 +226,8 @@ class DicomFileManager:
             raise KeysFileError('No scan to save: run scan_directory first')
         self.key_store.save(path)
 
-    def _extract_dicom_info(self, file_path: str, input_folder: str, skip_single_frame: bool) -> Optional[dict]:
+    def _extract_dicom_info(self, file_path: str, input_folder: str,
+                            skip_single_frame: bool) -> Optional[dict]:
         """Extract DICOM information from file
 
         Reads a DICOM file, checks that it is a supported ultrasound image, and
@@ -256,7 +259,8 @@ class DicomFileManager:
 
         sop_class_uid = str(dicom_ds.get('SOPClassUID', '') or '')
         if sop_class_uid not in self.SUPPORTED_SOP_CLASSES:
-            logging.info(f"Skipping file whose SOPClassUID is not an ultrasound image storage class: {file_path}")
+            logging.info("Skipping file whose SOPClassUID is not an ultrasound image storage "
+                         f"class: {file_path}")
             self.skipped_unsupported_sop_class += 1
             return None
 
@@ -285,7 +289,8 @@ class DicomFileManager:
 
         listed_from = self._seen_instances.get(source_ids['InstanceUID'])
         if listed_from is not None:
-            logging.info(f"Skipping {file_path}: its SOPInstanceUID is already listed from {listed_from}")
+            logging.info(f"Skipping {file_path}: its SOPInstanceUID is already listed "
+                         f"from {listed_from}")
             return None
         self._seen_instances[source_ids['InstanceUID']] = file_path
 
@@ -327,7 +332,8 @@ class DicomFileManager:
             relative_input: input path relative to the input folder, '/'-separated
 
         Returns:
-            The keys.csv row (every value a string).
+            The keys.csv row as stored (every value a string). A known instance
+            keeps the OutputPath of its earlier export.
 
         Raises:
             KeysFileError: the instance contradicts a mapping already in the store.
@@ -352,8 +358,7 @@ class DicomFileManager:
                 source_ids['StudyUID'], source_ids['FrameOfReferenceUID'], source_ids['SeriesUID']),
             'DateShiftDays': str(date_shift_days),
         }
-        store.record(keys_row)
-        return keys_row
+        return store.record(keys_row)
 
     def _extract_spacing_info(self, dicom_ds):
         """Extract physical spacing information from DICOM dataset"""
@@ -733,7 +738,7 @@ class DicomFileManager:
         return '090Y' if years >= 90 else f"{years:03d}Y"
 
     def _shift_date(self, date_value, offset: int) -> str:
-        """Return a DICOM DA value moved forward by ``offset`` days, or '' when it cannot be parsed."""
+        """Return a DA value moved forward by ``offset`` days, or '' when it cannot be parsed."""
         text = str(date_value) if date_value is not None else ''
         if not text:
             return ''
@@ -747,7 +752,8 @@ class DicomFileManager:
             return ''
         return (parsed + datetime.timedelta(days=offset)).strftime("%Y%m%d")
 
-    def _apply_date_shifting(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, date_shift_days: int) -> None:
+    def _apply_date_shifting(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset,
+                             date_shift_days: int) -> None:
         """Move every date forward by the patient's offset; copy times unchanged.
 
         StudyDate, StudyTime, ContentDate and ContentTime are always written
@@ -777,7 +783,8 @@ class DicomFileManager:
         ds.DeidentificationMethod = self._deidentification_method_values()
 
     def _deidentification_method_values(self) -> List[str]:
-        return [f'SlicerUltrasound AnonymizeUltrasound {self._git_sha_short()}', *self.DEIDENTIFICATION_METHOD]
+        tool = f'SlicerUltrasound AnonymizeUltrasound {self._git_sha_short()}'
+        return [tool, *self.DEIDENTIFICATION_METHOD]
 
     @staticmethod
     def _git_sha_short() -> str:

@@ -57,14 +57,16 @@ def compose_patient_name(prefix: str, anon_patient_id: str) -> str:
 # Directories
 # ---------------------------------------------------------------------------
 
-def resolve_session_directories(input_dir: str, output_dir: str, keys_dir: str) -> Tuple[str, str, str]:
+def resolve_session_directories(input_dir: str, output_dir: str,
+                                keys_dir: str) -> Tuple[str, str, str]:
     """Return the real paths of the three directories, or raise when they overlap."""
     resolved = []
     for name, directory in zip(_DIRECTORY_NAMES, (input_dir, output_dir, keys_dir)):
         if not directory or not os.path.isdir(directory):
             raise ExportError(f'The {name} directory does not exist.')
         resolved.append(os.path.realpath(directory))
-    for (name_a, path_a), (name_b, path_b) in itertools.combinations(zip(_DIRECTORY_NAMES, resolved), 2):
+    pairs = itertools.combinations(zip(_DIRECTORY_NAMES, resolved), 2)
+    for (name_a, path_a), (name_b, path_b) in pairs:
         if path_a == path_b:
             raise ExportError(f'The {name_a} and {name_b} directories must be different.')
         if _is_within(path_a, path_b):
@@ -93,7 +95,8 @@ def _is_within(child: str, parent: str) -> bool:
 # Output paths
 # ---------------------------------------------------------------------------
 
-def resolve_output_path(output_root: str, output_path: str, preserve_directory_structure: bool = True) -> str:
+def resolve_output_path(output_root: str, output_path: str,
+                        preserve_directory_structure: bool = True) -> str:
     """Return the final ``.dcm`` path of a keys.csv ``OutputPath`` under ``output_root``.
 
     ``output_path`` must be a plain ``/``-separated relative path. With
@@ -135,7 +138,9 @@ def export_instance(manager, row, image_array, *, output_root: str, prefix: str 
 
     ``row`` is the dataframe row of that instance. On any failure the staged
     files are removed and the previously exported pair, if any, is left as it
-    was; the error is raised as :class:`ExportError`.
+    was; the error is raised as :class:`ExportError`. The one exception is a
+    failure of the final JSON rename after the DICOM rename succeeded: the new
+    DICOM is then in place next to the previous JSON.
     """
     prefix = validate_prefix(prefix)
     dicom_final = resolve_output_path(output_root, row['OutputPath'], preserve_directory_structure)
@@ -169,10 +174,13 @@ def _verify_staged_dicom(path: str, row) -> None:
         (str(staged.get('PatientIdentityRemoved', '')), 'YES'),
     )
     if any(actual != expected for actual, expected in checks):
-        raise ExportError('The staged DICOM file does not match its keys.csv row; nothing was exported.')
+        raise ExportError(
+            'The staged DICOM file does not match its keys.csv row; nothing was exported.'
+        )
 
 
-def _write_sidecar(path: str, anon_sop_uid: str, mask_params: Optional[Dict], labels: Optional[Iterable[str]]) -> None:
+def _write_sidecar(path: str, anon_sop_uid: str, mask_params: Optional[Dict],
+                   labels: Optional[Iterable[str]]) -> None:
     provenance = get_provenance()
     info = {
         'SOPInstanceUID': anon_sop_uid,
