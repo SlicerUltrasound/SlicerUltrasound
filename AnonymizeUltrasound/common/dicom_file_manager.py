@@ -230,8 +230,10 @@ class DicomFileManager:
                             skip_single_frame: bool) -> Optional[dict]:
         """Extract DICOM information from file
 
-        Reads a DICOM file, checks that it is a supported ultrasound image, and
-        looks up (or mints) its export values in the key store.
+        Reads and parses a DICOM file, checks that it is a supported ultrasound
+        image, and looks up (or mints) its export values in the key store.
+        Everything read from the file is guarded: a file that cannot be read or
+        parsed is logged and skipped. Conflicts with the store are not.
 
         Args:
             file_path: Path to the DICOM file to process
@@ -240,18 +242,53 @@ class DicomFileManager:
 
         Returns:
             dict: Dictionary containing extracted DICOM metadata
-            None: If file cannot be read, is not a supported ultrasound image,
-                doesn't meet frame requirements, or repeats an instance already listed
+            None: If file cannot be read or parsed, is not a supported ultrasound
+                image, doesn't meet frame requirements, or repeats an instance
+                already listed
 
         Raises:
             KeysFileError: the instance contradicts a mapping already in the store.
         """
         try:
             dicom_ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+            parsed = self._parse_source_dataset(dicom_ds, file_path, skip_single_frame)
         except Exception as e:
-            logging.error(f"Failed to read DICOM file {file_path}: {e}")
+            logging.error(f"Skipping unreadable DICOM file {file_path}: {e}")
+            return None
+        if parsed is None:
+            return None
+        source_ids, issuer, fields = parsed
+
+        listed_from = self._seen_instances.get(source_ids['InstanceUID'])
+        if listed_from is not None:
+            logging.info(f"Skipping {file_path}: its SOPInstanceUID is already listed "
+                         f"from {listed_from}")
             return None
 
+        if issuer:
+            self.issuers_of_patient_id.add(issuer)
+
+        # keys.csv paths are relative to the input folder and use '/' on every platform.
+        relative_input = os.path.relpath(file_path, input_folder).replace(os.sep, '/')
+        keys_row = self._record_mapping(source_ids, relative_input)
+        self._seen_instances[source_ids['InstanceUID']] = file_path
+
+        return {
+            **keys_row,
+            **fields,
+            'InputPath': file_path,
+            'DateShiftDays': int(keys_row['DateShiftDays']),
+        }
+
+    def _parse_source_dataset(self, dicom_ds, file_path: str,
+                              skip_single_frame: bool) -> Optional[tuple]:
+        """Check that ``dicom_ds`` is a supported ultrasound image and read what the scan needs.
+
+        Returns ``(source_ids, issuer, fields)``: the source identifiers that
+        :meth:`_record_mapping` maps, the stripped IssuerOfPatientID ('' when
+        absent) and the dataframe columns that come from the file alone.
+        Returns ``None`` when the file is to be skipped; the reason is logged.
+        """
         # Skip non-ultrasound modalities
         if dicom_ds.get("Modality", "") != "US":
             logging.info(f"Skipping non-ultrasound file: {file_path}")
@@ -286,42 +323,24 @@ class DicomFileManager:
             'InstanceUID': str(instance_uid),
             'FrameOfReferenceUID': str(getattr(dicom_ds, 'FrameOfReferenceUID', '') or ''),
         }
-
-        listed_from = self._seen_instances.get(source_ids['InstanceUID'])
-        if listed_from is not None:
-            logging.info(f"Skipping {file_path}: its SOPInstanceUID is already listed "
-                         f"from {listed_from}")
-            return None
-        self._seen_instances[source_ids['InstanceUID']] = file_path
-
         issuer = str(dicom_ds.get('IssuerOfPatientID', '') or '').strip()
-        if issuer:
-            self.issuers_of_patient_id.add(issuer)
 
         physical_delta_x, physical_delta_y = self._extract_spacing_info(dicom_ds)
-        to_patch = physical_delta_x is None or physical_delta_y is None
         transducer_model = self.get_transducer_model(
             dicom_ds.get('TransducerData', ''),
             manufacturer=dicom_ds.get('Manufacturer', ''),
             manufacturer_model_name=dicom_ds.get('ManufacturerModelName', ''),
         )
-
-        # keys.csv paths are relative to the input folder and use '/' on every platform.
-        relative_input = os.path.relpath(file_path, input_folder).replace(os.sep, '/')
-        keys_row = self._record_mapping(source_ids, relative_input)
-
-        return {
-            **keys_row,
-            'InputPath': file_path,
-            'DateShiftDays': int(keys_row['DateShiftDays']),
+        fields = {
             'PhysicalDeltaX': physical_delta_x,
             'PhysicalDeltaY': physical_delta_y,
             'ContentDate': str(getattr(dicom_ds, 'ContentDate', '') or ''),
             'ContentTime': str(getattr(dicom_ds, 'ContentTime', '') or ''),
-            'Patch': to_patch,
+            'Patch': physical_delta_x is None or physical_delta_y is None,
             'TransducerModel': transducer_model,
             'DICOMDataset': dicom_ds,
         }
+        return source_ids, issuer, fields
 
     def _record_mapping(self, source_ids: dict, relative_input: str) -> dict:
         """Look up or mint the export values of one instance and record its keys.csv row.

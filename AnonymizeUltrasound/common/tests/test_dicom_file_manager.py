@@ -305,6 +305,25 @@ class TestDicomFileManager:
         assert count == 1
         assert any('already listed' in record.message for record in caplog.records)
 
+    def test_scan_directory_skips_a_file_with_an_empty_physical_delta(self, manager, temp_dir, caplog):
+        with caplog.at_level(logging.ERROR):
+            count = self._scan(manager, temp_dir, {
+                'bad.dcm': make_dataset(PhysicalDeltaX=None),
+                'ok.dcm': make_dataset(SOPInstanceUID=SOURCE_UID_ROOT + '.8'),
+            })
+        assert count == 1
+        assert [os.path.basename(p) for p in manager.dicom_df['InputPath']] == ['ok.dcm']
+        assert any('bad.dcm' in record.message for record in caplog.records
+                   if record.levelno == logging.ERROR)
+
+    def test_scan_directory_lists_an_instance_whose_first_copy_was_unreadable(self, manager, temp_dir):
+        count = self._scan(manager, temp_dir, {
+            'a.dcm': make_dataset(PhysicalDeltaX=None),
+            'copy/a.dcm': make_dataset(),
+        })
+        assert count == 1
+        assert manager.dicom_df.iloc[0]['InputPath'] == os.path.join(temp_dir, 'copy', 'a.dcm')
+
     def test_save_keys_csv_writes_the_store(self, manager, temp_dir):
         store = KeyStore()
         self._scan(manager, temp_dir, {'siteA/a.dcm': make_dataset()}, key_store=store)
