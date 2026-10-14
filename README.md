@@ -202,6 +202,7 @@ This module reads a folder of ultrasound cine loops in DICOM format and iterates
 - Import reads the file, checks that every mapping is complete and one-to-one, adds the newly scanned instances and writes the file back atomically. A file that does not pass the checks is left untouched and the Import is refused.
 - Use one keys directory per patient-identifier authority. Import is refused when the files of one Import carry more than one `IssuerOfPatientID`; the check covers that Import only, not earlier Imports into the same keys directory.
 - A row reserves the mapping of an instance; it does not prove that the instance was exported. The two files in the output folder do.
+- Import is refused when the output folder holds DICOM files that `keys.csv` does not list.
 
 Options under Settings collapsible button:
 

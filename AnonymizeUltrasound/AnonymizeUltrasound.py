@@ -47,8 +47,8 @@ from common.dicom_file_manager import DicomFileManager
 from common.export import (
     ExportError,
     export_instance,
-    output_directory_has_dicom,
     resolve_session_directories,
+    unlisted_output_dicoms,
     validate_prefix,
 )
 from common.key_store import KEYS_FILENAME, KeyStore, KeysFileError, KeysLock
@@ -1090,10 +1090,12 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         try:
             keys_path = os.path.join(keys_dir, KEYS_FILENAME)
             key_store = KeyStore.load(keys_path)
-            if not os.path.exists(keys_path) and output_directory_has_dicom(output_dir):
+            unlisted = unlisted_output_dicoms(output_dir, key_store)
+            if unlisted:
                 raise KeysFileError(
-                    "The output directory already contains DICOM files that are not listed in keys.csv. "
-                    "Choose an empty output directory, or the keys directory that belongs to this output.")
+                    f"The output directory contains {len(unlisted)} DICOM file(s) that keys.csv "
+                    f"does not list (first: {unlisted[0]}). Choose an empty output directory, "
+                    "or the keys directory that belongs to this output.")
             num_files = self.dicom_manager.scan_directory(input_dir, skip_single_frame, key_store=key_store)
             if len(self.dicom_manager.issuers_of_patient_id) > 1:
                 raise KeysFileError(

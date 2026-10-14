@@ -472,6 +472,8 @@ class TestInteractiveExportWiring:
         assert "from common.key_store import" in src
         assert "KeysLock" in src and "KeyStore.load" in src
         assert "export_instance(" in src
+        assert "unlisted_output_dicoms(" in src
+        assert "output_directory_has_dicom" not in src
 
     def test_cmake_lists_the_common_modules(self):
         cmake = (self.MODULE_DIR / "CMakeLists.txt").read_text()

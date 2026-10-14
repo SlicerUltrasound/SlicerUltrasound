@@ -11,12 +11,12 @@ import itertools
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 import re
 
 import pydicom
 
-from .key_store import is_plain_relative_path
+from .key_store import KeyStore, is_plain_relative_path
 from .version_info import get_provenance
 
 PREFIX_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,16}$')
@@ -76,12 +76,19 @@ def resolve_session_directories(input_dir: str, output_dir: str,
     return resolved[0], resolved[1], resolved[2]
 
 
-def output_directory_has_dicom(output_dir: str) -> bool:
-    """True when any file under ``output_dir`` has a DICOM extension."""
-    for _, _, files in os.walk(output_dir):
-        if any(os.path.splitext(name)[1].lower() in DICOM_EXTENSIONS for name in files):
-            return True
-    return False
+def unlisted_output_dicoms(output_dir: str, key_store: KeyStore) -> List[str]:
+    """Relative paths of the DICOM files under ``output_dir`` that no row of ``key_store`` names.
+
+    A file is listed when its name is the ``AnonFilename`` of a row; where it
+    sits under the output directory is not checked. The result is sorted.
+    """
+    listed = {row['AnonFilename'] for row in key_store.rows()}
+    unlisted = []
+    for root, _, files in os.walk(output_dir):
+        for name in files:
+            if os.path.splitext(name)[1].lower() in DICOM_EXTENSIONS and name not in listed:
+                unlisted.append(os.path.relpath(os.path.join(root, name), output_dir))
+    return sorted(unlisted)
 
 
 def _is_within(child: str, parent: str) -> bool:

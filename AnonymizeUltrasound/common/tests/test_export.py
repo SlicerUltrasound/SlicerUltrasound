@@ -14,9 +14,9 @@ from ..export import (
     compose_patient_name,
     export_instance,
     is_export_complete,
-    output_directory_has_dicom,
     resolve_output_path,
     resolve_session_directories,
+    unlisted_output_dicoms,
     validate_prefix,
 )
 from ..key_store import KeyStore
@@ -126,14 +126,26 @@ def test_resolve_session_directories_sees_through_a_symlinked_keys_directory(tmp
         resolve_session_directories(input_dir, output_dir, link)
 
 
-def test_output_directory_has_dicom(tmp_path):
-    assert output_directory_has_dicom(str(tmp_path)) is False
+def test_unlisted_output_dicoms_lists_every_dicom_file_an_empty_store_does_not_name(tmp_path):
+    root = str(tmp_path)
+    assert unlisted_output_dicoms(root, KeyStore()) == []
     (tmp_path / 'note.json').write_text('{}')
-    assert output_directory_has_dicom(str(tmp_path)) is False
+    assert unlisted_output_dicoms(root, KeyStore()) == []
     nested = tmp_path / 'a' / 'b'
     nested.mkdir(parents=True)
     (nested / 'x.DCM').write_bytes(b'')
-    assert output_directory_has_dicom(str(tmp_path)) is True
+    assert unlisted_output_dicoms(root, KeyStore()) == [os.path.join('a', 'b', 'x.DCM')]
+
+
+def test_unlisted_output_dicoms_accepts_a_file_named_by_a_row_wherever_it_sits(scanned_manager, output_root):
+    listed = scanned_manager.dicom_df.iloc[0]['AnonFilename']
+    os.makedirs(os.path.join(output_root, 'sub'))
+    with open(os.path.join(output_root, 'sub', listed), 'wb') as handle:
+        handle.write(b'')
+    assert unlisted_output_dicoms(output_root, scanned_manager.key_store) == []
+    with open(os.path.join(output_root, 'other.dcm'), 'wb') as handle:
+        handle.write(b'')
+    assert unlisted_output_dicoms(output_root, scanned_manager.key_store) == ['other.dcm']
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +329,14 @@ def test_re_export_replaces_both_files_and_keeps_the_sop_uid(scanned_manager, ou
     with open(second.json_path, encoding='utf-8') as handle:
         assert json.load(handle)['AnnotationLabels'] == ['Two']
     assert len(os.listdir(output_root)) == 2
+
+
+def test_unlisted_output_dicoms_after_a_real_export(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0]
+    result = export_instance(scanned_manager, row, image, output_root=output_root)
+
+    assert unlisted_output_dicoms(output_root, scanned_manager.key_store) == []
+    assert unlisted_output_dicoms(output_root, KeyStore()) == [os.path.basename(result.dicom_path)]
 
 
 def test_export_instance_preserves_the_input_tree_when_asked(tmp_path, image):
