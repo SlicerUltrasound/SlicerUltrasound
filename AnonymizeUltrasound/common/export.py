@@ -137,10 +137,11 @@ def export_instance(manager, row, image_array, *, output_root: str, prefix: str 
     """Write the DICOM and annotation JSON of the manager's current instance.
 
     ``row`` is the dataframe row of that instance. On any failure the staged
-    files are removed and the previously exported pair, if any, is left as it
-    was; the error is raised as :class:`ExportError`. The one exception is a
-    failure of the final JSON rename after the DICOM rename succeeded: the new
-    DICOM is then in place next to the previous JSON.
+    files are removed and the error is raised as :class:`ExportError`. Up to
+    the final renames the previously exported pair, if any, is left as it was.
+    When the JSON rename fails after the DICOM rename succeeded, the new DICOM
+    is removed again so the instance does not count as exported: the previous
+    DICOM is gone by then and the previous JSON may remain.
     """
     prefix = validate_prefix(prefix)
     dicom_final = resolve_output_path(output_root, row['OutputPath'], preserve_directory_structure)
@@ -156,7 +157,11 @@ def export_instance(manager, row, image_array, *, output_root: str, prefix: str 
         _verify_staged_dicom(dicom_temp, row)
         _write_sidecar(json_temp, row['AnonSOPInstanceUID'], mask_params, labels)
         os.replace(dicom_temp, dicom_final)
-        os.replace(json_temp, json_final)
+        try:
+            os.replace(json_temp, json_final)
+        except Exception:
+            _discard(dicom_final)  # the new DICOM must not pair with the previous JSON
+            raise
     except ExportError:
         _discard(dicom_temp, json_temp)
         raise

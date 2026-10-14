@@ -266,6 +266,30 @@ def test_export_instance_failure_after_dicom_staging_leaves_prior_pair_intact(sc
     assert _no_temp_files(output_root)
 
 
+def test_export_instance_json_rename_failure_leaves_no_complete_pair(scanned_manager, output_root, image):
+    row = scanned_manager.dicom_df.iloc[0]
+    dicom_final = os.path.join(output_root, row['AnonFilename'])
+    json_final = dicom_final[:-4] + '.json'
+    with open(dicom_final, 'wb') as handle:
+        handle.write(b'prior-dicom')
+    with open(json_final, 'w', encoding='utf-8') as handle:
+        handle.write('prior-json')
+    real_replace = os.replace
+
+    def replace_unless_json(src, dst):
+        if dst.endswith('.json'):
+            raise OSError('sidecar is locked')
+        return real_replace(src, dst)
+
+    with patch.object(export.os, 'replace', side_effect=replace_unless_json):
+        with pytest.raises(ExportError):
+            export_instance(scanned_manager, row, image, output_root=output_root)
+
+    assert not os.path.exists(dicom_final)
+    assert is_export_complete(output_root, row) is False
+    assert _no_temp_files(output_root)
+
+
 def test_export_instance_rejects_a_staged_file_that_does_not_match_the_row(scanned_manager, output_root, image):
     row = scanned_manager.dicom_df.iloc[0].copy()
     row['AnonSOPInstanceUID'] = '2.25.1'
