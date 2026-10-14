@@ -8,7 +8,6 @@ import numpy as np
 import math
 import os
 from typing import Optional, List
-import time
 import json
 import shutil
 
@@ -44,15 +43,7 @@ except ImportError:
     slicer.util.pip_install('opencv-python')
     import cv2
 
-try:
-    import torch
-except ImportError:
-    logging.info("AnonymizeUltrasound: torch not found, installing...")
-    slicer.util.pip_install('torch')
-    import torch
-
 from common.dicom_file_manager import DicomFileManager
-from common.inference import load_model, preprocess_image, get_device, download_model, MODEL_PATH
 from common.version_info import get_provenance
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
@@ -103,7 +94,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     INPUT_FOLDER_SETTING = "AnonymizeUltrasound/InputFolder"
     OUTPUT_FOLDER_SETTING = "AnonymizeUltrasound/OutputFolder"
     HEADERS_FOLDER_SETTING = "AnonymizeUltrasound/HeadersFolder"
-    AUTO_MASK_SETTING = "AnonymizeUltrasound/AutoMask"
     SKIP_SINGLE_FRAME_SETTING = "AnonymizeUltrasound/SkipSingleFrame"
     CONTINUE_PROGRESS_SETTING = "AnonymizeUltrasound/ContinueProgress"
     HASH_PATIENT_ID_SETTING = "AnonymizeUltrasound/HashPatientId"
@@ -125,7 +115,7 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.processing_mode = False
 
         # --- Keyboard shortcuts ---
-        # M: toggle Define Mask, N: next scan, Space: toggle auto overlay, E: export scan, A: export and load next scan
+        # M: toggle Define Mask, N: next scan, E: export scan, A: export and load next scan
         self.shortcutM = qt.QShortcut(slicer.util.mainWindow())
         self.shortcutM.setKey(qt.QKeySequence('M'))
         self.shortcutP = qt.QShortcut(slicer.util.mainWindow())
@@ -234,19 +224,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.enableMaskCacheCheckBox.checked = False
         self.ui.enableMaskCacheCheckBox.connect('toggled(bool)',
                                                 lambda newValue: self.onSettingChanged(self.ENABLE_MASK_CACHE_SETTING, str(newValue)))
-
-        autoMaskStr = settings.value(self.AUTO_MASK_SETTING)
-        if autoMaskStr and autoMaskStr.lower() == "true":
-            self.ui.autoMaskCheckBox.checked = True
-        else:
-            self.ui.autoMaskCheckBox.checked = False
-        self.ui.autoMaskCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.AUTO_MASK_SETTING, str(newValue)))
-
-        self.ui.autoOverlayCheckBox.checked = False
-        self.ui.autoOverlayCheckBox.connect('toggled(bool)', self.onAutoOverlayCheckBoxToggled)
-
-        # Developer gating for Auto‑Overlay check box
-        self._updateAutoOverlayCheckBoxVisibility()
 
         continueProgressStr = settings.value(self.CONTINUE_PROGRESS_SETTING)
         if continueProgressStr and continueProgressStr.lower() == "true":
@@ -845,13 +822,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self.ui.statusLabel.text = "No DICOM file loaded"
 
-    def onAutoOverlayCheckBoxToggled(self, checked):
-        self.logic.showAutoOverlay = checked  # Pass to logic
-        self.logic._composeAndPushOverlay()
-
-    def _updateAutoOverlayCheckBoxVisibility(self):
-        self.ui.autoOverlayCheckBox.setVisible(self.developerMode)
-
     #
     # Placement of mask markups
     #
@@ -867,56 +837,9 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         # determine if three-point fan mode is active
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
 
-        # Automatic mask via AI only when NOT in three-point fan mode
-        autoMaskSuccessful = False
-        if self.ui.autoMaskCheckBox.checked:
-            # Get the mask control points
-            maskMarkupsNode.RemoveAllControlPoints()
-            coords_IJK = self.logic.getAutoMask()
-            if coords_IJK is None:
-                logging.error("Auto mask not found, resetting three-point fan mode from settings")
-                # Three-point fan mask setting
-                settings = slicer.app.settings()
-                threePointStr = settings.value(self.THREE_POINT_FAN_SETTING)
-                if threePointStr and threePointStr.lower() == "true":
-                    self.ui.threePointFanCheckBox.checked = True
-                else:
-                    self.ui.threePointFanCheckBox.checked = False
-            else:
-                autoMaskSuccessful = True
-                num_points = coords_IJK.shape[0]
-                if num_points == 3:
-                    self.ui.threePointFanCheckBox.checked = True
-                else:
-                    self.ui.threePointFanCheckBox.checked = False
+        # Start the manual process using mouse interactions
 
-            # Try to apply the automatic mask markups
-            currentVolumeNode = self.logic.getCurrentProxyNode()
-            if autoMaskSuccessful == True and currentVolumeNode is not None:
-                ijkToRas = vtk.vtkMatrix4x4()
-                currentVolumeNode.GetIJKToRASMatrix(ijkToRas)
-
-                coords_RAS = np.zeros((num_points, 4))
-                for i in range(num_points):
-                    point_IJK = np.array([coords_IJK[i, 0], coords_IJK[i, 1], 0, 1])
-                    # convert to IJK
-                    coords_RAS[i, :] = ijkToRas.MultiplyPoint(point_IJK)
-
-                for i in range(num_points):
-                    coord = coords_RAS[i, :]
-                    logging.debug(f"Adding control point {coord}")
-                    maskMarkupsNode.AddControlPoint(coord[0], coord[1], coord[2])
-
-                # Update the status
-                self._parameterNode.status = AnonymizerStatus.LANDMARKS_PLACED
-                self.ui.defineMaskButton.checked = False
-            else:
-                logging.error("Ultrasound volume node not found")
-                autoMaskSuccessful = False
-
-        # If markups are not automatically defined, start the manual process using mouse interactions
-
-        if toggled and autoMaskSuccessful == False:
+        if toggled:
             maskMarkupsNode = self._parameterNode.maskMarkups
             maskMarkupsNode.RemoveAllControlPoints()
             self.logic.updateMaskVolume(three_point=threePointFanModeEnabled)
@@ -1167,8 +1090,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         VTKObservationMixin.__init__(self)
 
         self.dicom_manager = DicomFileManager()
-        self.showAutoOverlay = False
-        self._autoMaskRGB = None     # 1×H×W×3  uint8, red
         self._manualMaskRGB = None   # 1×H×W×3  uint8, green
         self._parameterNode = self._getOrCreateParameterNode()
         self.transducerMaskCache = {}   # TransducerModel -> mask volume node
@@ -1467,54 +1388,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             return None
 
         return proxyNode
-
-    def sequence_to_numpy(self, masterSequenceNode) -> np.ndarray:
-        """
-        Convert all frames in the sequence to a numpy array in the format of (N, C, H, W).
-        :param masterSequenceNode: the master sequence node
-        :param make_copy: whether to make a copy of the array
-        :return: numpy array (N, C, H, W)
-        """
-        n = masterSequenceNode.GetNumberOfDataNodes()
-        if n == 0:
-            return np.empty((0,))
-
-        firstNode = masterSequenceNode.GetNthDataNode(0)
-
-        # This method assumes the sequence stores volume nodes
-        if not (firstNode.IsA('vtkMRMLScalarVolumeNode') or firstNode.IsA('vtkMRMLVectorVolumeNode')):
-            raise TypeError(f'Unsupported node type in sequence: {firstNode.GetClassName()}')
-
-        a0 = slicer.util.arrayFromVolume(firstNode).squeeze(axis=0) # (N, H, W, C) -> (H, W, C)
-        out = np.empty((n,) + a0.shape, dtype=a0.dtype)
-        out[0] = a0
-        for i in range(1, n):
-            out[i] = slicer.util.arrayFromVolume(masterSequenceNode.GetNthDataNode(i))
-
-        return out.transpose(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
-
-    def getAutoMask(self):
-        start = time.time()
-
-        # 1) Model
-        try:
-            model, device = self._ensure_model(MODEL_PATH)
-        except Exception as e:
-            logging.error(f"Model prepare failed: {e}")
-            return None
-
-        # 2) Frames from current sequence (NCHW)
-        frames = self._get_frames_from_current_sequence()
-        if frames.size == 0:
-            logging.error("No frames in current sequence")
-            return None
-
-        # 3) Inference + denorm + optional 3-point merge
-        coords4 = self._infer_corners_px(frames, model, device)
-        coordsN = self._merge_top_corners_if_close(coords4, threshold_px=15.0)
-
-        logging.info(f"Auto mask infer in {time.time() - start:.3f}s")
-        return coordsN
 
     def showMaskContour(self, show=True):
         parameterNode = self.getParameterNode()
@@ -2094,26 +1967,20 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         return dicom_file_path, sequence_info_file_path, dicom_header_file_path
 
     def _composeAndPushOverlay(self):
-        """Merge masks according to parameter-node switches and
-        write into overlayVolume (always foreground)."""
+        """Write the manual mask into overlayVolume (always foreground)."""
         pnode = self.getParameterNode()
-        # For now, always show both overlays if present
+        # Always show the manual overlay if present
         rgb = None
         # Determine shape from available masks
         if self._manualMaskRGB is not None:
             _, h, w, _ = self._manualMaskRGB.shape
-        elif self._autoMaskRGB is not None:
-            _, h, w, _ = self._autoMaskRGB.shape
         else:
             return
         rgb = np.zeros((1, h, w, 3), dtype=np.uint8)
         # Optionally, you can add switches to pnode for visibility
         manualVisible = True
-        autoVisible = self.showAutoOverlay
         if manualVisible and self._manualMaskRGB is not None:
             rgb[0] = np.maximum(rgb[0], self._manualMaskRGB[0])
-        if autoVisible and self._autoMaskRGB is not None:
-            rgb[0] = np.maximum(rgb[0], self._autoMaskRGB[0])
         if pnode.overlayVolume is not None:
             slicer.util.updateVolumeFromArray(pnode.overlayVolume, rgb)
 
@@ -2210,58 +2077,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         """Clear all cached masks."""
         self.transducerMaskCache.clear()
         logging.info("Cleared all cached masks")
-
-    def _ensure_model(self, model_path: str = MODEL_PATH, device_hint: str = ""):
-        """
-        Ensure a model is available and loaded on a device.
-        Returns (model, device). Never shows a widget dialog (logic stays headless).
-        """
-        if not os.path.exists(model_path):
-            logging.info("Model missing; downloading...")
-            ok = download_model(output_path=model_path)
-            if not ok:
-                raise RuntimeError("Model download failed")
-        device = get_device(device_hint)
-        model = load_model(model_path, device)
-        return model, device
-
-    def _get_frames_from_current_sequence(self) -> np.ndarray:
-        """
-        Return NCHW array from current sequence (pauses rendering for speed).
-        Shape: (N, C, H, W), dtype: uint8
-        """
-        slicer.app.pauseRender()
-        try:
-            pnode = self.getParameterNode()
-            seq = pnode.ultrasoundSequenceBrowser.GetMasterSequenceNode()
-            return self.sequence_to_numpy(seq)  # already returns NCHW
-        finally:
-            slicer.app.resumeRender()
-
-    def _infer_corners_px(self, frames_nchw: np.ndarray, model, device: str) -> np.ndarray:
-        """
-        Predict corner coordinates (in pixels, x,y) at the original image resolution.
-        Returns array of shape (4, 2) in order [UL, UR, LL, LR] BEFORE merging.
-        """
-        h, w = frames_nchw.shape[-2], frames_nchw.shape[-1]
-        with torch.no_grad():
-            t = preprocess_image(frames_nchw)            # (1,1,240,320)
-            coords_norm = model(t.to(device)).cpu().numpy().reshape(4, 2)
-        coords = coords_norm.copy()
-        coords[:, 0] *= w  # x
-        coords[:, 1] *= h  # y
-        return coords
-
-    def _merge_top_corners_if_close(self, coords: np.ndarray, threshold_px: float = 15.0) -> np.ndarray:
-        """
-        If UL and UR are very close, merge to 3-point fan [apex, LL, LR]; else return 4 corners.
-        Input coords must be [UL, UR, LL, LR].
-        """
-        ul, ur, ll, lr = coords
-        if np.linalg.norm(ul - ur) < threshold_px:
-            merged_top = (ul + ur) / 2.0
-            return np.vstack([merged_top, ll, lr])  # 3-point fan
-        return coords  # 4 points
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""
