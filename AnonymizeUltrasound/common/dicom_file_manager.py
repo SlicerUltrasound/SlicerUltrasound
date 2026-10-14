@@ -14,7 +14,6 @@ from pydicom.dataset import FileMetaDataset
 
 from .export import DICOM_EXTENSIONS, is_export_complete
 from .key_store import KEYS_CSV_COLUMNS, KeyStore, KeysFileError
-from .version_info import apply_provenance_tag, get_provenance
 
 
 class DicomFileManager:
@@ -112,17 +111,6 @@ class DicomFileManager:
 
     # Identity of this writer in the file meta information of every export.
     IMPLEMENTATION_CLASS_UID = '2.25.249430386050762985123801272949428663139'
-
-    # DeidentificationMethod (0012,0063) values after the tool identification.
-    # Each value is limited to 64 characters by its VR.
-    DEIDENTIFICATION_METHOD = (
-        'Dataset rebuilt from an allowlist of attributes',
-        'Random UUID pseudonyms; mapping kept in keys.csv',
-        'Dates shifted by a per-patient offset; times kept',
-        'Device model, patient sex and capped age retained',
-        'Pixels outside the operator mask zeroed; no OCR',
-        'Restricted research use; separate review before sharing',
-    )
 
     def __init__(self):
         self.reset()
@@ -536,10 +524,6 @@ class DicomFileManager:
         # Compress and set pixel data
         self._set_compressed_pixel_data(anonymized_ds, image_array)
 
-        # Embed git provenance as a private tag so the on-disk .dcm and the
-        # returned Dataset carry the same build identity.
-        apply_provenance_tag(anonymized_ds)
-
         # Create and save file
         self._create_and_save_dicom_file(anonymized_ds, output_path)
 
@@ -804,18 +788,9 @@ class DicomFileManager:
             ds.SeriesTime = series_time
 
     def _set_deidentification_attributes(self, ds: pydicom.Dataset) -> None:
-        """Record what was done to the dataset (PS3.15 E.1.1 attributes, text only)."""
+        """Set PatientIdentityRemoved and LongitudinalTemporalInformationModified (PS3.15 E.1.1)."""
         ds.PatientIdentityRemoved = 'YES'
         ds.LongitudinalTemporalInformationModified = 'MODIFIED'
-        ds.DeidentificationMethod = self._deidentification_method_values()
-
-    def _deidentification_method_values(self) -> List[str]:
-        tool = f'SlicerUltrasound AnonymizeUltrasound {self._git_sha_short()}'
-        return [tool, *self.DEIDENTIFICATION_METHOD]
-
-    @staticmethod
-    def _git_sha_short() -> str:
-        return str(get_provenance().get('git_sha', 'unknown'))[:7]
 
     def _set_conformance_attributes(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset) -> None:
         """Set required DICOM conformance attributes."""
@@ -881,7 +856,6 @@ class DicomFileManager:
         meta.MediaStorageSOPClassUID = ds.SOPClassUID
         meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
         meta.ImplementationClassUID = self.IMPLEMENTATION_CLASS_UID
-        meta.ImplementationVersionName = f"SLICERUS_{self._git_sha_short()}"
         meta.TransferSyntaxUID = pydicom.uid.JPEGBaseline8Bit
 
         # Create file dataset

@@ -189,7 +189,7 @@ This module reads a folder of ultrasound cine loops in DICOM format and iterates
 - `PatientID` is a random 32-character pseudonym drawn the first time a source patient is seen and reused afterwards. `PatientName` is the pseudonym, with the project label in front when one is given.
 - Study, Series, SOP Instance and Frame of Reference UIDs are new random UIDs in the `2.25` arc. One source series stays one exported series. The file name is the SOP Instance UID in UUID form, so file name and UID always match.
 - Dates are moved forward by a whole number of days between 1 and 1095, drawn once per source patient and stored in `keys.csv`. Every study of a patient uses the same offset, so the intervals between studies are kept. Output dates therefore lie after the real dates and can lie in the future. Times are copied unchanged. A source date that is missing or not a valid `YYYYMMDD` value is written empty.
-- Every exported file carries `PatientIdentityRemoved = YES`, `LongitudinalTemporalInformationModified = MODIFIED` and a multi-valued `DeidentificationMethod` describing the steps above, plus a private element with the git revision of the module.
+- Every exported file carries `PatientIdentityRemoved = YES` and `LongitudinalTemporalInformationModified = MODIFIED`.
 
 ### keys.csv
 

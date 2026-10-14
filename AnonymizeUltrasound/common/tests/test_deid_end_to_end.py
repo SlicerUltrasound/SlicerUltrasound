@@ -191,12 +191,12 @@ def test_end_to_end_export_of_a_synthetic_collection(collection):
         assert ds.PatientName == 'PROJ_' + row['AnonPatientID']
         assert ds.PatientIdentityRemoved == 'YES'
         assert ds.LongitudinalTemporalInformationModified == 'MODIFIED'
-        assert len(ds.DeidentificationMethod) >= 5
+        assert 'DeidentificationMethod' not in ds
         assert ds.StudyID == ''
         for keyword in ('StudyDescription', 'SeriesDescription', 'StationName', 'InstitutionName',
                         'OperatorsName', 'ImageComments', 'IssuerOfPatientID', 'PatientBirthDate'):
             assert keyword not in ds or ds[keyword].value == '', keyword
-        assert not any(element.tag.is_private and element.tag.group != 0x0099 for element in ds.iterall())
+        assert not any(element.tag.is_private for element in ds.iterall())
 
         assert len(ds.SequenceOfUltrasoundRegions) == 1
         item = ds.SequenceOfUltrasoundRegions[0]

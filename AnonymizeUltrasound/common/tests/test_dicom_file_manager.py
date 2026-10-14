@@ -1006,14 +1006,7 @@ class TestDicomFileManager:
 
         assert ds.PatientIdentityRemoved == 'YES'
         assert ds.LongitudinalTemporalInformationModified == 'MODIFIED'
-        methods = list(ds.DeidentificationMethod)
-        assert len(methods) >= 5
-        assert all(0 < len(text) <= 64 for text in methods)
-        assert methods[0].startswith('SlicerUltrasound AnonymizeUltrasound ')
-        assert any('keys.csv' in text for text in methods)
-        assert any('per-patient offset' in text for text in methods)
-        assert any('mask' in text for text in methods)
-        assert not any(re.search(r'\d', text) for text in methods[1:])
+        assert 'DeidentificationMethod' not in ds
         assert 'DeidentificationMethodCodeSequence' not in ds
         assert 'BurnedInAnnotation' not in ds
 
@@ -1107,8 +1100,7 @@ class TestDicomFileManager:
 
         assert UID_2_25.match(DicomFileManager.IMPLEMENTATION_CLASS_UID)
         assert meta.ImplementationClassUID == DicomFileManager.IMPLEMENTATION_CLASS_UID
-        assert meta.ImplementationVersionName.startswith('SLICERUS_')
-        assert len(meta.ImplementationVersionName) <= 16
+        assert 'ImplementationVersionName' not in meta
         assert meta.MediaStorageSOPInstanceUID == '2.25.5'
         assert meta.TransferSyntaxUID == pydicom.uid.JPEGBaseline8Bit
         with open(output_path, 'rb') as handle:
