@@ -180,7 +180,7 @@ This module reads a folder of ultrasound cine loops in DICOM format and iterates
 1. Click **Import DICOM folder** and wait until the input folder is scanned. `keys.csv` is updated before the first file is loaded.
 1. Click **Next** to load the next DICOM file in alphabetical order.
 1. Click **Mask** and click on the corners of the ultrasound area. Corner points can be modified later by dragging.
-1. Click **Export** to produce two files in the output folder: the de-identified DICOM `<uuid>.dcm` and the annotation file `<uuid>.json` with the mask parameters, the checked labels and the git revision of the module. An instance counts as exported only when both files exist.
+1. Click **Export** to produce two files in the output folder: the de-identified DICOM `<uuid>.dcm` and the annotation file `<uuid>.json` with the mask parameters and the checked labels. An instance counts as exported only when both files exist.
 
 ### What the export contains
 

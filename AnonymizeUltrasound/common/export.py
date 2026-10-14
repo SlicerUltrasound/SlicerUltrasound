@@ -17,7 +17,6 @@ import re
 import pydicom
 
 from .key_store import KeyStore, is_plain_relative_path
-from .version_info import get_provenance
 
 PREFIX_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,16}$')
 DICOM_EXTENSIONS = {'.dcm', '.dicom'}
@@ -193,12 +192,9 @@ def _verify_staged_dicom(path: str, row) -> None:
 
 def _write_sidecar(path: str, anon_sop_uid: str, mask_params: Optional[Dict],
                    labels: Optional[Iterable[str]]) -> None:
-    provenance = get_provenance()
     info = {
         'SOPInstanceUID': anon_sop_uid,
         'GrayscaleConversion': False,
-        'git_sha': provenance['git_sha'],
-        'git_dirty': provenance['git_dirty'],
     }
     info.update(mask_params or {})
     if labels is not None:

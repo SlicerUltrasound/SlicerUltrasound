@@ -243,7 +243,7 @@ def test_export_instance_writes_the_pair_and_leaves_no_temp_files(scanned_manage
     assert sidecar['SOPInstanceUID'] == row['AnonSOPInstanceUID']
     assert sidecar['AnnotationLabels'] == ['Label A']
     assert sidecar['GrayscaleConversion'] is False
-    assert isinstance(sidecar['git_sha'], str) and isinstance(sidecar['git_dirty'], bool)
+    assert 'git_sha' not in sidecar and 'git_dirty' not in sidecar
     for key, value in MASK_PARAMS.items():
         assert sidecar[key] == value
     assert is_export_complete(output_root, row)
