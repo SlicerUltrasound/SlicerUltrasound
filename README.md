@@ -185,11 +185,18 @@ This module reads a folder of ultrasound cine loops in DICOM format and iterates
 ### What the export contains
 
 - The area outside the defined fan or rectangle region is erased on all frames. Text inside the region is not detected.
-- The output dataset is built from an empty dataset. Only these attributes are carried over from the source: the image encoding (bits, samples, photometric interpretation), the ultrasound region calibration (standard attributes of each region item only), `PixelSpacing`, `Manufacturer`, `ManufacturerModelName`, `TransducerType`, the model segment of `TransducerData`, `PatientSex`, `PatientAge` (capped at `090Y`), `SeriesNumber` and the SOP class. Descriptions, station and institution names, operator and physician names, comments and private attributes are not copied.
+- The output dataset is built from an empty dataset. These attributes are carried over from the source: the image encoding (bits, samples, photometric interpretation), `PixelSpacing`, `Manufacturer`, `ManufacturerModelName`, `TransducerType`, the model segment of `TransducerData`, `PatientSex`, `PatientAge` (capped at `090Y`), `SeriesNumber` and the SOP class. `SpecificCharacterSet` is copied whenever present, even when no ultrasound regions exist; no character-set declaration is invented. Outside the preserved region subtree described below, descriptions, station and institution names, operator and physician names, comments and private attributes are not copied.
+- A nonempty `SequenceOfUltrasoundRegions` is preserved in full, retaining item order and every field, including private elements, nested source references and any item-level character-set declarations. Missing and empty sequences are omitted. The existing `PixelSpacing` calculation is unchanged.
 - `PatientID` is a random 32-character pseudonym drawn the first time a source patient is seen and reused afterwards. `PatientName` is the pseudonym, with the project label in front when one is given.
 - Study, Series, SOP Instance and Frame of Reference UIDs are new random UIDs in the `2.25` arc. One source series stays one exported series. The file name is the SOP Instance UID in UUID form, so file name and UID always match.
 - Dates are moved forward by a whole number of days between 1 and 1095, drawn once per source patient and stored in `keys.csv`. Every study of a patient uses the same offset, so the intervals between studies are kept. Output dates therefore lie after the real dates and can lie in the future. Times are copied unchanged. A source date that is missing or not a valid `YYYYMMDD` value is written empty.
-- Every exported file carries `PatientIdentityRemoved = YES` and `LongitudinalTemporalInformationModified = MODIFIED`.
+- Every newly written export carries `PatientIdentityRemoved = YES`, `LongitudinalTemporalInformationModified = MODIFIED` and exactly one item in `DeidentificationMethodCodeSequence`: `CodingSchemeDesignator = 99SLICERUS`, `CodeValue = ANON_US`, `CodeMeaning = SlicerUltrasound_AnonymizeUltrasound`. The separate `DeidentificationMethod` text attribute is absent. This local code identifies the tool's method within the extensible [DICOM CID 7050](https://dicom.nema.org/medical/dicom/current/output/chtml/part16/sect_CID_7050.html); it does not assert a standard confidentiality profile.
+
+The pre-PR module assigned the raw ultrasound-region sequence directly. This export restores that content-preservation behavior with a deep copy, so changing copied nested contents cannot change the source. Preservation means equivalent parsed contents after writing and reading the file back, not identical serialized bytes.
+
+**The preserved ultrasound-region subtree is not de-identified and can retain identifiers.** Neither `PatientIdentityRemoved = YES` nor the coded method proves complete identity removal or confidentiality-profile conformance. Review the preserved metadata and all image frames before sharing exports.
+
+These changes apply to newly written exports. Existing completed DICOM/JSON pairs are not automatically migrated or rewritten; **Continue progress** still skips them.
 
 ### keys.csv
 
@@ -208,7 +215,6 @@ Options under Settings collapsible button:
 
 - **Preserve input directory structure**: keeps the subfolder structure of the input files in the output folder. File names are always replaced.
 - **Use cached mask**: reuses the last mask defined for the same transducer model.
-- **Automatically suggest mask**: lets the bundled model propose the corner points.
 - **Skip single-frame input DICOM files**: use this for efficiency if you only need to export multi-frame DICOM files.
 - **Continue progress**: skips input files whose DICOM and JSON pair already exists in the output folder.
 - **Enable 3-Point Fan Mask**: defines a fan from one top point and two bottom points.

@@ -63,6 +63,7 @@ class DicomFileManager:
         "PixelRepresentation",
         "SeriesNumber",
         "Manufacturer",
+        "SpecificCharacterSet",
     ]
 
     # Tags always written to the de-id dataset: source value if present, else "".
@@ -72,30 +73,6 @@ class DicomFileManager:
         "TransducerType",
         "ManufacturerModelName",
     ]
-
-    # Attributes of a SequenceOfUltrasoundRegions item that are carried over
-    # (PS3.3 Table C.8-17). Each output item is rebuilt from these alone.
-    REGION_ALLOWLIST = (
-        'RegionSpatialFormat', 'RegionDataType', 'RegionFlags',
-        'RegionLocationMinX0', 'RegionLocationMinY0', 'RegionLocationMaxX1', 'RegionLocationMaxY1',
-        'ReferencePixelX0', 'ReferencePixelY0',
-        'PhysicalUnitsXDirection', 'PhysicalUnitsYDirection',
-        'ReferencePixelPhysicalValueX', 'ReferencePixelPhysicalValueY',
-        'PhysicalDeltaX', 'PhysicalDeltaY',
-        'TransducerFrequency', 'TransducerType', 'PulseRepetitionFrequency',
-        'DopplerCorrectionAngle', 'SteeringAngle',
-        'DopplerSampleVolumeXPositionRetired', 'DopplerSampleVolumeXPosition',
-        'DopplerSampleVolumeYPositionRetired', 'DopplerSampleVolumeYPosition',
-        'TMLinePositionX0Retired', 'TMLinePositionX0',
-        'TMLinePositionY0Retired', 'TMLinePositionY0',
-        'TMLinePositionX1Retired', 'TMLinePositionX1',
-        'TMLinePositionY1Retired', 'TMLinePositionY1',
-        'PixelComponentOrganization', 'PixelComponentMask',
-        'PixelComponentRangeStart', 'PixelComponentRangeStop',
-        'PixelComponentPhysicalUnits', 'PixelComponentDataType',
-        'NumberOfTableBreakPoints', 'TableOfXBreakPoints', 'TableOfYBreakPoints',
-        'NumberOfTableEntries', 'TableOfPixelValues', 'TableOfParameterValues',
-    )
 
     # Expected columns in the DICOM files dataframe: the keys.csv columns first,
     # then scan-time detail that is not persisted.
@@ -562,16 +539,15 @@ class DicomFileManager:
 
     def _copy_spacing_info(self, ds: pydicom.Dataset, current_record: dict) -> None:
         """
-        Carry the ultrasound region calibration over and set the conventional
+        Preserve complete ultrasound regions and set the conventional
         PixelSpacing tag for DICOM readers that don't support ultrasound regions.
         """
         source_dataset = current_record.DICOMDataset
 
-        # Rebuild each region item from its standard calibration attributes.
+        # This preserved subtree is not de-identified and may contain source identifiers.
         regions = getattr(source_dataset, 'SequenceOfUltrasoundRegions', None)
         if regions is not None and len(regions) > 0:
-            ds.SequenceOfUltrasoundRegions = pydicom.Sequence(
-                [self._rebuild_region_item(item) for item in regions])
+            ds.SequenceOfUltrasoundRegions = copy.deepcopy(regions)
 
         # Copy spacing to conventional PixelSpacing tag
         delta_x = current_record['PhysicalDeltaX']
@@ -580,14 +556,6 @@ class DicomFileManager:
             delta_x_mm = float(delta_x) * 10
             delta_y_mm = float(delta_y) * 10
             ds.PixelSpacing = [f"{delta_x_mm:.14f}", f"{delta_y_mm:.14f}"]
-
-    def _rebuild_region_item(self, item: pydicom.Dataset) -> pydicom.Dataset:
-        """Return a new region item holding only the REGION_ALLOWLIST attributes of ``item``."""
-        rebuilt = pydicom.Dataset()
-        for keyword in self.REGION_ALLOWLIST:
-            if keyword in item:
-                rebuilt.add(copy.deepcopy(item[keyword]))
-        return rebuilt
 
     def _copy_source_metadata(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset, current_record) -> None:
         """Copy metadata from source dataset.
@@ -788,9 +756,14 @@ class DicomFileManager:
             ds.SeriesTime = series_time
 
     def _set_deidentification_attributes(self, ds: pydicom.Dataset) -> None:
-        """Set PatientIdentityRemoved and LongitudinalTemporalInformationModified (PS3.15 E.1.1)."""
+        """Identify the tool's method without asserting confidentiality-profile conformance."""
         ds.PatientIdentityRemoved = 'YES'
         ds.LongitudinalTemporalInformationModified = 'MODIFIED'
+        method = pydicom.Dataset()
+        method.CodingSchemeDesignator = '99SLICERUS'
+        method.CodeValue = 'ANON_US'
+        method.CodeMeaning = 'SlicerUltrasound_AnonymizeUltrasound'
+        ds.DeidentificationMethodCodeSequence = pydicom.Sequence([method])
 
     def _set_conformance_attributes(self, ds: pydicom.Dataset, source_ds: pydicom.Dataset) -> None:
         """Set required DICOM conformance attributes."""

@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import re
@@ -502,7 +503,17 @@ class TestDicomFileManager:
         assert saved_ds.FrameOfReferenceUID == row['AnonFrameOfReferenceUID']
         assert saved_ds.PatientID == row['AnonPatientID']
         assert saved_ds.PatientName == 'PROJ_' + HEX32
-        assert saved_ds.PatientIdentityRemoved == 'YES'
+        for dataset in (returned, saved_ds):
+            assert dataset.PatientIdentityRemoved == 'YES'
+            assert dataset.LongitudinalTemporalInformationModified == 'MODIFIED'
+            assert 'DeidentificationMethod' not in dataset
+            assert len(dataset.DeidentificationMethodCodeSequence) == 1
+            code = dataset.DeidentificationMethodCodeSequence[0]
+            assert {element.keyword: element.value for element in code} == {
+                'CodingSchemeDesignator': '99SLICERUS',
+                'CodeValue': 'ANON_US',
+                'CodeMeaning': 'SlicerUltrasound_AnonymizeUltrasound',
+            }
         assert 'SeriesDescription' not in saved_ds
         assert saved_ds.file_meta.MediaStorageSOPInstanceUID == row['AnonSOPInstanceUID']
 
@@ -592,7 +603,7 @@ class TestDicomFileManager:
         assert 'SequenceOfUltrasoundRegions' not in ds
         assert hasattr(ds, 'PixelSpacing')
 
-    def test_copy_spacing_info_rebuilds_region_items_from_the_standard_attributes(self, manager_with_data):
+    def test_copy_spacing_info_preserves_complete_regions_without_shared_contents(self, manager_with_data):
         current_record = manager_with_data.dicom_df.iloc[0]
         region = Dataset()
         region.RegionSpatialFormat = 1
@@ -608,30 +619,23 @@ class TestDicomFileManager:
         nested.ReferencedSOPInstanceUID = SOURCE_UID_ROOT + '.77'
         region.ReferencedImageSequence = Sequence([nested])
         current_record.DICOMDataset.SequenceOfUltrasoundRegions = Sequence([region, Dataset()])
+        source_regions = current_record.DICOMDataset.SequenceOfUltrasoundRegions
+        original = copy.deepcopy(source_regions)
 
         ds = pydicom.Dataset()
         manager_with_data._copy_spacing_info(ds, current_record)
 
-        assert len(ds.SequenceOfUltrasoundRegions) == 2
+        assert ds.SequenceOfUltrasoundRegions == original
+        assert ds.SequenceOfUltrasoundRegions is not source_regions
         item = ds.SequenceOfUltrasoundRegions[0]
         assert item is not region
-        for keyword in ('RegionSpatialFormat', 'RegionDataType', 'RegionFlags', 'RegionLocationMinX0',
-                        'PhysicalUnitsXDirection', 'PhysicalDeltaX', 'PhysicalDeltaY', 'TransducerFrequency'):
-            assert item[keyword].value == region[keyword].value, keyword
-        assert 'ReferencedImageSequence' not in item
-        assert not any(element.tag.is_private for element in item)
         assert len(ds.SequenceOfUltrasoundRegions[1]) == 0
-        # The source item is left as it was.
-        assert 'ReferencedImageSequence' in region
-        assert any(element.tag.is_private for element in region)
-
-    def test_region_allowlist_holds_only_region_calibration_keywords(self):
-        for keyword in DicomFileManager.REGION_ALLOWLIST:
-            tag = pydicom.datadict.tag_for_keyword(keyword)
-            assert tag is not None, keyword
-            assert (tag >> 16) == 0x0018 and 0x6012 <= (tag & 0xFFFF) <= 0x605A, keyword
-        assert 'PhysicalDeltaX' in DicomFileManager.REGION_ALLOWLIST
-        assert 'TableOfParameterValues' in DicomFileManager.REGION_ALLOWLIST
+        item.ReferencedImageSequence[0].ReferencedSOPInstanceUID = '2.25.1'
+        item.ReferencedImageSequence.append(Dataset())
+        item.private_block(0x0011, 'PLANTED_PRIVATE')[0x01].value = 'changed'
+        ds.SequenceOfUltrasoundRegions[1].RegionSpatialFormat = 2
+        ds.SequenceOfUltrasoundRegions.append(Dataset())
+        assert source_regions == original
 
     # ------------------------------------------------------------------
     # Metadata copy
@@ -1007,8 +1011,22 @@ class TestDicomFileManager:
         assert ds.PatientIdentityRemoved == 'YES'
         assert ds.LongitudinalTemporalInformationModified == 'MODIFIED'
         assert 'DeidentificationMethod' not in ds
-        assert 'DeidentificationMethodCodeSequence' not in ds
+        assert len(ds.DeidentificationMethodCodeSequence) == 1
+        code = ds.DeidentificationMethodCodeSequence[0]
+        assert {element.keyword: element.value for element in code} == {
+            'CodingSchemeDesignator': '99SLICERUS',
+            'CodeValue': 'ANON_US',
+            'CodeMeaning': 'SlicerUltrasound_AnonymizeUltrasound',
+        }
         assert 'BurnedInAnnotation' not in ds
+
+        # Each call replaces the sequence with a fresh item.
+        manager._set_deidentification_attributes(ds)
+        assert len(ds.DeidentificationMethodCodeSequence) == 1
+        replacement = ds.DeidentificationMethodCodeSequence[0]
+        assert replacement is not code
+        replacement.CodeMeaning = 'Changed'
+        assert code.CodeMeaning == 'SlicerUltrasound_AnonymizeUltrasound'
 
     # ------------------------------------------------------------------
     # Conformance and pixel data

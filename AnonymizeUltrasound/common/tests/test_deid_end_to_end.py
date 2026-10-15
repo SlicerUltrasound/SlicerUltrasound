@@ -1,10 +1,11 @@
 """End-to-end proof of the interactive export path on a synthetic collection.
 
-Builds a small input tree with every identifying attribute the exporter must
-not carry over, runs Import (lock, load, scan, save keys.csv) and Export for
-every row through the same modules the Slicer widget calls, and reads the
-results back.
+Builds a small input tree with planted identifiers, runs Import (lock, load,
+scan, save keys.csv) and Export through the modules the Slicer widget calls,
+and reads the results back. Only the preserved root ultrasound-region subtree
+is exempt from identifier-removal checks; keys.csv intentionally holds mappings.
 """
+import csv
 import json
 import os
 from datetime import datetime, timedelta
@@ -17,7 +18,9 @@ from pydicom.sequence import Sequence
 
 from ..dicom_file_manager import DicomFileManager
 from ..export import export_instance, is_export_complete
-from ..key_store import KEYS_FILENAME, LOCK_FILENAME, KeyStore, KeysLock, uid_to_filename
+from ..key_store import (
+    KEYS_CSV_COLUMNS, KEYS_FILENAME, LOCK_FILENAME, KeyStore, KeysLock, uid_to_filename,
+)
 from .fixtures import (
     SECONDARY_CAPTURE_STORAGE,
     SOURCE_UID_ROOT,
@@ -122,13 +125,39 @@ def _planted_strings():
     return values
 
 
+def _elements_outside_root_regions(ds):
+    for element in ds:
+        if element.keyword == 'SequenceOfUltrasoundRegions':
+            continue
+        yield element
+        if element.VR == 'SQ':
+            for item in element.value:
+                yield from item.iterall()
+
+
 def _element_values(ds):
     for element in ds.file_meta:
         yield str(element.value)
-    for element in ds.iterall():
+    for element in _elements_outside_root_regions(ds):
         if element.VR == 'SQ' or element.keyword == 'PixelData':
             continue
         yield str(element.value)
+
+
+def test_identifier_scan_exempts_only_the_root_region_subtree():
+    ds = make_dataset(regions=[_planted_region()])
+    ds.file_meta.SourceApplicationEntityTitle = 'SOURCE_AE'
+    values = list(_element_values(ds))
+    assert 'SOURCE_AE' in values
+    assert REGION_PRIVATE_VALUE not in values
+    assert NESTED_UID not in values
+
+    nested = Dataset()
+    nested.SequenceOfUltrasoundRegions = Sequence([_planted_region()])
+    ds.ReferencedImageSequence = Sequence([nested])
+    values = list(_element_values(ds))
+    assert REGION_PRIVATE_VALUE in values
+    assert NESTED_UID in values
 
 
 def _shifted(date, days):
@@ -168,6 +197,9 @@ def test_end_to_end_export_of_a_synthetic_collection(collection):
     assert manager.skipped_unsupported_sop_class == 1
     assert manager.issuers_of_patient_id == {'HOSP_A'}
     assert sorted(os.listdir(keys_dir)) == [KEYS_FILENAME, LOCK_FILENAME]
+    with open(os.path.join(keys_dir, KEYS_FILENAME), newline='', encoding='utf-8') as handle:
+        mappings = {row['InstanceUID']: row for row in csv.DictReader(handle)}
+    assert set(mappings) == set(df['InstanceUID'])
 
     image = np.zeros((2, 4, 6, 1), dtype=np.uint8)
     for index in range(len(df)):
@@ -182,6 +214,11 @@ def test_end_to_end_export_of_a_synthetic_collection(collection):
         dicom_path = os.path.join(output_dir, row['AnonFilename'])
         ds = pydicom.dcmread(dicom_path)
         by_source[row['InstanceUID']] = ds
+        mapping = mappings[row['InstanceUID']]
+        assert mapping['InputPath'] == os.path.relpath(row['InputPath'], input_dir).replace(os.sep, '/')
+        for column in KEYS_CSV_COLUMNS:
+            if column != 'InputPath':
+                assert mapping[column] == str(row[column]), column
 
         for value in _element_values(ds):
             for text in planted:
@@ -189,21 +226,32 @@ def test_end_to_end_export_of_a_synthetic_collection(collection):
         assert os.path.basename(dicom_path) == uid_to_filename(ds.SOPInstanceUID)
         assert ds.PatientID == row['AnonPatientID']
         assert ds.PatientName == 'PROJ_' + row['AnonPatientID']
+        assert ds.StudyInstanceUID == mapping['AnonStudyUID']
+        assert ds.SeriesInstanceUID == mapping['AnonSeriesUID']
+        assert ds.SOPInstanceUID == mapping['AnonSOPInstanceUID']
+        assert ds.FrameOfReferenceUID == mapping['AnonFrameOfReferenceUID']
         assert ds.PatientIdentityRemoved == 'YES'
         assert ds.LongitudinalTemporalInformationModified == 'MODIFIED'
         assert 'DeidentificationMethod' not in ds
+        assert len(ds.DeidentificationMethodCodeSequence) == 1
+        code = ds.DeidentificationMethodCodeSequence[0]
+        assert (code.CodingSchemeDesignator, code.CodeValue, code.CodeMeaning) == (
+            '99SLICERUS', 'ANON_US', 'SlicerUltrasound_AnonymizeUltrasound')
         assert ds.StudyID == ''
         for keyword in ('StudyDescription', 'SeriesDescription', 'StationName', 'InstitutionName',
                         'OperatorsName', 'ImageComments', 'IssuerOfPatientID', 'PatientBirthDate'):
             assert keyword not in ds or ds[keyword].value == '', keyword
-        assert not any(element.tag.is_private for element in ds.iterall())
+        assert not any(element.tag.is_private for element in _elements_outside_root_regions(ds))
+        assert not any(element.tag.is_private for element in ds.file_meta)
 
+        source = pydicom.dcmread(row['InputPath'], stop_before_pixels=True)
+        assert ds.SequenceOfUltrasoundRegions == source.SequenceOfUltrasoundRegions
         assert len(ds.SequenceOfUltrasoundRegions) == 1
         item = ds.SequenceOfUltrasoundRegions[0]
         assert float(item.PhysicalDeltaX) == 0.1
         assert item.RegionSpatialFormat == 1
-        assert 'ReferencedImageSequence' not in item
-        assert not any(element.tag.is_private for element in item)
+        assert item.ReferencedImageSequence[0].ReferencedSOPInstanceUID == NESTED_UID
+        assert item.private_block(0x0011, PRIVATE_CREATOR)[0x01].value == REGION_PRIVATE_VALUE
 
         with open(dicom_path[:-4] + '.json', encoding='utf-8') as handle:
             sidecar_text = handle.read()
@@ -212,6 +260,12 @@ def test_end_to_end_export_of_a_synthetic_collection(collection):
         assert sidecar['AnnotationLabels'] == ['BLines']
         for text in planted:
             assert text not in sidecar_text
+
+    for root, _, names in os.walk(output_dir):
+        for name in names:
+            relative_path = os.path.relpath(os.path.join(root, name), output_dir)
+            for text in planted:
+                assert text not in relative_path
 
     shifts = df.groupby('PatientUID')['DateShiftDays'].nunique()
     assert (shifts == 1).all()

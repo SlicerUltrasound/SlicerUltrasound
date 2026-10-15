@@ -6,6 +6,9 @@ from unittest.mock import patch
 import numpy as np
 import pydicom
 import pytest
+from pydicom.dataset import Dataset
+from pydicom.sequence import Sequence
+from pydicom.uid import ExplicitVRLittleEndian, ImplicitVRLittleEndian
 
 from .. import export
 from ..dicom_file_manager import DicomFileManager
@@ -20,7 +23,7 @@ from ..export import (
     validate_prefix,
 )
 from ..key_store import KeyStore
-from .fixtures import make_dataset, write_dataset
+from .fixtures import SOURCE_UID_ROOT, US_MULTIFRAME_STORAGE, make_dataset, write_dataset
 
 HEX32 = 'c' * 32
 
@@ -258,6 +261,93 @@ def test_export_instance_without_prefix_uses_the_pseudonym_as_name(scanned_manag
         assert 'AnnotationLabels' not in json.load(handle)
 
 
+@pytest.mark.filterwarnings('error')
+@pytest.mark.parametrize('transfer_syntax', [ExplicitVRLittleEndian, ImplicitVRLittleEndian])
+def test_export_instance_preserves_complete_ultrasound_regions(
+        tmp_path, output_root, image, transfer_syntax):
+    region = Dataset()
+    region.RegionSpatialFormat = 1
+    region.PhysicalDeltaX = 0.1
+    region.PhysicalDeltaY = 0.15
+    region.RWaveTimeVector = [0.0, 100.0]  # Standard field omitted by the former allowlist.
+    region.PatientName = '患者^領域'
+    region.private_block(0x0011, 'REGION_PRIVATE', create=True).add_new(0x01, 'LO', '領域の識別子')
+    reference = Dataset()
+    reference.ReferencedSOPClassUID = US_MULTIFRAME_STORAGE
+    reference.ReferencedSOPInstanceUID = SOURCE_UID_ROOT + '.77'
+    reference.PatientName = '患者^参照'
+    region.ReferencedImageSequence = Sequence([reference])
+
+    second = Dataset()
+    second.SpecificCharacterSet = 'ISO_IR 100'
+    second.PatientName = 'Région^Deux'
+    second.RegionSpatialFormat = 2
+    source = make_dataset(SpecificCharacterSet='ISO_IR 192',
+                          regions=[region, second, Dataset()])
+    source.is_implicit_VR = transfer_syntax == ImplicitVRLittleEndian
+    source.file_meta.TransferSyntaxUID = transfer_syntax
+    input_dir = str(tmp_path / 'input')
+    source_path = write_dataset(source, input_dir, 'source.dcm')
+    parsed_source = pydicom.dcmread(source_path)
+    original = parsed_source.SequenceOfUltrasoundRegions
+
+    # Verify the fixture's own encoding before using it as the preservation oracle.
+    assert original[0].PatientName == '患者^領域'
+    assert original[0].ReferencedImageSequence[0].PatientName == '患者^参照'
+    assert original[1].PatientName == 'Région^Deux'
+    private_value = original[0].private_block(0x0011, 'REGION_PRIVATE')[0x01].value
+    if isinstance(private_value, bytes):
+        # Unknown private VRs are parsed as bytes from implicit-VR input.
+        private_value = private_value.decode('utf-8').rstrip(' \0')
+    assert private_value == '領域の識別子'
+
+    manager = DicomFileManager()
+    assert manager.scan_directory(input_dir, False, key_store=KeyStore()) == 1
+    manager.current_index = 0
+    result = export_instance(manager, manager.dicom_df.iloc[0], image, output_root=output_root)
+    saved = pydicom.dcmread(result.dicom_path)
+
+    # Compare parsed contents, including implicit-VR private bytes, not serialization.
+    assert saved.SequenceOfUltrasoundRegions == original
+    assert saved.SpecificCharacterSet == 'ISO_IR 192'
+    assert saved.SequenceOfUltrasoundRegions[1].SpecificCharacterSet == 'ISO_IR 100'
+    assert 'SpecificCharacterSet' not in saved.SequenceOfUltrasoundRegions[0]
+    assert 'SpecificCharacterSet' not in saved.SequenceOfUltrasoundRegions[0].ReferencedImageSequence[0]
+    assert saved.PixelSpacing == [1.0, 1.5]
+
+
+@pytest.mark.filterwarnings('error')
+@pytest.mark.parametrize('regions', ['missing', 'empty', 'present'])
+@pytest.mark.parametrize('character_set', [None, '', 'ISO_IR 192'])
+def test_export_instance_preserves_character_set_with_or_without_regions(
+        tmp_path, output_root, image, regions, character_set):
+    manufacturer = '超音波装置' if character_set == 'ISO_IR 192' else 'Ultrasound device'
+    source = make_dataset(SpecificCharacterSet=character_set, Manufacturer=manufacturer)
+    if regions == 'missing':
+        del source.SequenceOfUltrasoundRegions
+    elif regions == 'empty':
+        source.SequenceOfUltrasoundRegions = Sequence([])
+    input_dir = str(tmp_path / 'input')
+    source_path = write_dataset(source, input_dir, 'source.dcm')
+    parsed_source = pydicom.dcmread(source_path)
+    assert parsed_source.Manufacturer == manufacturer
+    if character_set is not None:
+        assert parsed_source.SpecificCharacterSet == character_set
+
+    manager = DicomFileManager()
+    assert manager.scan_directory(input_dir, False, key_store=KeyStore()) == 1
+    manager.current_index = 0
+    result = export_instance(manager, manager.dicom_df.iloc[0], image, output_root=output_root)
+    saved = pydicom.dcmread(result.dicom_path)
+
+    assert saved.Manufacturer == manufacturer
+    assert ('SequenceOfUltrasoundRegions' in saved) == (regions == 'present')
+    if character_set is None:
+        assert 'SpecificCharacterSet' not in saved
+    else:
+        assert saved.SpecificCharacterSet == character_set
+
+
 def test_export_instance_failure_after_dicom_staging_leaves_prior_pair_intact(scanned_manager, output_root, image):
     row = scanned_manager.dicom_df.iloc[0]
     dicom_final = os.path.join(output_root, row['AnonFilename'])
@@ -309,6 +399,20 @@ def test_export_instance_rejects_a_staged_file_that_does_not_match_the_row(scann
     with pytest.raises(ExportError):
         export_instance(scanned_manager, row, image, output_root=output_root)
 
+    assert os.listdir(output_root) == []
+
+
+@pytest.mark.parametrize('identity_removed', [None, 'NO'])
+def test_export_instance_requires_identity_removed_yes(scanned_manager, output_root, image,
+                                                       identity_removed):
+    def set_identity_removed(ds):
+        if identity_removed is not None:
+            ds.PatientIdentityRemoved = identity_removed
+
+    row = scanned_manager.dicom_df.iloc[0]
+    with patch.object(scanned_manager, '_set_deidentification_attributes', set_identity_removed):
+        with pytest.raises(ExportError, match='staged DICOM file does not match'):
+            export_instance(scanned_manager, row, image, output_root=output_root)
     assert os.listdir(output_root) == []
 
 

@@ -341,10 +341,10 @@ class TestInteractiveExportWiring:
     MODULE_DIR = _Path(__file__).resolve().parents[1]
 
     def _module_source(self):
-        return (self.MODULE_DIR / "AnonymizeUltrasound.py").read_text()
+        return (self.MODULE_DIR / "AnonymizeUltrasound.py").read_text(encoding="utf-8")
 
     def _ui_source(self):
-        return (self.MODULE_DIR / "Resources" / "UI" / "AnonymizeUltrasound.ui").read_text()
+        return (self.MODULE_DIR / "Resources" / "UI" / "AnonymizeUltrasound.ui").read_text(encoding="utf-8")
 
     def test_prefix_is_not_prefilled_from_the_input_folder(self):
         assert "namePrefixLineEdit.text = inputDirectory" not in self._module_source()
@@ -368,7 +368,7 @@ class TestInteractiveExportWiring:
         assert "output_directory_has_dicom" not in src
 
     def test_cmake_lists_the_common_modules(self):
-        cmake = (self.MODULE_DIR / "CMakeLists.txt").read_text()
+        cmake = (self.MODULE_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
         assert "common/key_store.py" in cmake
         assert "common/export.py" in cmake
         assert "uid_remap" not in cmake
