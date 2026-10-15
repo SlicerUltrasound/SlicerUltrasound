@@ -356,16 +356,16 @@ class TestExportDicomProvenance:
     """
 
     def setup_method(self):
-        from AnonymizeUltrasound.common import version_info
+        from common import version_info
         version_info._reset_cache_for_tests()
 
     def teardown_method(self):
-        from AnonymizeUltrasound.common import version_info
+        from common import version_info
         version_info._reset_cache_for_tests()
 
     def test_export_dicom_writes_git_sha_to_sidecar_json(self, tmp_path):
         """Sidecar JSON carries git_sha and git_dirty with expected types."""
-        from AnonymizeUltrasound.common import version_info
+        from common import version_info
 
         version_info._PROVENANCE_CACHE = {
             "git_sha": "a" * 40,
@@ -405,7 +405,7 @@ class TestExportDicomProvenance:
     def test_export_dicom_writes_git_sha_private_tag(self, tmp_path):
         """Private block (0x0099, '99BWHLUS') round-trips JSON via pydicom."""
         import pydicom
-        from AnonymizeUltrasound.common import version_info
+        from common import version_info
 
         version_info._PROVENANCE_CACHE = {
             "git_sha": "b" * 40,

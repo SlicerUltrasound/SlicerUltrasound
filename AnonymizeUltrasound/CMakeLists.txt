@@ -48,7 +48,6 @@ set(MODULE_PYTHON_SCRIPTS
   ${CMAKE_CURRENT_BINARY_DIR}/_version.py
   common/__init__.py
   common/dicom_file_manager.py
-  common/inference.py
   common/uid_remap.py
   common/version_info.py
   )

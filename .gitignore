@@ -1,6 +1,3 @@
-# AI model checkpoints
-AnonymizeUltrasound/Resources/checkpoints/*
-
 # Python
 __pycache__/
 *.py[cod]
