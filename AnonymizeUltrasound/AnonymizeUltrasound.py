@@ -7,15 +7,13 @@ import logging
 import numpy as np
 import math
 import os
-from typing import Optional, Dict, List, Any
+from typing import Optional, List
 import time
 import json
 import shutil
-from datetime import datetime
 
 import qt
 import vtk
-import traceback
 
 import slicer
 from slicer.i18n import tr as _
@@ -53,43 +51,8 @@ except ImportError:
     slicer.util.pip_install('torch')
     import torch
 
-try:
-    import yaml
-except ImportError:
-    logging.info("AnonymizeUltrasound: yaml not found, installing...")
-    slicer.util.pip_install('PyYAML')
-    import yaml
-
-try:
-    import monai
-except ImportError:
-    logging.info("AnonymizeUltrasound: monai not found, installing...")
-    slicer.util.pip_install('monai')
-    import monai
-
-try:
-    import sklearn
-except ImportError:
-    logging.info("AnonymizeUltrasound: scikit-learn not found, installing...")
-    slicer.util.pip_install('scikit-learn')
-    import sklearn
-
-try:
-    import matplotlib
-    matplotlib.use('Agg')
-except ImportError:
-    logging.info("AnonymizeUltrasound: matplotlib not found, installing...")
-    slicer.util.pip_install('matplotlib')
-    import matplotlib
-    matplotlib.use('Agg')
-
 from common.dicom_file_manager import DicomFileManager
-from common.masking import compute_masks_and_configs
 from common.inference import load_model, preprocess_image, get_device, download_model, MODEL_PATH
-from common.dicom_processor import DicomProcessor, ProcessingConfig
-from common.progress_reporter import SlicerProgressReporter
-from common.overview_generator import OverviewGenerator
-from common.logging import setup_logging
 from common.version_info import get_provenance
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
@@ -149,23 +112,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
     ENABLE_MASK_CACHE_SETTING = "AnonymizeUltrasound/enableMaskCache"
     PRESERVE_DIRECTORY_STRUCTURE_SETTING = "AnonymizeUltrasound/preserveDirectoryStructure"
-    AUTO_ANON_ENABLE_SETTING = "AnonymizeUltrasound/EnableAutoAnonymize"
-    AUTO_ANON_INPUT_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeInputFolder"
-    AUTO_ANON_OUTPUT_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeOutputFolder"
-    AUTO_ANON_HEADERS_FOLDER_SETTING = "AnonymizeUltrasound/AutoAnonymizeHeadersFolder"
-    AUTO_ANON_MODEL_PATH_SETTING = "AnonymizeUltrasound/AutoAnonymizeModelPath"
-    AUTO_ANON_DEVICE_SETTING = "AnonymizeUltrasound/AutoAnonymizeDevice"
-    AUTO_ANON_GT_DIR_SETTING = "AnonymizeUltrasound/AutoAnonymizeGroundTruthDir"
-    AUTO_ANON_TOP_RATIO_SETTING = "AnonymizeUltrasound/AutoAnonymizeTopRatio"
-    AUTO_ANON_PHI_ONLY_MODE_SETTING = "AnonymizeUltrasound/AutoAnonymizePhiOnlyMode"
-    AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING = "AnonymizeUltrasound/AutoAnonymizeRemovePhiFromImage"
-    AUTO_ANON_OVERWRITE_FILES_SETTING = "AnonymizeUltrasound/AutoAnonymizeOverwriteFiles"
-    EVAL_ENABLE_SETTING = "AnonymizeUltrasound/EnableModelEvaluation"
-    EVAL_INPUT_DIR_SETTING = "AnonymizeUltrasound/EvalInputFolder"
-    EVAL_GT_DIR_SETTING = "AnonymizeUltrasound/EvalGroundTruthDir"
-    EVAL_OVERVIEW_DIR_SETTING = "AnonymizeUltrasound/EvalOverviewDir"
-    EVAL_MODEL_PATH_SETTING = "AnonymizeUltrasound/EvalModelPath"
-    EVAL_DEVICE_SETTING = "AnonymizeUltrasound/EvalDevice"
 
     def __init__(self, parent=None) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -346,180 +292,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             labelsPath = self.resourcePath('default_labels.csv')
         self.ui.labelsFileSelector.currentPath = labelsPath
         self.ui.labelsCollapsibleButton.collapsed = True
-
-        # Auto anonymize settings
-        enable_val = settings.value(self.AUTO_ANON_ENABLE_SETTING)
-        self.ui.enableAutoAnonymizeCheckBox.checked = bool(enable_val and str(enable_val).lower() == "true")
-        self.ui.enableAutoAnonymizeCheckBox.toggled.connect(self._on_auto_anon_enable_toggled)
-        self._apply_auto_anon_visibility(self.ui.enableAutoAnonymizeCheckBox.checked)
-
-        auto_anon_input_folder = settings.value(self.AUTO_ANON_INPUT_FOLDER_SETTING)
-        if auto_anon_input_folder:
-            if os.path.exists(auto_anon_input_folder):
-                self.ui.inputDirectoryButtonBatch.directory = auto_anon_input_folder
-            else:
-                logging.error(f"Settings input folder {auto_anon_input_folder} does not exist")
-                self.ui.inputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
-        else:
-            # No setting saved, default to best user data directory
-            self.ui.inputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
-
-        self.ui.inputDirectoryButtonBatch.connect("directoryChanged(QString)",
-                                             lambda newValue: self.onSettingChanged(self.AUTO_ANON_INPUT_FOLDER_SETTING, newValue))
-
-        auto_anon_output_folder = settings.value(self.AUTO_ANON_OUTPUT_FOLDER_SETTING)
-        if auto_anon_output_folder:
-            if os.path.exists(auto_anon_output_folder):
-                self.ui.outputDirectoryButtonBatch.directory = auto_anon_output_folder
-            else:
-                logging.error(f"Settings output folder {auto_anon_output_folder} does not exist")
-                self.ui.outputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
-        else:
-            self.ui.outputDirectoryButtonBatch.directory = self.get_default_user_data_directory()
-
-        self.ui.outputDirectoryButtonBatch.connect("directoryChanged(QString)",
-                                              lambda newValue: self.onSettingChanged(self.AUTO_ANON_OUTPUT_FOLDER_SETTING, newValue))
-
-        auto_anon_headers_folder = settings.value(self.AUTO_ANON_HEADERS_FOLDER_SETTING)
-        if auto_anon_headers_folder:
-            if os.path.exists(auto_anon_headers_folder):
-                self.ui.headersDirectoryButtonBatch.directory = auto_anon_headers_folder
-            else:
-                logging.error(f"Settings headers folder {auto_anon_headers_folder} does not exist")
-                self.ui.headersDirectoryButtonBatch.directory = self.get_default_user_data_directory()
-        else:
-            self.ui.headersDirectoryButtonBatch.directory = self.get_default_user_data_directory()
-
-        self.ui.headersDirectoryButtonBatch.connect("directoryChanged(QString)",
-                                               lambda newValue: self.onSettingChanged(self.AUTO_ANON_HEADERS_FOLDER_SETTING, newValue))
-
-        model_path = settings.value(self.AUTO_ANON_MODEL_PATH_SETTING)
-        if model_path:
-            if os.path.exists(model_path):
-                self.ui.autoAnonModelPathButton.currentPath = model_path
-            else:
-                logging.error(f"Settings model path {model_path} does not exist")
-                self.ui.autoAnonModelPathButton.currentPath = MODEL_PATH
-        else:
-            self.ui.autoAnonModelPathButton.currentPath = MODEL_PATH
-
-        target_device = settings.value(self.AUTO_ANON_DEVICE_SETTING, "cpu")  # Default to CPU
-        device_index = self.ui.autoAnonDeviceComboBox.findText(target_device)
-        if device_index >= 0:
-            self.ui.autoAnonDeviceComboBox.setCurrentIndex(device_index)
-        else:
-            self.ui.autoAnonDeviceComboBox.setCurrentIndex(0)  # Default to CPU
-
-        self.ui.autoAnonModelPathButton.connect("currentPathChanged(QString)",
-                                                lambda newValue: self.onSettingChanged(self.AUTO_ANON_MODEL_PATH_SETTING, newValue))
-
-        self.ui.autoAnonDeviceComboBox.connect("currentTextChanged(QString)",
-                                                lambda newValue: self.onSettingChanged(self.AUTO_ANON_DEVICE_SETTING, newValue))
-
-       # Run button
-        self.ui.runAutoAnonymizeButton.clicked.connect(self.on_run_auto_anon_clicked)
-
-        # Setup top ratio setting
-        topRatioStr = settings.value(self.AUTO_ANON_TOP_RATIO_SETTING, "0.1")
-        try:
-            topRatio = float(topRatioStr)
-            self.ui.topRatioSpinBox.value = topRatio
-        except ValueError:
-            self.ui.topRatioSpinBox.value = 0.1
-        self.ui.topRatioSpinBox.connect('valueChanged(double)',
-                                       lambda value: self.onSettingChanged(self.AUTO_ANON_TOP_RATIO_SETTING, str(value)))
-
-        # Setup PHI-only mode setting
-        phiOnlyMode = settings.value(self.AUTO_ANON_PHI_ONLY_MODE_SETTING, "false").lower() == "true"
-        self.ui.phiOnlyModeCheckBox.checked = phiOnlyMode
-        self.ui.phiOnlyModeCheckBox.connect('toggled(bool)', self.onPhiOnlyModeToggled)
-
-        # Setup remove PHI from image setting
-        removePhiFromImage = settings.value(self.AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING, "true").lower() == "true"
-        self.ui.removePhiFromImageCheckBox.checked = removePhiFromImage
-        self.ui.removePhiFromImageCheckBox.connect('toggled(bool)',
-                                                  lambda checked: self.onSettingChanged(self.AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING, str(checked).lower()))
-
-        # Apply initial dependency state
-        self.updateRemovePhiFromImageVisibility()
-
-        # Setup overwrite files setting
-        overwriteFiles = settings.value(self.AUTO_ANON_OVERWRITE_FILES_SETTING, "false").lower() == "true"
-        self.ui.overwriteFilesCheckBox.checked = overwriteFiles
-        self.ui.overwriteFilesCheckBox.connect('toggled(bool)',
-                                              lambda checked: self.onSettingChanged(self.AUTO_ANON_OVERWRITE_FILES_SETTING, str(checked).lower()))
-
-        # Model evaluation settings
-        eval_enable = settings.value(self.EVAL_ENABLE_SETTING)
-        self.ui.enableModelEvaluationCheckBox.checked = bool(eval_enable and str(eval_enable).lower() == "true")
-        self.ui.enableModelEvaluationCheckBox.toggled.connect(self._on_model_evaluation_enable_toggled)
-        self._apply_model_evaluation_visibility(self.ui.enableModelEvaluationCheckBox.checked)
-
-        eval_input_folder = settings.value(self.EVAL_INPUT_DIR_SETTING)
-        if eval_input_folder:
-            if os.path.exists(eval_input_folder):
-                self.ui.inputDirectoryButtonEval.directory = eval_input_folder
-            else:
-                logging.error(f"Settings input folder {eval_input_folder} does not exist")
-                self.ui.inputDirectoryButtonEval.directory = self.get_default_user_data_directory()
-        else:
-            # No setting saved, default to best user data directory
-            self.ui.inputDirectoryButtonEval.directory = self.get_default_user_data_directory()
-
-        self.ui.inputDirectoryButtonEval.connect("directoryChanged(QString)",
-                                             lambda newValue: self.onSettingChanged(self.EVAL_INPUT_DIR_SETTING, newValue))
-
-        eval_gt_folder = settings.value(self.EVAL_GT_DIR_SETTING)
-        if eval_gt_folder:
-            if os.path.exists(eval_gt_folder):
-                self.ui.modelEvaluationGroundTruthButton.directory = eval_gt_folder
-            else:
-                logging.error(f"Settings output folder {eval_gt_folder} does not exist")
-                self.ui.modelEvaluationGroundTruthButton.directory = self.get_default_user_data_directory()
-        else:
-            self.ui.modelEvaluationGroundTruthButton.directory = self.get_default_user_data_directory()
-
-        self.ui.modelEvaluationGroundTruthButton.connect("directoryChanged(QString)",
-                                              lambda newValue: self.onSettingChanged(self.EVAL_GT_DIR_SETTING, newValue))
-
-        model_path = settings.value(self.EVAL_MODEL_PATH_SETTING)
-        if model_path:
-            if os.path.exists(model_path):
-                self.ui.modelEvaluationModelPathButton.currentPath = model_path
-            else:
-                logging.error(f"Settings model path {model_path} does not exist")
-                self.ui.modelEvaluationModelPathButton.currentPath = MODEL_PATH
-        else:
-            self.ui.modelEvaluationModelPathButton.currentPath = MODEL_PATH
-
-        target_device = settings.value(self.EVAL_DEVICE_SETTING)
-        if target_device:
-            device_index = self.ui.modelEvaluationDeviceComboBox.findText(target_device)
-            if device_index >= 0:
-                self.ui.modelEvaluationDeviceComboBox.setCurrentIndex(device_index)
-            else:
-                self.ui.modelEvaluationDeviceComboBox.setCurrentIndex(0)  # Default to CPU
-
-        overview_dir = settings.value(self.EVAL_OVERVIEW_DIR_SETTING)
-        if overview_dir:
-            if os.path.exists(overview_dir):
-                self.ui.modelEvaluationOverviewDirButton.directory = overview_dir
-            else:
-                logging.error(f"Settings overview directory {overview_dir} does not exist")
-
-        self.ui.modelEvaluationModelPathButton.connect("currentPathChanged(QString)",
-                                                lambda newValue: self.onSettingChanged(self.EVAL_MODEL_PATH_SETTING, newValue))
-
-        self.ui.modelEvaluationDeviceComboBox.connect("currentTextChanged(QString)",
-                                                lambda newValue: self.onSettingChanged(self.EVAL_DEVICE_SETTING, newValue))
-
-        self.ui.modelEvaluationOverviewDirButton.connect("directoryChanged(QString)",
-                                                  lambda newValue: self.onSettingChanged(self.EVAL_OVERVIEW_DIR_SETTING, newValue))
-        self.ui.modelEvaluationGroundTruthButton.connect("directoryChanged(QString)",
-                                                     lambda newValue: self.onSettingChanged(self.EVAL_GT_DIR_SETTING, newValue))
-
-        # Run button
-        self.ui.runModelEvaluationButton.clicked.connect(self.on_run_model_evaluation_clicked)
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -976,92 +748,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         else:
             self.ui.statusLabel.text = "No DICOM file loaded"
 
-    def on_run_model_evaluation_clicked(self):
-        """
-        Run model evaluation
-        """
-        in_dir = self.ui.inputDirectoryButtonEval.directory
-        gt_dir = self.ui.modelEvaluationGroundTruthButton.directory
-        if not in_dir or not os.path.exists(in_dir):
-            slicer.util.errorDisplay("Please select a valid Evaluation DICOM directory.")
-            return
-        if not gt_dir or not os.path.exists(gt_dir):
-            slicer.util.errorDisplay("Please select a valid Ground Truth directory.")
-            return
-
-        # Reuse model/device settings already present
-        model_path = (self.ui.modelEvaluationModelPathButton.currentPath or MODEL_PATH).strip()
-        device = self.ui.modelEvaluationDeviceComboBox.currentText or "cpu"
-
-        overview_dir = (getattr(self.ui, "modelEvaluationOverviewDirButton", None) and self.ui.modelEvaluationOverviewDirButton.directory) or ""
-
-        self.ui.statusLabel.text = "Running model evaluation..."
-        slicer.app.processEvents()
-        try:
-            result = self.logic.batch_model_evaluation(
-                input_folder=in_dir,
-                ground_truth_folder=gt_dir,
-                model_path=model_path,
-                device=device,
-                overview_dir=overview_dir,
-            )
-            self.ui.statusLabel.text = result['status']
-        except Exception as e:
-            logging.error(f"Model evaluation failed: {e} {traceback.format_exc()}")
-            slicer.util.errorDisplay(str(e))
-
-    def on_run_auto_anon_clicked(self):
-        in_dir = self.ui.inputDirectoryButtonBatch.directory
-        out_dir = self.ui.outputDirectoryButtonBatch.directory
-        hdr_dir = self.ui.headersDirectoryButtonBatch.directory
-        if not in_dir or not os.path.exists(in_dir):
-            slicer.util.errorDisplay("Please select a valid input directory (Import DICOM folder).")
-            return
-        if not out_dir or not os.path.exists(out_dir):
-            slicer.util.errorDisplay("Please select a valid output directory (Import DICOM folder).")
-            return
-        if not hdr_dir or not os.path.exists(hdr_dir):
-            slicer.util.errorDisplay("Please select a valid headers directory (Import DICOM folder).")
-            return
-
-        model_path = (self.ui.autoAnonModelPathButton.currentPath or MODEL_PATH).strip()
-
-        # Get selected value from combo box instead of text input
-        device = self.ui.autoAnonDeviceComboBox.currentText or "cpu"
-
-        skip_single = self.ui.skipSingleframeCheckBox.checked
-        hash_pid = self.ui.hashPatientIdCheckBox.checked
-        preserve_dirs = self.ui.preserveDirectoryStructureCheckBox.checked
-        resume = self.ui.continueProgressCheckBox.checked
-        top_ratio = self.ui.topRatioSpinBox.value
-        phi_only_mode = self.ui.phiOnlyModeCheckBox.checked
-        remove_phi_from_image = self.ui.removePhiFromImageCheckBox.checked
-        overwrite_files = self.ui.overwriteFilesCheckBox.checked
-
-        self.ui.statusLabel.text = "Running auto‑anonymize..."
-        slicer.app.processEvents()
-
-        try:
-            result = self.logic.batch_auto_anonymize(
-                input_folder=in_dir,
-                output_folder=out_dir,
-                headers_folder=hdr_dir,
-                model_path=model_path,
-                device=device,
-                preserve_directory_structure=preserve_dirs,
-                resume_anonymization=resume,
-                skip_single_frame=skip_single,
-                hash_patient_id=hash_pid,
-                top_ratio=top_ratio,
-                phi_only_mode=phi_only_mode,
-                remove_phi_from_image=remove_phi_from_image,
-                overwrite_files=overwrite_files,
-            )
-            self.ui.statusLabel.text = result['status']
-        except Exception as e:
-            logging.error(f"Auto‑anonymize failed: {e} {traceback.format_exc()}")
-            slicer.util.errorDisplay(str(e))
-
     def onNextButton(self) -> None:
         threePointFanModeEnabled = self.ui.threePointFanCheckBox.checked
         continueProgress = self.ui.continueProgressCheckBox.checked
@@ -1165,24 +851,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def _updateAutoOverlayCheckBoxVisibility(self):
         self.ui.autoOverlayCheckBox.setVisible(self.developerMode)
-
-    def onPhiOnlyModeToggled(self, checked):
-        """Handle PHI-only mode checkbox toggle and update dependent checkbox"""
-        self.onSettingChanged(self.AUTO_ANON_PHI_ONLY_MODE_SETTING, str(checked).lower())
-        self.updateRemovePhiFromImageVisibility()
-
-    def updateRemovePhiFromImageVisibility(self):
-        """Update the visibility and state of the Remove PHI from image checkbox based on PHI-only mode"""
-        phiOnlyModeEnabled = self.ui.phiOnlyModeCheckBox.checked
-
-        # Enable/disable the checkbox based on PHI-only mode
-        self.ui.removePhiFromImageCheckBox.setEnabled(phiOnlyModeEnabled)
-        self.ui.removePhiFromImageLabel.setEnabled(phiOnlyModeEnabled)
-
-        # If PHI-only mode is disabled, also uncheck the Remove PHI from image checkbox
-        if not phiOnlyModeEnabled:
-            self.ui.removePhiFromImageCheckBox.checked = False
-            self.onSettingChanged(self.AUTO_ANON_REMOVE_PHI_FROM_IMAGE_SETTING, "false")
 
     #
     # Placement of mask markups
@@ -1481,26 +1149,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         """Helper slot to export the current scan and immediately load the next one (shortcut 'A')."""
         if self.onExportScanButton():
             self.onNextButton()
-
-    def _on_auto_anon_enable_toggled(self, enabled: bool):
-        settings = slicer.app.settings()
-        settings.setValue(self.AUTO_ANON_ENABLE_SETTING, str(enabled))
-        self._apply_auto_anon_visibility(enabled)
-
-    def _apply_auto_anon_visibility(self, enabled: bool):
-        if hasattr(self.ui, "autoAnonGroupBox"):
-            self.ui.autoAnonGroupBox.setVisible(bool(enabled))
-
-    def _on_model_evaluation_enable_toggled(self, enabled: bool):
-        logging.info(f"Model evaluation enable toggled: {enabled}")
-        settings = slicer.app.settings()
-        settings.setValue(self.EVAL_ENABLE_SETTING, str(enabled))
-        self._apply_model_evaluation_visibility(enabled)
-
-    def _apply_model_evaluation_visibility(self, enabled: bool):
-        logging.info(f"Applying model evaluation visibility: {enabled}")
-        if hasattr(self.ui, "modelEvaluationGroupBox"):
-            self.ui.modelEvaluationGroupBox.setVisible(bool(enabled))
 
 
 class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin):
@@ -2563,239 +2211,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         self.transducerMaskCache.clear()
         logging.info("Cleared all cached masks")
 
-    def batch_model_evaluation(self, input_folder: str, ground_truth_folder: str,
-                         model_path: str = MODEL_PATH, device: str = "cpu",
-                         overview_dir: str = "") -> Dict[str, Any]:
-        start_time = time.time()
-
-        # Scan input recursively; skip_single_frame choice is optional (can reuse UI setting)
-        skip_single = True
-        num_files = self.dicom_manager.scan_directory(input_folder, skip_single_frame=skip_single, hash_patient_id=True)
-
-        # Prepare processor with GT; we won't save DICOMs, only evaluate
-        config = ProcessingConfig(
-            model_path=model_path,
-            device=device,
-            preserve_directory_structure=True,  # irrelevant here
-            resume_anonymization=False,        # irrelevant here
-            skip_single_frame=skip_single,
-            hash_patient_id=True,
-            no_mask_generation=False,          # we DO want masks
-            overview_dir=overview_dir or None,
-            ground_truth_dir=ground_truth_folder or None
-        )
-
-        # Initialize processor
-        processor = DicomProcessor(config, self.dicom_manager)
-        processor.initialize_model()
-
-        metrics_file = None
-        metrics_writer = None
-        overview_manifest = []
-        if overview_dir:
-            os.makedirs(overview_dir, exist_ok=True)
-            metrics_file = open(os.path.join(overview_dir, f"metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), "w", newline="")
-            metrics_writer = csv.DictWriter(metrics_file, fieldnames=processor.get_evaluate_fieldnames())
-            metrics_writer.writeheader()
-
-        # Progress reporter
-        progress = SlicerProgressReporter(self)
-        progress.start(num_files, f"Evaluating {model_path.split('/')[-1]} on {device} for {num_files} files...")
-
-        success = failed = skipped = 0
-        errors = []
-        try:
-            for idx in range(num_files):
-                if progress.progress_dialog and progress.progress_dialog.wasCanceled:
-                    break
-
-                row = self.dicom_manager.dicom_df.iloc[idx]
-
-                def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]], gt_mask_config: Optional[dict], predicted_mask_config: Optional[dict]):
-                    if not overview_dir:
-                        return
-                    overview_generator = OverviewGenerator(overview_dir)
-                    overview_path = overview_generator.generate_overview(
-                        filename, orig, masked, mask, gt_mask_config, predicted_mask_config)
-                    overview_manifest.append({
-                        "path": overview_path,
-                        "filename": filename,
-                        "dice": metrics.get("dice_mean") if metrics else None,
-                        "iou": metrics.get("iou_mean") if metrics else None,
-                        "mean_distance_error": metrics.get("mean_distance_error") if metrics else None,
-                        "upper_left_error": metrics.get("upper_left_error") if metrics else None,
-                        "upper_right_error": metrics.get("upper_right_error") if metrics else None,
-                        "lower_left_error": metrics.get("lower_left_error") if metrics else None,
-                        "lower_right_error": metrics.get("lower_right_error") if metrics else None,
-                    })
-
-                result = processor.evaluate_single_dicom(
-                    row=row,
-                    progress_callback=lambda m: progress.update(idx, m),
-                    overview_callback=overview_callback
-                )
-
-                if result.success and not result.skipped:
-                    success += 1
-                    if metrics_writer and result.metrics:
-                        metrics_writer.writerow(result.metrics)
-                elif result.skipped:
-                    skipped += 1
-                else:
-                    failed += 1
-                    if result.error_message:
-                        errors.append(result.error_message)
-        finally:
-            progress.finish()
-            if metrics_file:
-                metrics_file.close()
-
-        overview_pdf_path = ""
-        if overview_dir and overview_manifest:
-            overview_pdf_path = processor.generate_overview_pdf(overview_manifest, overview_dir)
-
-        logging.info(f"Model evaluation completed in {time.time() - start_time:.2f} seconds")
-
-        return {
-            "status": f"Model evaluation complete! Success: {success}, Failed: {failed}, Skipped: {skipped}",
-            "success": success, "failed": failed, "skipped": skipped,
-            "error_messages": errors,
-            "overview_pdf_path": overview_pdf_path
-        }
-
-    def _write_keys_csv(self, headers_directory: str, input_folder: str) -> None:
-        """Serialize dicom_df to <headers_directory>/keys.csv.
-
-        InputPath column is rewritten relative to input_folder. No-op if
-        headers_directory is empty or dicom_df is empty/None.
-        """
-        if not headers_directory:
-            return
-        df = self.dicom_manager.build_csv_dataframe(input_folder)
-        if df is None:
-            return
-        os.makedirs(headers_directory, exist_ok=True)
-        df.to_csv(os.path.join(headers_directory, "keys.csv"), index=False)
-
-    def batch_auto_anonymize(self, input_folder: str, output_folder: str, headers_folder: str,
-                            model_path: str = MODEL_PATH, device: str = "", **kwargs) -> Dict[str, Any]:
-        start_time = time.time()
-        phi_only_mode = kwargs.get('phi_only_mode', False)
-        remove_phi_from_image = kwargs.get('remove_phi_from_image', True)
-
-        # Create processing configuration
-        config = ProcessingConfig(
-            model_path=model_path,
-            device=device,
-            preserve_directory_structure=kwargs.get('preserve_directory_structure', True),
-            resume_anonymization=kwargs.get('resume_anonymization', False),
-            skip_single_frame=kwargs.get('skip_single_frame', False),
-            hash_patient_id=kwargs.get('hash_patient_id', True),
-            no_mask_generation=kwargs.get('no_mask_generation', False),
-            top_ratio=kwargs.get('top_ratio', 0.1),
-            phi_only_mode=phi_only_mode,
-            remove_phi_from_image=remove_phi_from_image,
-            overwrite_files=kwargs.get('overwrite_files', False),
-        )
-
-        # Initialize processor
-        processor = DicomProcessor(config, self.dicom_manager)
-        processor.initialize_model()
-
-        # Scan directory. Resume safety: when headers_folder already has a
-        # keys.csv from a prior batch run, seed scan_directory with it so the
-        # anonymized FrameOfReferenceUID mapping is preserved across the
-        # resumed export. Otherwise previously-written .dcm files and the
-        # rewritten keys.csv would disagree.
-        prior_keys_csv = None
-        if headers_folder:
-            candidate = os.path.join(headers_folder, 'keys.csv')
-            if os.path.exists(candidate):
-                prior_keys_csv = candidate
-        num_files = self.dicom_manager.scan_directory(
-            input_folder, config.skip_single_frame, config.hash_patient_id,
-            seed_keys_csv=prior_keys_csv,
-        )
-
-        # Save keys.csv
-        self._write_keys_csv(headers_folder, input_folder)
-
-        overview_manifest = []
-        overview_generator = OverviewGenerator(headers_folder)
-
-        # Process files using shared logic
-        progress = SlicerProgressReporter(self)
-        progress.start(num_files, f"Auto-anonymizing {model_path.split('/')[-1]} on {device} for {num_files} files...")
-
-        success = failed = skipped = 0
-        error_messages = []
-
-        try:
-            for idx in range(num_files):
-                if progress.progress_dialog and progress.progress_dialog.wasCanceled:
-                    break
-
-                row = self.dicom_manager.dicom_df.iloc[idx]
-                self.dicom_manager.current_index = idx
-
-                def overview_callback(filename: str, orig: np.ndarray, masked: np.ndarray, mask: Optional[np.ndarray], metrics: Optional[Dict[str, Any]]):
-                    if not headers_folder:
-                        return
-                    overview_path = overview_generator.generate_overview(filename, orig, masked, mask)
-                    overview_manifest.append({
-                        "path": overview_path,
-                        "filename": filename,
-                        "dice": metrics.get("dice_mean") if metrics else None,
-                        "iou": metrics.get("iou_mean") if metrics else None,
-                        "mean_distance_error": metrics.get("mean_distance_error") if metrics else None,
-                        "upper_left_error": metrics.get("upper_left_error") if metrics else None,
-                        "upper_right_error": metrics.get("upper_right_error") if metrics else None,
-                        "lower_left_error": metrics.get("lower_left_error") if metrics else None,
-                        "lower_right_error": metrics.get("lower_right_error") if metrics else None,
-                    })
-
-                # Use headers_folder for both headers and overview
-                result = processor.process_single_dicom(
-                    row, output_folder, headers_folder, headers_folder,
-                    lambda msg: progress.update(idx, msg),
-                    overview_callback
-                )
-
-                # Update counters
-                if result.success and not result.skipped:
-                    success += 1
-                elif result.skipped:
-                    skipped += 1
-                else:
-                    failed += 1
-                    if result.error_message:
-                        error_messages.append(result.error_message)
-
-            if (phi_only_mode and remove_phi_from_image):
-                processor.generate_redaction_pdf()
-            else:
-                processor.generate_overview_pdf(overview_manifest, headers_folder, no_metrics_table=True)
-
-        finally:
-            progress.finish()
-
-        logging.info(f"Auto-anonymize completed in {time.time() - start_time:.2f} seconds")
-
-        return {
-            "status": f"Complete! Success: {success}, Failed: {failed}, Skipped: {skipped}",
-            "success": success,
-            "failed": failed,
-            "skipped": skipped,
-            "error_messages": error_messages,
-        }
-
-    # Add metrics overlay (Dice / IoU)
-    def _fmt_metric(self, v) -> str:
-        try:
-            return f"{float(v):.3f}"
-        except Exception:
-            return "N/A"
-
     def _ensure_model(self, model_path: str = MODEL_PATH, device_hint: str = ""):
         """
         Ensure a model is available and loaded on a device.
@@ -2847,17 +2262,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             merged_top = (ul + ur) / 2.0
             return np.vstack([merged_top, ll, lr])  # 3-point fan
         return coords  # 4 points
-
-    def _corners_array_to_dict(self, coords: np.ndarray) -> dict:
-        """
-        Convert array corners to a dictionary format for compute_masks_and_configs.
-        """
-        return {
-            "upper_left": tuple(coords[0]),
-            "upper_right": tuple(coords[1]),
-            "lower_left": tuple(coords[2]),
-            "lower_right": tuple(coords[3]),
-        }
 
 class CachedMaskInfo:
     """Data structure to store cached mask information for a transducer."""

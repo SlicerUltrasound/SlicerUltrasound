@@ -1,3 +1,0 @@
--r requirements.txt
-torch==2.6.0+cu124 # Varies by GPU
-monai
