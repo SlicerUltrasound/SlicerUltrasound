@@ -15,6 +15,7 @@ import copy
 import re
 import zlib
 import datetime
+import colorsys
 
 # Import AnnotateUltrasound base module
 import AnnotateUltrasound as annotate
@@ -43,7 +44,7 @@ from slicer.parameterNodeWrapper import (
 )
 from slicer import vtkMRMLScalarVolumeNode, vtkMRMLVectorVolumeNode
 from slicer import vtkMRMLNode
-
+FAN_SATURATION=0.8 #(between 0-1.0) Smaller the number, the more the saturation is reduced of the overlay fan
 #
 # AdjudicateUltrasound
 #
@@ -116,6 +117,38 @@ class AdjudicateUltrasoundParameterNode:
 #
 #
 # global singleton instance of the widget
+
+class CustomObserverMixin:
+    def addObserver(self, obj, event, method, group="none", priority=0.0):
+        if not hasattr(self, '_VTKObservationMixin__observations'):
+            self._VTKObservationMixin__observations = {}
+
+        events = self._VTKObservationMixin__observations.setdefault(obj, {})
+        methods = events.setdefault(event, {})
+
+        if method in methods:
+            return  # Observer already added
+
+        tag = obj.AddObserver(event, method, priority)
+        methods[method] = (group, tag, priority)
+
+    def removeObserver(self, obj, event, method):
+        if not hasattr(self, '_VTKObservationMixin__observations'):
+            return
+
+        try:
+            events = self._VTKObservationMixin__observations[obj]
+            methods = events[event]
+            group, tag, priority = methods.pop(method)
+            obj.RemoveObserver(tag)
+
+            if not methods:
+                del events[event]
+            if not events:
+                del self._VTKObservationMixin__observations[obj]
+
+        except KeyError:
+            raise KeyError(f"No observer found for: {obj}, {event}, {method}")
 adjudicateUltrasoundWidgetInstance = None
 def getAdjudicateUltrasoundWidget():
     """
@@ -126,7 +159,7 @@ def getAdjudicateUltrasoundWidget():
         raise RuntimeError("AdjudicateUltrasoundWidget instance is not initialized")
     return adjudicateUltrasoundWidgetInstance
 
-class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
+class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget,CustomObserverMixin):
     """AdjudicateUltrasoundWidget, subclassing AnnotateUltrasound.AnnotateUltrasoundWidget."""
     def __init__(self, parent=None) -> None:
         # Set up logic to point to AdjudicateUltrasoundLogic
@@ -145,6 +178,41 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         self._userManuallySetRaterTableState = False
         self._lastUserManualCollapsedState = None  # Track the last state the user manually set
 
+    def _updateCornerAnnotation(self):
+        """
+        Update the corner annotation with per-rater % pleura.
+        Called from updateGuiFromAnnotations (on frame change) and from _updateGUIFromParamaterNode (on parameter change)
+        """
+        # Update corner annotation with _parameterNode.pleuraPercentage
+        selectedRaters = self.logic.getSelectedRaters()
+        view = slicer.app.layoutManager().sliceWidget("Red").sliceView()
+        if selectedRaters is not None:
+            if self.ui.showPleuraPercentageCheckBox.checked and self._parameterNode.pleuraPercentage >= 0:
+                rater_pcts = getattr(self.logic, "raterPercentages", {})
+                if rater_pcts:
+                    lines = [f"{r}: {p:.1f}%" for r, p in sorted(rater_pcts.items())]
+                    text = "\n".join(lines)
+                else:
+                    text = f"B-line/Pleura = {self._parameterNode.pleuraPercentage:.1f} %"
+                view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.UpperLeft, text)
+                view.cornerAnnotation().GetTextProperty().SetColor(1, 1, 0)
+                view.forceRender()
+            else:
+                view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.UpperLeft, "")
+                view.forceRender()
+        else:
+            view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.UpperLeft, "")
+            view.forceRender()
+
+    def updateGuiFromAnnotations(self):
+        super().updateGuiFromAnnotations()
+        self._updateCornerAnnotation() # Update corner annotation with % pleura for all raters when annotations are updated
+    
+    # def onNextButton(self):
+    #     super().onNextButton()
+    #     self._updateCornerAnnotation() # Update corner annotation with % pleura for all raters when going to next scan
+
+
     def resourcePath(self, filename):
         """Return the absolute path of the module ``Resources`` directory."""
         # since we inherit from AnnotateUltrasound and use its AnnotateUltrasound.ui, we use its resource path
@@ -153,6 +221,57 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
 
     def initializeShortcuts(self):
         super().initializeShortcuts()
+
+    def populateRaterColorTable(self):
+        if not hasattr(self.ui, 'raterColorTable'):
+            return
+        self.ui.raterColorTable.blockSignals(True)
+        self.ui.raterColorTable.clearContents()
+        colors = list(self.logic.getAllRaterColors())
+
+        #!!!!!!!!!Added: We also filter out current_rater from the display table because we are adjudicating and not annotating
+        # Filter out __selected_node__ and __adjudicated_node__ before setting row count, we don't want to show it in the UI.
+        # Note: populateRaterColorTable is shared with AdjudicatedUltrasound, it is leaking __adjudicated_node__ knowledge
+        # but better than copying it to AdjudicatedUltrasound for this and we do not want to have the __selected_node__ "red"
+        # and __adjudicated_node__ "blue"/"magenta" colors used by raters in any module.
+        current_rater=self.logic.getCurrentRater()  #Added
+        visible_colors = [(r, (pleura_color, bline_color)) for r, (pleura_color, bline_color) in colors
+                  if r != "__selected_node__" and r != "__adjudicated_node__"
+                  and r != current_rater] #Added the filter of current_rater
+
+        self.ui.raterColorTable.setRowCount(len(visible_colors))
+        self.ui.raterColorTable.setColumnCount(3)
+        self.ui.raterColorTable.setHorizontalHeaderLabels(["Rater", "Pleura", "B-line"])
+        header = self.ui.raterColorTable.horizontalHeader()
+        header.setSectionResizeMode(0, qt.QHeaderView.Stretch)
+        # Columns 1 & 2: Color indicators — just enough to show the color
+        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, qt.QHeaderView.ResizeToContents)
+
+        self.ui.raterColorTable.setColumnWidth(1, 30)
+        self.ui.raterColorTable.setColumnWidth(2, 30)
+        for row, (r, (pleura_color, bline_color)) in enumerate(visible_colors):
+            rater_item = qt.QTableWidgetItem(r)
+            rater_item.setFlags(qt.Qt.ItemIsUserCheckable | qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
+            if not hasattr(self, "selectedRaters") or r in self.selectedRaters:
+                rater_item.setCheckState(qt.Qt.Checked)
+            else:
+                rater_item.setCheckState(qt.Qt.Unchecked)
+
+            pleura_item = qt.QTableWidgetItem()
+            pleura_item.setFlags(qt.Qt.ItemIsEnabled)
+            pleura_item.setBackground(qt.QColor(*(int(c * 255) for c in pleura_color)))
+
+            bline_item = qt.QTableWidgetItem()
+            bline_item.setFlags(qt.Qt.ItemIsEnabled)
+            bline_item.setBackground(qt.QColor(*(int(c * 255) for c in bline_color)))
+
+            self.ui.raterColorTable.setItem(row, 0, rater_item)
+            self.ui.raterColorTable.setItem(row, 1, pleura_item)
+            self.ui.raterColorTable.setItem(row, 2, bline_item)
+        self.ui.raterColorTable.blockSignals(False)
+    
 
     def _createAdjudicationShortcuts(self):
         # Remove old shortcuts if needed
@@ -217,7 +336,8 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
             "readInputButton": self.onReadInputButton,
             "inputDirectoryButton": self.onInputDirectorySelected,
             "saveButton": self.onSaveButton,
-            "saveAndLoadNextButton": self.onSaveAndLoadNextButton
+            "saveAndLoadNextButton": self.onSaveAndLoadNextButton,
+            "nextButton": self.onNextButton
         }.items():
             btn = getattr(self.ui, name, None)
             if not btn:
@@ -365,13 +485,23 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         settings.setValue('AdjudicateUltrasound/ShowPleuraPercentage', self.ui.showPleuraPercentageCheckBox.checked)
         settings.setValue('AdjudicateUltrasound/DepthGuide', self.ui.depthGuideCheckBox.checked)
         settings.setValue('AdjudicateUltrasound/Rater', self.ui.raterName.text.strip())
-        ratio = self.logic.updateOverlayVolume()
+        ratio=self.logic.updateOverlayVolume()
+
         if ratio is not None:
             self._parameterNode.pleuraPercentage = ratio * 100
+
         self._updateGUIFromParameterNode()
 
+    def onClearAllLines(self):
+        logging.debug('onClearAllLines')
+        self.logic.clearAllLines()
+        ratio = self.logic.updateOverlayVolume()
+        if ratio is not None:
+            self._parameterNode.unsavedChanges = True
+        self.updateGuiFromAnnotations()
+
     def onInputDirectorySelected(self):
-        logging.info('onInputDirectorySelected')
+        logging.info('!!!!!!!!!!onInputDirectorySelected Pressed!!!!!!!!!')
 
         inputDirectory = self.ui.inputDirectoryButton.directory
         if not inputDirectory:
@@ -733,8 +863,6 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
         # Use the Logic's centralized method to extract and set up raters
         super().extractSeenAndSelectedRaters()
 
-    def updateGuiFromAnnotations(self):
-        super().updateGuiFromAnnotations()
 
     def saveAnnotations(self):
         """
@@ -938,12 +1066,7 @@ class AdjudicateUltrasoundWidget(annotate.AnnotateUltrasoundWidget):
                     self._lastFrameIndex = currentFrameIndex
                     self.ui.framesTableWidget.clearSelection()
 
-            # Update corner annotation if _parameterNode.pleuraPercentage is a non-negative number
-            if self.ui.showPleuraPercentageCheckBox.checked and self._parameterNode.pleuraPercentage >= 0:
-                view=slicer.app.layoutManager().sliceWidget("Red").sliceView()
-                view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.UpperLeft,f"B-line/Pleura = {self._parameterNode.pleuraPercentage:.1f} %")
-                view.cornerAnnotation().GetTextProperty().SetColor(1,1,0)
-                view.forceRender()
+            self._updateCornerAnnotation() #Adds percent pleura in corner for all raters
 
             # Update collapse/expand buttons
             if not self._parameterNode.dfLoaded:
@@ -1199,6 +1322,9 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             overlayVolume.SetAndObserveImageData(overlayImageData)
             # overlayVolume.CreateDefaultDisplayNodes()
             slicer.util.updateVolumeFromArray(overlayVolume, maskArray)
+
+            # Force the slice viewer to re-render with the corrected display settings
+            slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceNode().Modified()
             parameterNode.overlayVolume = overlayVolume
 
         # Load all annotations with the same base prefix and deeply merge frame_annotations by frame_number
@@ -1352,10 +1478,10 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
                 # In adjudicator mode, unadjudicated lines use current rater's colors
                 current_rater = self.getCurrentRater()
                 if node in self.pleuraLines:
-                    color_pleura, _ = self.getColorsForRater(current_rater)
+                    color_pleura, _ = self.getColorsForRater(rater)
                     displayNode.SetSelectedColor(color_pleura)
                 else:
-                    _, color_bline = self.getColorsForRater(current_rater)
+                    _, color_bline = self.getColorsForRater(rater)
                     displayNode.SetSelectedColor(color_bline)
             else:
                 # In adjudicator mode, validated/invalidated lines use __adjudicated_node__ color
@@ -1393,22 +1519,51 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             displayNode.SetOpacity(1.0)
 
         # Update control points
-        hasPointModifiedObserver = self.hasObserver(node, node.PointModifiedEvent, self.onPointModified)
-        hasPointPositionDefinedObserver = self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
-        if hasPointModifiedObserver:
-            self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
-        if hasPointPositionDefinedObserver:
-            self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        # hasPointModifiedObserver = self.hasObserver(node, node.PointModifiedEvent, self.onPointModified)
+        # hasPointPositionDefinedObserver = self.hasObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        # if hasPointModifiedObserver:
+        #     self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+        # if hasPointPositionDefinedObserver:
+        #     self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
 
+        # node.RemoveAllControlPoints()
+        # for pt in coordinates:
+        #     node.AddControlPointWorld(*pt)
+        #     node.Modified()
+
+        # if not hasPointModifiedObserver:
+        #     self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
+        # if not hasPointPositionDefinedObserver:
+        #     self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        try:
+            self.removeObserver(node, node.PointModifiedEvent, self.onPointModified)
+        except:
+            pass
+        try:
+            self.removeObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        except:
+            pass
+        try:
+            self.removeObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
         node.RemoveAllControlPoints()
         for pt in coordinates:
             node.AddControlPointWorld(*pt)
             node.Modified()
 
-        if not hasPointModifiedObserver:
+        try:
             self.addObserver(node, node.PointModifiedEvent, self.onPointModified)
-        if not hasPointPositionDefinedObserver:
+        except:
+            pass
+        try:
             self.addObserver(node, node.PointPositionDefinedEvent, self.onPointPositionDefined)
+        except:
+            pass
+        try:
+            self.addObserver(node, node.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
 
     def _updateMarkupNodesForFrame(self, frame):
         """
@@ -1459,9 +1614,255 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             node = self.bLines.pop()
             self._freeMarkupNode(node)
 
+    # def updateOverlayVolume(self):
+    #     """
+    #     Override: Update the overlay volume based on the validated annotations.
+    #     This was not working before, now fixed on June 11, 2026
+    #     Also, we make the fan overlay the same colour as the line between annotation points but a shade lighter
+
+    #     :return: The ratio of green pixels to blue pixels in the overlay volume. None if inputs not defined yet.
+    #     """
+    #     parameterNode = self.getParameterNode()
+
+    #     if parameterNode is None or parameterNode.overlayVolume is None:
+    #         logging.debug("updateOverlayVolume: No overlay volume found! Cannot update overlay volume.")
+    #         return None
+
+    #     if self.annotations is None:
+    #         logging.warning("updateOverlayVolume (adjudicate): No annotations loaded")
+    #         # Make sure all voxels are set to 0
+    #         parameterNode.overlayVolume.GetImageData().GetPointData().GetScalars().Fill(0)
+    #         return None
+
+    #     if parameterNode.inputVolume is None:
+    #         logging.debug("No input volume found, not updating overlay volume.")
+    #         # Make sure all voxels are set to 0
+    #         parameterNode.overlayVolume.GetImageData().GetPointData().GetScalars().Fill(0)
+    #         return None
+
+    #     # If no raters are selected, do not draw any mask
+    #     if hasattr(self, "selectedRaters") and not self.selectedRaters:
+    #         overlayArray = slicer.util.arrayFromVolume(parameterNode.overlayVolume)
+    #         overlayArray[:] = 0
+    #         overlayArray = self._applyDepthGuideToMask(overlayArray, parameterNode)
+    #         slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, overlayArray)
+    #         displayNode = parameterNode.overlayVolume.GetDisplayNode()
+    #         if displayNode:
+    #             displayNode.SetAutoWindowLevel(0)   # disable auto window/level permanently
+    #             displayNode.SetWindow(255)
+    #             displayNode.SetLevel(127)
+
+    #         # Force the slice viewer to re-render with the corrected display settings
+    #         slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceNode().Modified()
+    #         slicer.util.showStatusMessage("Overlay hidden: no raters selected", 3000)
+    #         return None
+
+    #     if parameterNode.inputVolume is None:
+    #         logging.debug("No input volume found, not updating overlay volume.")
+    #         return None
+
+    #     ultrasoundArray = slicer.util.arrayFromVolume(parameterNode.inputVolume)
+
+    #     # Mask array should be the same size as the ultrasound array
+    #     # Make the mask array RGB color regardless of the number of channels in the ultrasound array
+    #     maskArray = np.zeros([1, ultrasoundArray.shape[1], ultrasoundArray.shape[2], 3], dtype=np.uint8)
+    #     ijkToRas = vtk.vtkMatrix4x4()
+    #     parameterNode.inputVolume.GetIJKToRASMatrix(ijkToRas)
+    #     rasToIjk = vtk.vtkMatrix4x4()
+    #     vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
+
+    #     # Build binary pleura and b-line masks and render light-shaded fans
+    #     rows = ultrasoundArray.shape[1]
+    #     cols = ultrasoundArray.shape[2]
+    #     pleura_mask = np.zeros((rows, cols), dtype=np.uint8)
+    #     bline_mask = np.zeros((rows, cols), dtype=np.uint8)
+
+    #     # First: pleura fans (collect mask and render light color)
+    #     for markupNode in self.pleuraLines:
+    #         nodeRater = markupNode.GetAttribute("rater") if markupNode else None
+    #         validation_json = markupNode.GetAttribute("validation")
+    #         status = None
+    #         if validation_json:
+    #             try:
+    #                 validation = json.loads(validation_json)
+    #                 status = validation.get("status", None)
+    #             except Exception:
+    #                 status = None
+    #         #Before it only showed fans for validated lines, now we show for unadjudicated lines as well
+    #         # if status != "validated":
+    #         #     continue
+
+    #         if status == "invalidated":
+    #             continue
+
+    #         if hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
+    #             continue
+    #         if not markupNode.GetDisplayNode().GetVisibility():
+    #             continue
+
+    #         # Get the line color and create a light version
+    #         # displayNode = markupNode.GetDisplayNode()
+    #         # r,g,b=displayNode.GetSelectedColor() #Gets the selected colour for this rater's pleura line, between 0-1
+    #         nodeRater=markupNode.GetAttribute("rater")
+    #         r,g,b=self.getColorsForRater(nodeRater)[0] #Gets the pleura line color for this rater, between 0-1
+    #         h,s,v=colorsys.rgb_to_hsv(r,g,b) #Converts to HSV space
+    #         lr,lg,lb=colorsys.hsv_to_rgb(h,s*FAN_SATURATION, 1.0) #Creates a lighter colour by reducing saturation and increasing value, keeping hue the same
+    #         # Create lighter version for the fan colour
+    #         lightColor = [int(lr*255),int(lg*255),int(lb*255)]
+    #         # lineColor = [int(c * 255) for c in displayNode.GetSelectedColor()]
+    #         # lightColor = lineColor  # remove the blend-to-white step
+
+    #         for i in range(markupNode.GetNumberOfControlPoints() - 1):
+    #             coord1 = [0, 0, 0]
+    #             coord2 = [0, 0, 0]
+    #             markupNode.GetNthControlPointPosition(i, coord1)
+    #             markupNode.GetNthControlPointPosition(i + 1, coord2)
+    #             # Skip if the two control points are the same, this sometimes happens when we start placing a line
+    #             if coord1 == coord2:
+    #                 continue
+    #             coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
+    #             coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
+    #             coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
+    #             coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
+    #             # Draw mask fan between coord1 and coord2
+    #             sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2, value=255)
+
+    #             # Ensure sectorArray is 2D (rows, cols). Some codepaths return (1,rows,cols).
+    #             if hasattr(sectorArray, 'ndim') and sectorArray.ndim == 3 and sectorArray.shape[0] == 1:
+    #                 sector2d = sectorArray[0]
+    #             else:
+    #                 sector2d = sectorArray
+
+    #             # Find where the sector array is >0 and that is where the pleural fan is, then we add in the light color
+    #             sector_bool = sector2d > 0
+    #             pleura_mask = np.logical_or(pleura_mask, sector_bool).astype(np.uint8)
+
+    #             # Blend sector with the light-shaded pleura line color
+    #             for c in range(3):
+    #                 maskArray[0, :, :, c] = np.where(sector_bool,
+    #                                                    np.maximum(maskArray[0, :, :, c], lightColor[c]),
+    #                                                    maskArray[0, :, :, c])
+
+    #     # Add B-lines to mask array with their individual colors as light-shaded fans
+    #     for markupNode in self.bLines:
+    #         nodeRater = markupNode.GetAttribute("rater") if markupNode else None
+    #         validation_json = markupNode.GetAttribute("validation")
+    #         status = None
+    #         if validation_json:
+    #             try:
+    #                 validation = json.loads(validation_json)
+    #                 status = validation.get("status", None)
+    #             except Exception:
+    #                 status = None
+    #         #Before it only showed fans for validated lines, now we show for unadjudicated lines as well
+    #         # if status != "validated":
+    #         #      continue
+    #         if status == "invalidated":
+    #             continue
+
+    #         if hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
+    #             continue
+    #         if not markupNode.GetDisplayNode().GetVisibility():
+    #             continue
+
+    #         # Get the line color and create a light version
+    #         #displayNode = markupNode.GetDisplayNode()
+    #         #r,g,b=displayNode.GetSelectedColor() #Gets the selected colour for this rater's pleura line, between 0-1
+    #         nodeRater=markupNode.GetAttribute("rater")
+    #         r,g,b=self.getColorsForRater(nodeRater)[1] #Gets the pleura line color for this rater, between 0-1
+    #         h,s,v=colorsys.rgb_to_hsv(r,g,b) #Converts to HSV space
+    #         lr,lg,lb=colorsys.hsv_to_rgb(h,s*FAN_SATURATION, 1.0) #Creates a lighter colour by reducing saturation and increasing value, keeping hue the same
+    #         # Create lighter version for the fan colour
+    #         lightColor = [int(lr*255),int(lg*255),int(lb*255)]
+    #         # lineColor = [int(c * 255) for c in displayNode.GetSelectedColor()]
+    #         # lightColor = lineColor  # remove the blend-to-white step
+
+    #         for i in range(markupNode.GetNumberOfControlPoints() - 1):
+    #             coord1 = [0, 0, 0]
+    #             coord2 = [0, 0, 0]
+    #             markupNode.GetNthControlPointPosition(i, coord1)
+    #             markupNode.GetNthControlPointPosition(i + 1, coord2)
+    #             # Skip if the two control points are the same, this sometimes happens when we start placing a line
+    #             if coord1 == coord2:
+    #                 continue
+    #             coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
+    #             coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
+    #             coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
+    #             coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
+    #             # Draw mask fan between coord1 and coord2
+    #             sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2,value=255)
+    #             if hasattr(sectorArray, 'ndim') and sectorArray.ndim == 3 and sectorArray.shape[0] == 1:
+    #                 sector2d = sectorArray[0]
+    #             else:
+    #                 sector2d = sectorArray
+    #             # Blend sector with the light-shaded B-line color
+    #             sector_bool = sector2d > 0
+    #             # restrict to pleura area
+    #             #sector_bool = np.logical_and(sector_bool, pleura_mask.astype(bool))
+    #             bline_mask = np.logical_or(bline_mask, sector_bool).astype(np.uint8)
+    #             for c in range(3):
+    #                 maskArray[0, :, :, c] = np.where(sector_bool,
+    #                                                 np.maximum(maskArray[0, :, :, c], lightColor[c]),
+    #                                                 maskArray[0, :, :, c])
+
+    #     # (This erases b-line fan pixels where no pleura fan exists at all)
+    #     bline_drawn_mask = bline_mask.astype(bool) & ~pleura_mask.astype(bool)
+    #     # Only keep b-line pixels that are either within the pleura fan OR adjacent to it
+    #     # Simplest version — erase only where absolutely no pleura coverage exists:
+    #     bline_outside_pleura=bline_mask.astype(bool) & (pleura_mask == 0)
+    #     for c in range(3):
+    #         maskArray[0, :, :, c] = np.where(bline_outside_pleura,0,maskArray[0, :, :, c])
+
+    #     # Calculate pleura and b-line coverage (B-lines within pleura)
+    #     pleuraPixels = np.count_nonzero(pleura_mask)
+    #     blineWithinPleura = np.count_nonzero(np.logical_and(bline_mask, pleura_mask))
+
+    #     # apply depthGuide if enabled
+    #     maskArray = self._applyDepthGuideToMask(maskArray, parameterNode)
+
+    #     # Update the overlay volume
+    #     slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, maskArray)
+    #     displayNode = parameterNode.overlayVolume.GetDisplayNode()
+    #     if displayNode:
+    #         displayNode.SetAutoWindowLevel(0)   # disable auto window/level permanently
+    #         displayNode.SetWindow(255)
+    #         displayNode.SetLevel(127)
+
+    #     # Force the slice viewer to re-render with the corrected display settings
+    #     slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceNode().Modified()
+
+    #     # Initialize the depth guide volume to be the same size as the ultrasound volume
+    #     # Create depth guide as scalar volume (same as input volume)
+    #     if parameterNode.depthGuideVolume is None:
+    #         depthGuideVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "DepthGuide")
+    #         depthGuideImageData = vtk.vtkImageData()
+    #         depthGuideImageData.SetDimensions(ultrasoundArray.shape[1], ultrasoundArray.shape[2], 1)
+    #         depthGuideImageData.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
+
+    #         depthGuideVolume.SetSpacing(parameterNode.inputVolume.GetSpacing())
+    #         depthGuideVolume.SetOrigin(parameterNode.inputVolume.GetOrigin())
+    #         depthGuideVolume.SetIJKToRASMatrix(ijkToRas)
+    #         depthGuideVolume.SetAndObserveImageData(depthGuideImageData)
+    #         depthGuideVolume.CreateDefaultDisplayNodes()
+    #         parameterNode.depthGuideVolume = depthGuideVolume
+
+    #     # Update depth guide visibility
+    #     self.updateDepthGuideVolume()
+
+    #     # Return the ratio of B-line pixels within pleura to pleura pixels
+    #     if pleuraPixels == 0:
+    #         parameterNode.pleuraPercentage = 0.0
+    #         return 0.0
+    #     else:
+    #         ratio = float(blineWithinPleura) / float(pleuraPixels)
+    #         parameterNode.pleuraPercentage = ratio * 100.0
+    #         return ratio
+
     def updateOverlayVolume(self):
         """
         Override: Update the overlay volume based on the validated annotations.
+        This was not working before, now fixed on June 11, 2026
+        Also, we make the fan overlay the same colour as the line between annotation points but a shade lighter
 
         :return: The ratio of green pixels to blue pixels in the overlay volume. None if inputs not defined yet.
         """
@@ -1489,6 +1890,14 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             overlayArray[:] = 0
             overlayArray = self._applyDepthGuideToMask(overlayArray, parameterNode)
             slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, overlayArray)
+            displayNode = parameterNode.overlayVolume.GetDisplayNode()
+            if displayNode:
+                displayNode.SetAutoWindowLevel(0)   # disable auto window/level permanently
+                displayNode.SetWindow(255)
+                displayNode.SetLevel(127)
+
+            # Force the slice viewer to re-render with the corrected display settings
+            slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceNode().Modified()
             slicer.util.showStatusMessage("Overlay hidden: no raters selected", 3000)
             return None
 
@@ -1506,90 +1915,164 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
         rasToIjk = vtk.vtkMatrix4x4()
         vtk.vtkMatrix4x4.Invert(ijkToRas, rasToIjk)
 
-        # Add pleura lines to mask array using full RGB overlay
+        # Build binary pleura and b-line masks and render light-shaded fans
+        rows = ultrasoundArray.shape[1]
+        cols = ultrasoundArray.shape[2]
+        pleura_mask = np.zeros((rows, cols), dtype=np.uint8)
+        bline_mask = np.zeros((rows, cols), dtype=np.uint8)
+
+        ###############Step 1: Collect per-rater pleura sectors#########################
+
+        pleura_fans_by_rater = {}
+
         for markupNode in self.pleuraLines:
             nodeRater = markupNode.GetAttribute("rater") if markupNode else None
             validation_json = markupNode.GetAttribute("validation")
             status = None
             if validation_json:
                 try:
-                    validation = json.loads(validation_json)
-                    status = validation.get("status", None)
+                    status = json.loads(validation_json).get("status", None)
                 except Exception:
-                    status = None
-            if status != "validated":
+                    pass
+            if status == "invalidated":
                 continue
-
             if hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
                 continue
             if not markupNode.GetDisplayNode().GetVisibility():
                 continue
 
+            r, g, b = self.getColorsForRater(nodeRater)[0]
+            h, s, v = colorsys.rgb_to_hsv(r, g, b)
+            lr, lg, lb = colorsys.hsv_to_rgb(h, s * FAN_SATURATION, 1.0)
+            lightColor = [int(lr * 255), int(lg * 255), int(lb * 255)]
+
+            if nodeRater not in pleura_fans_by_rater:
+                pleura_fans_by_rater[nodeRater] = [np.zeros((rows, cols), dtype=bool), lightColor]
+
+            node_sector = pleura_fans_by_rater[nodeRater][0]
             for i in range(markupNode.GetNumberOfControlPoints() - 1):
-                coord1 = [0, 0, 0]
-                coord2 = [0, 0, 0]
+                coord1, coord2 = [0, 0, 0], [0, 0, 0]
                 markupNode.GetNthControlPointPosition(i, coord1)
                 markupNode.GetNthControlPointPosition(i + 1, coord2)
-                # Skip if the two control points are the same, this sometimes happens when we start placing a line
                 if coord1 == coord2:
                     continue
                 coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
                 coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
                 coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
                 coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
-                # Draw mask fan between coord1 and coord2
                 sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2, value=255)
-                # Add sectorArray to maskArray by maximum compounding
-                maskArray[0, :, :, 2] = np.maximum(maskArray[0, :, :, 2], sectorArray)
+                if hasattr(sectorArray, 'ndim') and sectorArray.ndim == 3 and sectorArray.shape[0] == 1:
+                    sectorArray = sectorArray[0]
+                node_sector = np.logical_or(node_sector, sectorArray > 0)
+            pleura_fans_by_rater[nodeRater][0] = node_sector
 
-        # Add B-lines to mask array using full RGB overlay
+        
+        ################Step 2: Blend Pleura Fans Using Colour Averaging##################
+        pleura_color_sum = np.zeros((rows, cols, 3), dtype=np.float32)
+        pleura_count     = np.zeros((rows, cols),    dtype=np.float32)
+        rater_pleura_masks = {}   # {rater: sector_bool}  kept for per-rater metrics
+
+        for rater, (sector_bool, lightColor) in pleura_fans_by_rater.items():
+            rater_pleura_masks[rater] = sector_bool
+            pleura_mask = np.logical_or(pleura_mask, sector_bool).astype(np.uint8)
+            for c in range(3):
+                pleura_color_sum[:, :, c] += sector_bool.astype(np.float32) * lightColor[c]
+            pleura_count += sector_bool.astype(np.float32)
+
+        any_pleura = pleura_count > 0
+        for c in range(3):
+            maskArray[0, :, :, c] = np.where(
+                any_pleura,
+                (pleura_color_sum[:, :, c] / np.maximum(pleura_count, 1)).astype(np.uint8),
+                maskArray[0, :, :, c]
+            )
+
+        
+        ##############Step 3: collect per-rater b-line sectors###################
+
+        bline_fans_by_rater = {}
+
         for markupNode in self.bLines:
             nodeRater = markupNode.GetAttribute("rater") if markupNode else None
             validation_json = markupNode.GetAttribute("validation")
             status = None
             if validation_json:
                 try:
-                    validation = json.loads(validation_json)
-                    status = validation.get("status", None)
+                    status = json.loads(validation_json).get("status", None)
                 except Exception:
-                    status = None
-            if status != "validated":
+                    pass
+            if status == "invalidated":
                 continue
-
             if hasattr(self, "selectedRaters") and self.selectedRaters and nodeRater not in self.selectedRaters:
                 continue
             if not markupNode.GetDisplayNode().GetVisibility():
                 continue
 
+            r, g, b = self.getColorsForRater(nodeRater)[1]
+            h, s, v = colorsys.rgb_to_hsv(r, g, b)
+            lr, lg, lb = colorsys.hsv_to_rgb(h, s * FAN_SATURATION, 1.0)
+            lightColor = [int(lr * 255), int(lg * 255), int(lb * 255)]
+
+            if nodeRater not in bline_fans_by_rater:
+                bline_fans_by_rater[nodeRater] = [np.zeros((rows, cols), dtype=bool), lightColor]
+
+            node_sector = bline_fans_by_rater[nodeRater][0]
             for i in range(markupNode.GetNumberOfControlPoints() - 1):
-                coord1 = [0, 0, 0]
-                coord2 = [0, 0, 0]
+                coord1, coord2 = [0, 0, 0], [0, 0, 0]
                 markupNode.GetNthControlPointPosition(i, coord1)
                 markupNode.GetNthControlPointPosition(i + 1, coord2)
-                # Skip if the two control points are the same, this sometimes happens when we start placing a line
                 if coord1 == coord2:
                     continue
                 coord1 = rasToIjk.MultiplyPoint(coord1 + [1])
                 coord2 = rasToIjk.MultiplyPoint(coord2 + [1])
                 coord1 = [int(round(coord1[0])), int(round(coord1[1])), int(round(coord1[2]))]
                 coord2 = [int(round(coord2[0])), int(round(coord2[1])), int(round(coord2[2]))]
-                # Draw mask fan between coord1 and coord2
-                sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2)
-                # Add sectorArray to maskArray by maximum compounding
-                maskArray[0, :, :, 1] = np.maximum(maskArray[0, :, :, 1], sectorArray)
+                sectorArray = self.createSectorMaskBetweenPoints(ultrasoundArray, coord1, coord2, value=255)
+                if hasattr(sectorArray, 'ndim') and sectorArray.ndim == 3 and sectorArray.shape[0] == 1:
+                    sectorArray = sectorArray[0]
+                node_sector = np.logical_or(node_sector, sectorArray > 0)
+            bline_fans_by_rater[nodeRater][0] = node_sector
 
-        # Erase all B-lines pixels where there is no pleura line
-        maskArray[0, :, :, 1] = np.where(maskArray[0, :, :, 2] == 0, 0, maskArray[0, :, :, 1])
+        
 
-        # Calculate the amount of blue pixels in maskArray and green pixels in maskArray
-        bluePixels = np.count_nonzero(maskArray[0, :, :, 2])
-        greenPixels = np.count_nonzero(maskArray[0, :, :, 1])
+        ###############Step 4: Blend B-line fans (restricted to pleura area)###########
+        bline_color_sum = np.zeros((rows, cols, 3), dtype=np.float32)
+        bline_count     = np.zeros((rows, cols),    dtype=np.float32)
+        rater_bline_masks = {}   # {rater: sector_bool restricted to that rater's own pleura}
+
+        for rater, (sector_bool, lightColor) in bline_fans_by_rater.items():
+            # For the visual: restrict to the UNION of all pleura fans
+            sector_visible = np.logical_and(sector_bool, pleura_mask.astype(bool))
+            # For the per-rater METRIC: restrict to this rater's own pleura
+            rater_own_pleura = rater_pleura_masks.get(rater, np.zeros((rows, cols), dtype=bool))
+            rater_bline_masks[rater] = np.logical_and(sector_bool, rater_own_pleura)
+            bline_mask = np.logical_or(bline_mask, sector_visible).astype(np.uint8)
+            for c in range(3):
+                bline_color_sum[:, :, c] += sector_visible.astype(np.float32) * lightColor[c]
+            bline_count += sector_visible.astype(np.float32)
+
+        any_bline = bline_count > 0
+        for c in range(3):
+            maskArray[0, :, :, c] = np.where(
+                any_bline,
+                (bline_color_sum[:, :, c] / np.maximum(bline_count, 1)).astype(np.uint8),
+                maskArray[0, :, :, c]
+            )
+
 
         # apply depthGuide if enabled
         maskArray = self._applyDepthGuideToMask(maskArray, parameterNode)
 
         # Update the overlay volume
         slicer.util.updateVolumeFromArray(parameterNode.overlayVolume, maskArray)
+        displayNode = parameterNode.overlayVolume.GetDisplayNode()
+        if displayNode:
+            displayNode.SetAutoWindowLevel(0)   # disable auto window/level permanently
+            displayNode.SetWindow(255)
+            displayNode.SetLevel(127)
+
+        # Force the slice viewer to re-render with the corrected display settings
+        slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetSliceNode().Modified()
 
         # Initialize the depth guide volume to be the same size as the ultrasound volume
         # Create depth guide as scalar volume (same as input volume)
@@ -1606,16 +2089,33 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             depthGuideVolume.CreateDefaultDisplayNodes()
             parameterNode.depthGuideVolume = depthGuideVolume
 
-        # Update depth guide visibility
-        self.updateDepthGuideVolume()
+        
 
-        # Return the ratio of green pixels to blue pixels
-        if bluePixels == 0:
+
+        ##############Stage 5: Per-rater metrics#################
+
+        rater_percentages = {}   # {rater: percentage float}
+        all_raters = set(list(rater_pleura_masks.keys()) + list(rater_bline_masks.keys()))
+        for rater in all_raters:
+            r_pleura = rater_pleura_masks.get(rater, np.zeros((rows, cols), dtype=bool))
+            r_bline  = rater_bline_masks.get(rater,  np.zeros((rows, cols), dtype=bool))
+            r_pleura_px = np.count_nonzero(r_pleura)
+            r_bline_px  = np.count_nonzero(r_bline)
+            rater_percentages[rater] = (float(r_bline_px) / float(r_pleura_px) * 100.0
+                                        if r_pleura_px > 0 else 0.0)
+
+        # Store on logic for the widget to read
+        self.raterPercentages = rater_percentages   # dict {rater: float}
+        # Also store overall summary for backward compatibility
+        overall_pleura_px = np.count_nonzero(pleura_mask)
+        overall_bline_px  = np.count_nonzero(np.logical_and(bline_mask, pleura_mask))
+
+        if overall_pleura_px == 0:
             parameterNode.pleuraPercentage = 0.0
             return 0.0
         else:
-            parameterNode.pleuraPercentage = greenPixels / bluePixels * 100
-            return greenPixels / bluePixels
+            parameterNode.pleuraPercentage = float(float(overall_bline_px) / float(overall_pleura_px)) * 100.0
+            return float(float(overall_bline_px) / float(overall_pleura_px))
 
     def process(self,
                 inputVolume: vtkMRMLScalarVolumeNode,
@@ -1811,11 +2311,7 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
 
         # Update overlay volume if requested
         if updateOverlay:
-            ratio = self.updateOverlayVolume()
-            if ratio is not None:
-                parameterNode.pleuraPercentage = ratio * 100
-            else:
-                parameterNode.pleuraPercentage = 0.0
+            ratio=self.updateOverlayVolume()
 
         # Update GUI if requested and we have a widget
         if updateGui:
@@ -1826,6 +2322,317 @@ class AdjudicateUltrasoundLogic(annotate.AnnotateUltrasoundLogic):
             except RuntimeError:
                 # Widget not initialized yet, skip GUI update
                 pass
+
+    def fanCornersFromSectorLine(self, p1, p2, center, r1, r2):
+        op1 = np.array(p1) - np.array(center)
+        op2 = np.array(p2) - np.array(center)
+
+        unit_op1 = op1 / np.linalg.norm(op1)
+        unit_op2 = op2 / np.linalg.norm(op2)
+
+        A = center + unit_op1 * r1
+        C = center + unit_op1 * r2
+        B = center + unit_op2 * r1
+        D = center + unit_op2 * r2
+
+        return A, B, C, D
+    
+    def line_coefficients(self, p1, p2):
+        """
+        Returns the coefficients of the line equation Ax + By + C = 0
+        """
+        if p1[0] == p2[0]:  # Vertical line
+            A = 1
+            B = 0
+            C = -p1[0]
+        else:
+            m = (p2[1] - p1[1]) / (p2[0] - p1[0])
+            A = -m
+            B = 1
+            C = m * p1[0] - p1[1]
+        return A, B, C
+
+    def createFanMask(self, imageArray, topLeft, topRight, bottomLeft, bottomRight, value=255):
+        # Caching: store last-used parameters and mask
+        if not hasattr(self, '_lastFanMaskParams'):
+            self._lastFanMaskParams = None
+            self._lastFanMaskArray = None
+        # Create a tuple of all relevant parameters
+        params = (
+            imageArray.shape,
+            tuple(topLeft), tuple(topRight), tuple(bottomLeft), tuple(bottomRight),
+            value
+        )
+        if self._lastFanMaskParams == params:
+            return self._lastFanMaskArray.copy()
+        image_size_rows = imageArray.shape[1]
+        image_size_cols = imageArray.shape[2]
+        mask_array = np.zeros((image_size_rows, image_size_cols), dtype=np.uint8)
+
+        # Compute the angle of the fan mask in degrees
+
+        if abs(topLeft[0] - bottomLeft[0]) < 0.001:
+            angle1 = 90.0
+        else:
+            angle1 = np.arctan((topLeft[1] - bottomLeft[1]) / (topLeft[0] - bottomLeft[0])) * 180 / np.pi + 180.0
+        if angle1 > 180.0:
+            angle1 -= 180.0
+        if angle1 < 0.0:
+            angle1 += 180.0
+
+        if abs(topRight[0] - bottomRight[0]) < 0.001:
+            angle2 = 90.0
+        else:
+            angle2 = np.arctan((topRight[1] - bottomRight[1]) / (topRight[0] - bottomRight[0])) * 180 / np.pi
+        if angle2 > 180.0:
+            angle2 -= 180.0
+        if angle2 < 0.0:
+            angle2 += 180.0
+
+        # Fit lines to the top and bottom points
+        leftLineA, leftLineB, leftLineC = self.line_coefficients(topLeft, bottomLeft)
+        rightLineA, rightLineB, rightLineC = self.line_coefficients(topRight, bottomRight)
+
+        # Handle the case when the lines are parallel
+        if leftLineB != 0 and rightLineB != 0 and leftLineA / leftLineB == rightLineA / rightLineB:
+            logging.warning(f"Left and right lines are parallel: topLeft: {topLeft}, topRight: {topRight}, bottomLeft: {bottomLeft}, bottomRight: {bottomRight}, leftLineA: {leftLineA}, leftLineB: {leftLineB}, rightLineA: {rightLineA}, rightLineB: {rightLineB}")
+            return mask_array
+
+        # Compute intersection point of the two lines
+        det = leftLineA * rightLineB - leftLineB * rightLineA
+        if det == 0:
+            logging.warning("No intersection point found")
+            return mask_array
+
+        intersectionX = (leftLineB * rightLineC - rightLineB * leftLineC) / det
+        intersectionY = (rightLineA * leftLineC - leftLineA * rightLineC) / det
+
+        # Compute average distance of top points to the intersection point
+
+        topDistance = np.sqrt((topLeft[0] - intersectionX) ** 2 + (topLeft[1] - intersectionY) ** 2) + \
+                      np.sqrt((topRight[0] - intersectionX) ** 2 + (topRight[1] - intersectionY) ** 2)
+        topDistance /= 2
+
+        # Compute average distance of bottom points to the intersection point
+
+        bottomDistance = np.sqrt((bottomLeft[0] - intersectionX) ** 2 + (bottomLeft[1] - intersectionY) ** 2) + \
+                          np.sqrt((bottomRight[0] - intersectionX) ** 2 + (bottomRight[1] - intersectionY) ** 2)
+        bottomDistance /= 2
+
+        # Mask parameters
+
+        center_rows_px = round(intersectionY)
+        center_cols_px = round(intersectionX)
+        radius1 = round(topDistance)
+        radius2 = round(bottomDistance)
+
+        # Create a mask image
+
+        # mask_array = cv2.ellipse(mask_array, (center_cols_px, center_rows_px), (radius2, radius2), 0.0, angle2, angle1, value, -1)
+        mask_array = self.draw_circle_segment(mask_array, (center_cols_px, center_rows_px), radius2, angle2, angle1, value)
+        mask_array = cv2.circle(mask_array, (center_cols_px, center_rows_px), radius1, 0, -1)
+
+        # Cache the result before returning
+        self._lastFanMaskParams = params
+        self._lastFanMaskArray = mask_array.copy()
+        return mask_array
+
+    def draw_circle_segment(self, image, center, radius, start_angle, end_angle, color):
+        """
+        Draws a segment of a circle with floating point start and end angles on a numpy array image.
+
+        :param image: Image as a numpy array.
+        :param center: Center of the circle (x, y).
+        :param radius: Radius of the circle.
+        :param start_angle: Start angle in degrees (floating point).
+        :param end_angle: End angle in degrees (floating point).
+        :param color: Color of the segment (B, G, R).
+        :return: Image with the drawn circle segment.
+        """
+        mask = np.zeros_like(image)
+
+        # Convert angles to radians
+        start_angle_rad = np.deg2rad(start_angle)
+        end_angle_rad = np.deg2rad(end_angle)
+
+        # Generate points for the circle segment
+        thetas = np.linspace(start_angle_rad, end_angle_rad, 360)
+        xs = center[0] + radius * np.cos(thetas)
+        ys = center[1] + radius * np.sin(thetas)
+
+        # Draw the outer arc
+        pts = np.array([np.round(xs), np.round(ys)]).T.astype(int)
+        cv2.polylines(mask, [pts], False, color, 1)
+
+        # Draw two lines from the center to the start and end points
+        cv2.line(mask, center, tuple(pts[0]), color, 1)
+        cv2.line(mask, center, tuple(pts[-1]), color, 1)
+
+        # Fill the segment
+        cv2.fillPoly(mask, [np.vstack([center, pts])], color)
+
+        # Combine the mask with the original image
+        return cv2.bitwise_or(image, mask)
+
+    def createSectorMaskBetweenPoints(self, imageArray, point1, point2, value=255):
+        if "mask_type" not in self.annotations:
+            logging.error("No mask type found in annotations. Assuming rectangular mask.")
+        # Caching: store last-used parameters and mask
+        if not hasattr(self, '_lastSectorMaskParams'):
+            self._lastSectorMaskParams = None
+            self._lastSectorMaskArray = None
+        params = (
+            imageArray.shape,
+            tuple(point1), tuple(point2),
+            value,
+            self.annotations.get('mask_type', None),
+            self.annotations.get('radius1', None),
+            self.annotations.get('radius2', None),
+            self.annotations.get('center_rows_px', None),
+            self.annotations.get('center_cols_px', None),
+            self.annotations.get('angle1', None),
+            self.annotations.get('angle2', None)
+        )
+        if self._lastSectorMaskParams == params:
+            return self._lastSectorMaskArray.copy()
+
+        if "mask_type" not in self.annotations or self.annotations["mask_type"] != "fan":
+            # Create a rectangular mask
+            maskArray = np.zeros(imageArray.shape, dtype=np.uint8)
+            maskArray[:, point1[1]:point2[1], point1[0]:point2[0]] = value
+            # Cache and return
+            self._lastSectorMaskParams = params
+            self._lastSectorMaskArray = maskArray.copy()
+        else:
+            radius1 = self.annotations["radius1"]
+            radius2 = self.annotations["radius2"]
+            center_rows_px = self.annotations["center_rows_px"]
+            center_cols_px = self.annotations["center_cols_px"]
+            a, b, c, d = self.fanCornersFromSectorLine(point1[:2], point2[:2],
+                                                       (center_cols_px, center_rows_px),
+                                                       radius1, radius2)
+            maskArray = self.createFanMask(imageArray, a, b, c, d, value)
+            # Cache and return
+            self._lastSectorMaskParams = params
+            self._lastSectorMaskArray = maskArray.copy()
+
+        return maskArray
+
+    def clearSceneLines(self, sync=False):
+        """
+        Remove all pleura lines and B-lines from the scene and from the list of lines.
+        """
+        # Remove all pleura lines
+        while self.removeLastPleuraLine(sync=sync):
+            pass
+        # Remove all B-lines
+        while self.removeLastBline(sync=sync):
+            pass
+
+    def clearAllLines(self):
+        """
+        Remove all pleura lines and B-lines from the scene and from the list of lines.
+        Only updates the annotation if the current frame is already in the annotations.
+        """
+        self.clearSceneLines(sync=False)
+        # Only update annotation if current frame is already present
+        if self.sequenceBrowserNode is not None and self.annotations is not None and 'frame_annotations' in self.annotations:
+            currentFrameIndex = max(0, self.sequenceBrowserNode.GetSelectedItemNumber())
+            if any(int(f.get("frame_number", -1)) == currentFrameIndex for f in self.annotations["frame_annotations"]):
+                self.syncMarkupsToAnnotations()
+                self.refreshDisplay(updateOverlay=True, updateGui=True)
+
+    def removeLastPleuraLine(self, sync=True):
+        """
+        Remove the last pleura line from the scene and from the list of pleura lines.
+        """
+        if len(self.pleuraLines) > 0:
+            # find the last pleura line for the rater
+            parameterNode = self.getParameterNode()
+            current_rater = parameterNode.rater.strip().lower()
+            currentLine = None
+            for line in reversed(self.pleuraLines):
+                if line.GetAttribute("rater") == current_rater:
+                    currentLine = line
+                    break
+            if currentLine is None:
+                statusText = f"No pleura line found for rater {current_rater}"
+                slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+                return False
+            self.pleuraLines.remove(currentLine)
+            self._freeMarkupNode(currentLine)
+            if sync:
+                self.syncMarkupsToAnnotations()
+                self.refreshDisplay(updateOverlay=True, updateGui=True)
+
+            return True
+        return False
+
+    def removeLastBline(self, sync=True):
+        """
+        Remove the last B-line from the scene and from the list of B-lines.
+        """
+        if len(self.bLines) > 0:
+            # find the last B-line for the rater
+            currentLine = None
+            parameterNode = self.getParameterNode()
+            current_rater = parameterNode.rater.strip().lower()
+            for line in reversed(self.bLines):
+                if line.GetAttribute("rater") == current_rater:
+                    currentLine = line
+                    break
+            if currentLine is None:
+                statusText = f"No B-line found for rater {current_rater}"
+                slicer.util.mainWindow().statusBar().showMessage(statusText, 3000)
+                return False
+            self.bLines.remove(currentLine)
+            self._freeMarkupNode(currentLine)
+            if sync:
+                self.syncMarkupsToAnnotations()
+                self.refreshDisplay(updateOverlay=True, updateGui=True)
+            return True
+        return False
+    
+    def _freeMarkupNode(self, markupNode):
+        # Handle None nodes gracefully
+        if markupNode is None or markupNode.GetID() is None:
+            return
+
+        try:
+            self.removeObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
+        except:
+            pass
+        try:
+            self.removeObserver(markupNode, markupNode.PointModifiedEvent, self.onPointModified)
+        except:
+            pass
+        try:
+            self.removeObserver(markupNode, markupNode.PointPositionDefinedEvent, self.onPointPositionDefined)
+        except:
+            pass
+        try:
+            self.removeObserver(markupNode, markupNode.PointRemovedEvent, self.onPointRemoved)
+        except:
+            pass
+
+        markupNode.RemoveAllControlPoints()
+
+        if self.useFreeList:
+            markupNode.SetName("freeMarkupNode")
+            markupNode.SetAttribute("rater", "")
+            markupNode.Modified()
+            self.freeMarkupNodes.append(markupNode)
+        else:
+            slicer.mrmlScene.RemoveNode(markupNode)
+
+        try:
+            self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onMarkupNodeRemoved)
+        except:
+            pass
+
+    
+    
+
 
 #
 # Register the module

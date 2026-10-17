@@ -808,7 +808,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
 
         :return: True if the input directory was read successfully, False otherwise.
         """
-        logging.debug('onReadInputButton')
+        logging.debug('!!!!!onReadInputButton Pressed!!!!!!!')
 
         inputDirectory = self.ui.inputDirectoryButton.directory
         if not inputDirectory:
@@ -927,7 +927,7 @@ class AnnotateUltrasoundWidget(ScriptedLoadableModuleWidget, CustomObserverMixin
         return True
 
     def onNextButton(self):
-        logging.debug('onNextButton')
+        logging.debug('onNextButton !!!!!Pressed!!!!')
 
         if self.logic.dicomDf is None:
             self.ui.statusLabel.setText("Please read input directory first")
