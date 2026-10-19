@@ -169,33 +169,56 @@ For issues and questions:
 
 ## Anonymize Ultrasound
 
-This module reads a folder of ultrasound cine loops in DICOM format and iterates through them. It allows masking the fan shaped or rectangular image area to erase non-ultrasound information from the images. It also allows associating labels to loops, so classification annotations can start during anonymization. The masked loops are exported in DICOM format. The exported DICOM files only contain a specific set of DICOM tags that do not contain any personal information about the patient.
+This module reads a folder of ultrasound cine loops in DICOM format and iterates through them. It allows masking the fan shaped or rectangular image area to erase non-ultrasound information from the images. It also allows associating labels to loops, so classification annotations can start during anonymization. The masked loops are exported as new DICOM files built from a fixed list of attributes; the mapping back to the source files is written to a separate `keys.csv`. The output is prepared for restricted research use; a separate review is required before sharing it.
 
 ### How to use Anonymize Ultrasound module
 
 1. Select **Input folder** as the folder that contains all your DICOM files. They can be in subfolders.
-1. Select **Output folder** as an empty folder, or which contains previously exported files using this module.
-1. Click **Read DICOM folder** and wait until the input and output folders are scanned to compile a list of files to be anonymized.
-1. Click **Load next** to load the next DICOM file in alphabetical order.
-1. Click **Define mask** and click on the four corners of the ultrasound area. Corner points can be modified later by dragging.
-1. Click **Export** to produce three files in the output folder: the anonymized DICOM, an annotation file with the corner points, and a json file with all the original DICOM tags that went through light anonymization.
+1. Select **Output folder** as an empty folder, or the folder that holds the files exported earlier with the same keys directory.
+1. Select the **Keys directory**: a folder that only the research coordinator can read. `keys.csv` is read from and written to this folder. It must not be inside the input or output folder.
+1. Optionally type a **Project label** (1 to 16 letters, digits, `_` or `-`). It is put in front of the patient pseudonym in the exported PatientName. It is never filled in from a folder name.
+1. Click **Import DICOM folder** and wait until the input folder is scanned. `keys.csv` is updated before the first file is loaded.
+1. Click **Next** to load the next DICOM file in alphabetical order.
+1. Click **Mask** and click on the corners of the ultrasound area. Corner points can be modified later by dragging.
+1. Click **Export** to produce two files in the output folder: the de-identified DICOM `<uuid>.dcm` and the annotation file `<uuid>.json` with the mask parameters and the checked labels. An instance counts as exported only when both files exist.
 
-### Anonymization steps
+### What the export contains
 
-- The area outside the defined fan or rectangle region is erased on all frames.
-- A PatientUID is generated as a 10-digit hash of the input DICOM Patient ID, and a FileUID is generated as an 8-digit hash of the DICOM SOP Intance UID.
-- The exported output file will be named **PatientUID_FileUID.dcm**
-- When **Hash Patient ID** is selected, the patient name is replaced the PatientUID and the Series Description is replaced by PatientUID_FileUID.
-- New SOP Series UID is generated for every exported file (cine loop) so all DICOM browsers can load them one-by-one. (Most DICOM browsers load all instances of a series at a time, but some ultrasound machines export all cine loops of an exam under a single series UID.)
+- The area outside the defined fan or rectangle region is erased on all frames. Text inside the region is not detected.
+- The output dataset is built from an empty dataset. These attributes are carried over from the source: the image encoding (bits, samples, photometric interpretation), `PixelSpacing`, `Manufacturer`, `ManufacturerModelName`, `TransducerType`, the model segment of `TransducerData`, `PatientSex`, `PatientAge` (capped at `090Y`), `SeriesNumber` and the SOP class. `SpecificCharacterSet` is copied whenever present, even when no ultrasound regions exist; no character-set declaration is invented. Outside the preserved region subtree described below, descriptions, station and institution names, operator and physician names, comments and private attributes are not copied.
+- A nonempty `SequenceOfUltrasoundRegions` is preserved in full, retaining item order and every field, including private elements, nested source references and any item-level character-set declarations. Missing and empty sequences are omitted. The existing `PixelSpacing` calculation is unchanged.
+- `PatientID` is a random 32-character pseudonym drawn the first time a source patient is seen and reused afterwards. `PatientName` is the pseudonym, with the project label in front when one is given.
+- Study, Series, SOP Instance and Frame of Reference UIDs are new random UIDs in the `2.25` arc. One source series stays one exported series. The file name is the SOP Instance UID in UUID form, so file name and UID always match.
+- Dates are moved forward by a whole number of days between 1 and 1095, drawn once per source patient and stored in `keys.csv`. Every study of a patient uses the same offset, so the intervals between studies are kept. Output dates therefore lie after the real dates and can lie in the future. Times are copied unchanged. A source date that is missing or not a valid `YYYYMMDD` value is written empty.
+- Every newly written export carries `PatientIdentityRemoved = YES`, `LongitudinalTemporalInformationModified = MODIFIED` and exactly one item in `DeidentificationMethodCodeSequence`: `CodingSchemeDesignator = 99SLICERUS`, `CodeValue = ANON_US`, `CodeMeaning = SlicerUltrasound_AnonymizeUltrasound`. The separate `DeidentificationMethod` text attribute is absent. This local code identifies the tool's method within the extensible [DICOM CID 7050](https://dicom.nema.org/medical/dicom/current/output/chtml/part16/sect_CID_7050.html); it does not assert a standard confidentiality profile.
+
+The pre-PR module assigned the raw ultrasound-region sequence directly. This export restores that content-preservation behavior with a deep copy, so changing copied nested contents cannot change the source. Preservation means equivalent parsed contents after writing and reading the file back, not identical serialized bytes.
+
+**The preserved ultrasound-region subtree is not de-identified and can retain identifiers.** Neither `PatientIdentityRemoved = YES` nor the coded method proves complete identity removal or confidentiality-profile conformance. Review the preserved metadata and all image frames before sharing exports.
+
+These changes apply to newly written exports. Existing completed DICOM/JSON pairs are not automatically migrated or rewritten; **Continue progress** still skips them.
+
+### keys.csv
+
+`keys.csv` contains the re-identification mapping and must be restricted to the research coordinator. The keys directory holds only `keys.csv` and `keys.csv.lock` (a zero-byte file that keeps two sessions from writing at the same time). The file has one row per source instance and these columns:
+
+`InputPath, OutputPath, AnonFilename, PatientUID, AnonPatientID, StudyUID, AnonStudyUID, SeriesUID, AnonSeriesUID, InstanceUID, AnonSOPInstanceUID, FrameOfReferenceUID, AnonFrameOfReferenceUID, DateShiftDays`
+
+- `InputPath` and `OutputPath` are relative to the input and output folders.
+- `PatientUID`, `StudyUID`, `SeriesUID`, `InstanceUID` and `FrameOfReferenceUID` are the source values; the `Anon*` columns are the exported values; `DateShiftDays` is the patient's date offset.
+- Import reads the file, checks that every mapping is complete and one-to-one, adds the newly scanned instances and writes the file back atomically. A file that does not pass the checks is left untouched and the Import is refused.
+- Use one keys directory per patient-identifier authority. Import is refused when the files of one Import carry more than one `IssuerOfPatientID`; the check covers that Import only, not earlier Imports into the same keys directory.
+- A row reserves the mapping of an instance; it does not prove that the instance was exported. The two files in the output folder do.
+- Import is refused when the output folder holds DICOM files that `keys.csv` does not list.
 
 Options under Settings collapsible button:
 
-- **Skip single-frame input files**: use this for efficiency if you only need to export multi-frame DICOM files.
-- **Skip input if output already exists**: prevents repeated loading of files whose output already exists.
-- **Keep input folders and filenames in output folder**: keeps the subfolder structure and file names of input files.
-- **Convert color to grayscale**: use this if you want to eliminate colors in the exported images.
-- **JPEG compression in DICOM**: use this to apply compression in exported files without visual information loss.
-- **Labels file**: Select a CSV file that contains classification labels. These labels will populate the GUI with checkboxes. Checked labels will be saved in the exported annotation json files.
+- **Preserve input directory structure**: keeps the subfolder structure of the input files in the output folder. File names are always replaced.
+- **Use cached mask**: reuses the last mask defined for the same transducer model.
+- **Skip single-frame input DICOM files**: use this for efficiency if you only need to export multi-frame DICOM files.
+- **Continue progress**: skips input files whose DICOM and JSON pair already exists in the output folder.
+- **Enable 3-Point Fan Mask**: defines a fan from one top point and two bottom points.
+- **Annotation labels CSV file**: Select a CSV file that contains classification labels. These labels will populate the GUI with checkboxes. Checked labels will be saved in the exported annotation json files.
 
 ![2024-04-14_AnonymizeUltrasound](https://github.com/SlicerUltrasound/SlicerUltrasound/assets/2071850/52ff3ab6-94ea-41d5-88c5-596b66d6a659)
 

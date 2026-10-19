@@ -44,7 +44,14 @@ except ImportError:
     import cv2
 
 from common.dicom_file_manager import DicomFileManager
-from common.version_info import get_provenance
+from common.export import (
+    ExportError,
+    export_instance,
+    resolve_session_directories,
+    unlisted_output_dicoms,
+    validate_prefix,
+)
+from common.key_store import KEYS_FILENAME, KeyStore, KeysFileError, KeysLock
 
 class AnonymizeUltrasound(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -96,7 +103,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
     HEADERS_FOLDER_SETTING = "AnonymizeUltrasound/HeadersFolder"
     SKIP_SINGLE_FRAME_SETTING = "AnonymizeUltrasound/SkipSingleFrame"
     CONTINUE_PROGRESS_SETTING = "AnonymizeUltrasound/ContinueProgress"
-    HASH_PATIENT_ID_SETTING = "AnonymizeUltrasound/HashPatientId"
     FILENAME_PREFIX_SETTING = "AnonymizeUltrasound/FilenamePrefix"
     LABELS_PATH_SETTING = "AnonymizeUltrasound/LabelsPath"
     THREE_POINT_FAN_SETTING = "AnonymizeUltrasound/ThreePointFan"
@@ -239,13 +245,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.ui.skipSingleframeCheckBox.checked = False
         self.ui.skipSingleframeCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.SKIP_SINGLE_FRAME_SETTING, str(newValue)))
 
-        hashPatientIdStr = settings.value(self.HASH_PATIENT_ID_SETTING)
-        if hashPatientIdStr and hashPatientIdStr.lower() == "true":
-            self.ui.hashPatientIdCheckBox.checked = True
-        else:
-            self.ui.hashPatientIdCheckBox.checked = False
-        self.ui.hashPatientIdCheckBox.connect('toggled(bool)', lambda newValue: self.onSettingChanged(self.HASH_PATIENT_ID_SETTING, str(newValue)))
-
         filenamePrefix = settings.value(self.FILENAME_PREFIX_SETTING)  # This has been moved to Processing tab on the UI
         if filenamePrefix:
             self.ui.namePrefixLineEdit.text = filenamePrefix
@@ -282,6 +281,8 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         """Called when the application closes and the module widget is destroyed."""
         self.removeObservers()
         self.disconnectKeyboardShortcuts()
+        if self.logic is not None:
+            self.logic.close_session()
 
     def enter(self) -> None:
         """Called each time the user opens this module."""
@@ -567,44 +568,29 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         logging.info("Import DICOM button clicked")
         self.set_processing_mode(True)
 
-        # Check input and output folders
-
-        inputDirectory = self.ui.inputDirectoryButton.directory
-        if not inputDirectory:
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Please select an input directory")
+        # Resolve and check the three directories, then lock the keys directory,
+        # read keys.csv, scan the input and write keys.csv back. The session is
+        # ready only after all of that succeeded.
+        try:
+            inputDirectory, outputDirectory, keysDirectory = resolve_session_directories(
+                self.ui.inputDirectoryButton.directory,
+                self.ui.outputDirectoryButton.directory,
+                self.ui.headersDirectoryButton.directory)
+            numFiles = self.logic.import_directory(
+                inputDirectory, outputDirectory, keysDirectory,
+                skip_single_frame=self.ui.skipSingleframeCheckBox.checked)
+        except (ExportError, KeysFileError, OSError) as e:
+            self.set_processing_mode(False)
+            self._parameterNode.status = AnonymizerStatus.INITIAL
+            self.ui.statusLabel.text = "Import failed. Nothing was changed."
+            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", str(e))
             return
-        if not os.path.exists(inputDirectory):
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Input directory does not exist")
-            return
-
-        outputDirectory = self.ui.outputDirectoryButton.directory
-        if not outputDirectory:
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Please select an output directory")
-            return
-        if not os.path.exists(outputDirectory):
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Output directory does not exist")
-            return
-
-        outputHeadersDirectory = self.ui.headersDirectoryButton.directory
-        if not outputHeadersDirectory:
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Please select a headers directory")
-            return
-        if not os.path.exists(outputHeadersDirectory):
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", "Headers directory does not exist")
-            return
-
-        numFiles = self.logic.dicom_manager.scan_directory(inputDirectory, self.ui.skipSingleframeCheckBox.checked, self.ui.hashPatientIdCheckBox.checked)
         logging.info(f"Found {numFiles} DICOM files in input folder")
 
         if numFiles > 0:
             self._parameterNode.status = AnonymizerStatus.INPUT_READY
         else:
             self._parameterNode.status = AnonymizerStatus.INITIAL
-
-        # Export self.logic.dicom_manager.dicom_df as a CSV file in the headers directory
-        df = self.logic.dicom_manager.build_csv_dataframe(inputDirectory)
-        if df is not None:
-            df.to_csv(os.path.join(outputHeadersDirectory, "keys.csv"), index=False)
 
         statusText = str(numFiles)
         if self.ui.skipSingleframeCheckBox.checked:
@@ -623,8 +609,6 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 statusText += '\n' + str(numDone) + ' files already processed in output folder. Continue at next.'
         self.ui.statusLabel.text = statusText
 
-        # Set the patient name prefix to the input directory name
-        self.ui.namePrefixLineEdit.text = inputDirectory.split('/')[-1]
         if numFiles > 0:
             self.onNextButton()
 
@@ -961,65 +945,44 @@ class AnonymizeUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             if not slicer.util.confirmOkCancelDisplay("No mask defined. Do you want to proceed without masking?"):
                 return False
 
+        # The export is bound to the directories of the last Import and to the
+        # optional project label typed by the operator.
+        try:
+            currentDirectories = resolve_session_directories(
+                self.ui.inputDirectoryButton.directory,
+                self.ui.outputDirectoryButton.directory,
+                self.ui.headersDirectoryButton.directory)
+            if currentDirectories != self.logic.session_directories:
+                raise ExportError("The input, output or keys directory changed since the last Import. "
+                                  "Import the DICOM folder again before exporting.")
+            prefix = validate_prefix(self.ui.namePrefixLineEdit.text)
+        except ExportError as e:
+            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", str(e))
+            return False
+
         # Mask images to erase the unwanted parts
         self.logic.maskSequence(three_point=threePointFanModeEnabled)
 
-        # Set up output directory and filename
-
-        hashPatientId = self.ui.hashPatientIdCheckBox.checked
-
-        # If hashPatientId is not checked, confirm with the user that they really want to proceed.
-
-        if not hashPatientId:
-            if not slicer.util.confirmOkCancelDisplay("Patient name will not be masked. Do you want to proceed?"):
-                return False
-
-        outputDirectory = self.ui.outputDirectoryButton.directory
-        headersDirectory = self.ui.headersDirectoryButton.directory
-
-        current_dicom_record = self.logic.dicom_manager.dicom_df.iloc[self.logic.dicom_manager.current_index]
-        filename, patient_uid, _ = self.logic.dicom_manager.generate_filename_from_dicom_dataset(current_dicom_record.DICOMDataset, hashPatientId)
-
         dialog = self.createWaitDialog("Exporting scan", "Please wait until the scan is exported...")
-
-        if hashPatientId:
-            patient_name_prefix = self.ui.namePrefixLineEdit.text
-
-            # if patient_name_prefix is empty, alert the user
-            if not patient_name_prefix:
-                if not slicer.util.confirmOkCancelDisplay("A `Patient Name Prefix` is required when Patient ID hashing is enabled. Do you want to proceed without a prefix?"):
-                    dialog.close()
-                    return False
-
-            new_patient_name = f"{patient_name_prefix}_{patient_uid}"
-            new_patient_id = patient_uid
-        else:
-            new_patient_name = None
-            new_patient_id = None
 
         # Save current mask to cache before exporting
         if self.ui.enableMaskCacheCheckBox.checked:
             self.logic.saveCurrentMaskToCache()
 
-        # Export the scan
-        dicomFilePath, jsonFilePath, dicomHeaderFilePath = self.logic.exportDicom(
-            output_directory=outputDirectory,
-            output_filename=filename,
-            headers_directory=headersDirectory,
-            labels = annotationLabels,
-            new_patient_name = new_patient_name,
-            new_patient_id = new_patient_id,
-            preserve_directory_structure = preserve_directory_structure)
+        # Export the scan as a DICOM + annotation JSON pair
+        try:
+            result = self.logic.export_current(prefix, annotationLabels, preserve_directory_structure)
+        except ExportError as e:
+            currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
+            dialog.close()
+            qt.QMessageBox.critical(slicer.util.mainWindow(), "Anonymize Ultrasound", str(e))
+            return False
 
         # Restore selected item number in sequence browser
         currentSequenceBrowser.SetSelectedItemNumber(selectedItemNumber)
 
         # Display file paths in the status label
-        statusText = f"Export successful!\nDICOM: {dicomFilePath}\nLabels: {jsonFilePath}"
-        if dicomHeaderFilePath:
-            statusText += f"\nHeader: {dicomHeaderFilePath}"
-
-        self.ui.statusLabel.text = statusText
+        self.ui.statusLabel.text = f"Export successful!\nDICOM: {result.dicom_path}\nLabels: {result.json_path}"
 
         # Close the modal dialog
         dialog.close()
@@ -1090,6 +1053,10 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         VTKObservationMixin.__init__(self)
 
         self.dicom_manager = DicomFileManager()
+        # Held from a successful Import until the next Import or module cleanup.
+        self.keys_lock = KeysLock()
+        # Real paths of (input, output, keys) bound by the last successful Import.
+        self.session_directories = None
         self._manualMaskRGB = None   # 1×H×W×3  uint8, green
         self._parameterNode = self._getOrCreateParameterNode()
         self.transducerMaskCache = {}   # TransducerModel -> mask volume node
@@ -1109,6 +1076,61 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
         Return the number of instances in the current DICOM dataframe.
         """
         return self.dicom_manager.get_number_of_instances()
+
+    def import_directory(self, input_dir, output_dir, keys_dir, skip_single_frame=False) -> int:
+        """Lock the keys directory, read keys.csv, scan the input and write keys.csv back.
+
+        The three directories must already be resolved by resolve_session_directories.
+        On success the session is bound to them and the number of listed instances is
+        returned. On any failure the lock is released, the dataframe is cleared and the
+        error (KeysFileError, ExportError or OSError) is raised for the caller to show.
+        """
+        self.close_session()
+        self.keys_lock.acquire(keys_dir)
+        try:
+            keys_path = os.path.join(keys_dir, KEYS_FILENAME)
+            key_store = KeyStore.load(keys_path)
+            unlisted = unlisted_output_dicoms(output_dir, key_store)
+            if unlisted:
+                raise KeysFileError(
+                    f"The output directory contains {len(unlisted)} DICOM file(s) that keys.csv "
+                    f"does not list (first: {unlisted[0]}). Choose an empty output directory, "
+                    "or the keys directory that belongs to this output.")
+            num_files = self.dicom_manager.scan_directory(input_dir, skip_single_frame, key_store=key_store)
+            if len(self.dicom_manager.issuers_of_patient_id) > 1:
+                raise KeysFileError(
+                    "The input files carry more than one IssuerOfPatientID. "
+                    "One keys.csv holds the patients of a single identifier authority.")
+            self.dicom_manager.save_keys_csv(keys_path)
+        except Exception:
+            self.close_session()
+            raise
+        self.session_directories = (input_dir, output_dir, keys_dir)
+        return num_files
+
+    def close_session(self) -> None:
+        """Release the keys lock and forget the scanned files."""
+        self.keys_lock.release()
+        self.session_directories = None
+        self.dicom_manager.reset()
+
+    def export_current(self, prefix, labels, preserve_directory_structure):
+        """Write the loaded instance as a DICOM + JSON pair into the session's output directory.
+
+        Returns the ExportResult with both paths; raises ExportError when no session is
+        bound or the export could not be completed (nothing final is left behind then).
+        """
+        if self.session_directories is None:
+            raise ExportError("Import a DICOM folder before exporting.")
+        row = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
+        image_array = self._collect_image_data_from_sequence(self.getParameterNode())
+        return export_instance(
+            self.dicom_manager, row, image_array,
+            output_root=self.session_directories[1],
+            prefix=prefix,
+            mask_params=getattr(self, 'maskParameters', None),
+            labels=labels,
+            preserve_directory_structure=preserve_directory_structure)
 
     def loadPreviousSequence(self, outputDirectory, continueProgress=True, preserve_directory_structure=True):
         if self.dicom_manager.dicom_df is None:
@@ -1826,26 +1848,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
 
         return 'N/A'
 
-    def saveDicomFile(self, dicomFilePath, new_patient_name='', new_patient_id='', labels=None):
-        """
-        Save the current ultrasound sequence as an anonymized DICOM file.
-
-        Returns the in-memory anonymized pydicom.Dataset so the header sidecar
-        in exportDicom() can serialize from it (preventing source UID leaks).
-        """
-        parameterNode = self.getParameterNode()
-
-        # Collect image data from sequence browser as a numpy array
-        image_array = self._collect_image_data_from_sequence(parameterNode)
-
-        return self.dicom_manager.save_anonymized_dicom(
-            image_array=image_array,
-            output_path=dicomFilePath,
-            new_patient_name=new_patient_name,
-            new_patient_id=new_patient_id,
-            labels=labels
-        )
-
     def _collect_image_data_from_sequence(self, parameterNode) -> np.ndarray:
         """Collect all image frames from the sequence browser into a numpy array."""
         currentSequenceBrowser = parameterNode.ultrasoundSequenceBrowser
@@ -1868,103 +1870,6 @@ class AnonymizeUltrasoundLogic(ScriptedLoadableModuleLogic, VTKObservationMixin)
             imageArray[index, :, :, :] = currentVolumeArray
 
         return imageArray
-
-    def exportDicom(self,
-                    output_directory,
-                    output_filename = None,
-                    headers_directory = None,
-                    labels = None,
-                    new_patient_name = "",
-                    new_patient_id = "",
-                    preserve_directory_structure = True):
-        """
-        Export the current ultrasound sequence as an anonymized DICOM file with optional annotation labels.
-
-        Args:
-            outputDirectory (str): Directory path where the DICOM file will be saved
-            outputFilename (str, optional): Custom filename for the output DICOM. If None,
-                generates filename from DICOM dataset. Defaults to None.
-            headersDirectory (str, optional): Directory path to save original DICOM headers
-                as JSON files. If None, headers are not saved. Defaults to None.
-            labels (list, optional): List of annotation labels to include in the output
-                JSON file. Defaults to None.
-            new_patient_name (str, optional): Anonymized patient name to use in the output
-                DICOM. If None, uses original name. Defaults to "".
-            new_patient_id (str, optional): Anonymized patient ID to use in the output
-                DICOM. If None, uses original ID. Defaults to "".
-            preserve_directory_structure (bool, optional): Whether to maintain the original
-                directory structure in the output path. Defaults to True.
-
-        Returns:
-            tuple: (dicomFilePath, jsonFilePath, dicomHeaderFilePath) - Paths to the saved
-                DICOM file, annotations JSON file, and DICOM header JSON file respectively.
-                Returns (None, None, None) if export fails.
-
-        Note:
-            - Collects image data from the sequence browser and saves as anonymized DICOM
-            - Creates output directories if they don't exist
-            - Saves sequence information and annotations to JSON file
-            - Optionally saves original DICOM headers with partial anonymization
-        """
-        # Record sequence information to a dictionary. This will be saved in the
-        # annotations JSON file. SOPInstanceUID is the anonymized UID
-        # (AnonSOPInstanceUID column populated at scan time); reading from
-        # DICOMDataset would leak the source UID into the sidecar.
-        current_dicom_record = self.dicom_manager.dicom_df.iloc[self.dicom_manager.current_index]
-        SOPInstanceUID = getattr(current_dicom_record, 'AnonSOPInstanceUID', '') or 'None'
-
-        provenance = get_provenance()
-        sequence_info = {
-            'SOPInstanceUID': SOPInstanceUID,
-            'GrayscaleConversion': False,
-            'git_sha': provenance['git_sha'],
-            'git_dirty': provenance['git_dirty'],
-        }
-
-        # Create output directory if it doesn't exist
-        if not os.path.exists(output_directory):
-            os.makedirs(output_directory)
-
-        # Save DICOM image file
-        if output_filename is None:
-            output_filename, _, _ = self.dicom_manager.generate_filename_from_dicom_dataset(current_dicom_record.DICOMDataset)
-
-        if output_filename is None or output_filename == "":
-            return None, None, None
-
-        # Generate complete output path with directory structure consideration
-        dicom_file_path = self.dicom_manager.generate_output_filepath(
-            output_directory, current_dicom_record.OutputPath, preserve_directory_structure)
-
-        anonymized_ds = self.saveDicomFile(dicom_file_path, new_patient_name, new_patient_id, labels)
-
-        # Save DICOM header JSON, serializing from the in-memory anonymized
-        # Dataset so the sidecar contains only remapped UIDs and trimmed
-        # TransducerData — never the original source values.
-        if anonymized_ds is not None:
-            dicom_header_file_path = self.dicom_manager.save_anonymized_dicom_header(
-                current_dicom_record, output_filename, headers_directory,
-                anonymized_dataset=anonymized_ds,
-            )
-        else:
-            dicom_header_file_path = None
-
-        # Add mask parameters to sequenceInfo
-        for key, value in self.maskParameters.items():
-            sequence_info[key] = value
-
-        # Add annotation labels to sequenceInfo
-        if labels is not None:
-            sequence_info["AnnotationLabels"] = labels
-
-        # Save sequenceInfo to a file
-        sequence_info_filename = dicom_file_path.replace(".dcm", ".json")
-        sequence_info_file_path = os.path.join(output_directory, sequence_info_filename)
-
-        with open(sequence_info_file_path, 'w') as outfile:
-            json.dump(sequence_info, outfile)
-
-        return dicom_file_path, sequence_info_file_path, dicom_header_file_path
 
     def _composeAndPushOverlay(self):
         """Write the manual mask into overlayVolume (always foreground)."""

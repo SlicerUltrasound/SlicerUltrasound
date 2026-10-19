@@ -327,113 +327,50 @@ class MockAnonymizeUltrasoundLogic:
         return self.batchIndex >= len(self.batchFiles)
 
 
-# ----------------------------------------------------------------------------
-# Integration tests for git-provenance injection (Step 4 + Step 5 of the plan)
-# ----------------------------------------------------------------------------
-
-import json as _json
 from pathlib import Path as _Path
 
 
-class TestExportDicomProvenance:
-    """End-to-end coverage for git_sha/git_dirty injection.
+class TestInteractiveExportWiring:
+    """Source-level guards for the interactive Import/Export path.
 
-    Direct invocation of ``AnonymizeUltrasoundLogic.exportDicom()`` is not
-    possible from the headless test environment (it imports ``slicer`` and
-    subclasses Slicer base classes). Instead these tests:
-
-    1. Drive ``apply_provenance_tag()`` end-to-end against a real pydicom
-       Dataset, round-trip through dcmwrite/dcmread, and assert the private
-       block carries valid JSON. This is true integration coverage for the
-       DICOM tag path.
-
-    2. Drive the exact ``sequence_info`` construction the production
-       ``exportDicom()`` performs after Step 4, serialize to JSON on disk,
-       reload, and assert keys+types. Then verify ``AnonymizeUltrasound.py``
-       actually imports the helper and references both provenance keys —
-       this guards against silently shipping the helper without wiring it
-       into ``exportDicom``.
+    ``AnonymizeUltrasound.py`` imports ``slicer`` at module level, so the
+    widget cannot be instantiated here; these tests read the module source,
+    the .ui file and the CMake list instead.
     """
 
-    def setup_method(self):
-        from common import version_info
-        version_info._reset_cache_for_tests()
+    MODULE_DIR = _Path(__file__).resolve().parents[1]
 
-    def teardown_method(self):
-        from common import version_info
-        version_info._reset_cache_for_tests()
+    def _module_source(self):
+        return (self.MODULE_DIR / "AnonymizeUltrasound.py").read_text(encoding="utf-8")
 
-    def test_export_dicom_writes_git_sha_to_sidecar_json(self, tmp_path):
-        """Sidecar JSON carries git_sha and git_dirty with expected types."""
-        from common import version_info
+    def _ui_source(self):
+        return (self.MODULE_DIR / "Resources" / "UI" / "AnonymizeUltrasound.ui").read_text(encoding="utf-8")
 
-        version_info._PROVENANCE_CACHE = {
-            "git_sha": "a" * 40,
-            "git_dirty": False,
-        }
+    def test_prefix_is_not_prefilled_from_the_input_folder(self):
+        assert "namePrefixLineEdit.text = inputDirectory" not in self._module_source()
 
-        # --- Behavior: replay the modified Step 4 code path ---------------
-        provenance = version_info.get_provenance()
-        sequence_info = {
-            "SOPInstanceUID": "anonymized-uid",
-            "GrayscaleConversion": False,
-            "git_sha": provenance["git_sha"],
-            "git_dirty": provenance["git_dirty"],
-        }
-        sidecar = tmp_path / "fixture.json"
-        sidecar.write_text(_json.dumps(sequence_info))
+    def test_patient_id_is_always_replaced(self):
+        src = self._module_source()
+        assert "hashPatientIdCheckBox" not in src
+        assert "HASH_PATIENT_ID" not in src
+        assert "hashPatientIdCheckBox" not in self._ui_source()
 
-        loaded = _json.loads(sidecar.read_text())
-        assert loaded["git_sha"] == "a" * 40
-        assert loaded["git_dirty"] is False
-        assert isinstance(loaded["git_sha"], str)
-        assert isinstance(loaded["git_dirty"], bool)
+    def test_header_json_is_not_written(self):
+        assert "save_anonymized_dicom_header" not in self._module_source()
 
-        # --- Wiring guard: exportDicom imports + uses the helper ----------
-        module_src = (
-            _Path(__file__).resolve().parents[1] / "AnonymizeUltrasound.py"
-        ).read_text()
-        assert "from common.version_info import" in module_src, (
-            "AnonymizeUltrasound.py must import the provenance helper from "
-            "common.version_info (Step 4 wiring missing)"
-        )
-        assert "'git_sha'" in module_src and "'git_dirty'" in module_src, (
-            "exportDicom must emit both git_sha and git_dirty keys into "
-            "sequence_info (Step 4 wiring missing)"
-        )
+    def test_module_uses_the_export_and_key_store_modules(self):
+        src = self._module_source()
+        assert "from common.export import" in src
+        assert "from common.key_store import" in src
+        assert "KeysLock" in src and "KeyStore.load" in src
+        assert "export_instance(" in src
+        assert "unlisted_output_dicoms(" in src
+        assert "output_directory_has_dicom" not in src
 
-    def test_export_dicom_writes_git_sha_private_tag(self, tmp_path):
-        """Private block (0x0099, '99BWHLUS') round-trips JSON via pydicom."""
-        import pydicom
-        from common import version_info
-
-        version_info._PROVENANCE_CACHE = {
-            "git_sha": "b" * 40,
-            "git_dirty": True,
-        }
-
-        # Build a minimal saveable Dataset (file_meta required for save_as).
-        ds = pydicom.Dataset()
-        ds.PatientName = "Test^Subject"
-
-        file_meta = pydicom.dataset.FileMetaDataset()
-        file_meta.MediaStorageSOPClassUID = pydicom.uid.UID(
-            "1.2.840.10008.5.1.4.1.1.6.1"
-        )
-        file_meta.MediaStorageSOPInstanceUID = pydicom.uid.UID("1.2.3.4.5")
-        file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
-        ds.file_meta = file_meta
-        ds.is_little_endian = True
-        ds.is_implicit_VR = False
-
-        version_info.apply_provenance_tag(ds)
-
-        out_path = tmp_path / "provenance.dcm"
-        ds.save_as(str(out_path), write_like_original=False)
-
-        reread = pydicom.dcmread(str(out_path))
-        block = reread.private_block(0x0099, "99BWHLUS")
-        loaded = _json.loads(block[0x00].value)
-
-        assert loaded["git_sha"] == "b" * 40
-        assert loaded["git_dirty"] is True
+    def test_cmake_lists_the_common_modules(self):
+        cmake = (self.MODULE_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+        assert "common/key_store.py" in cmake
+        assert "common/export.py" in cmake
+        assert "uid_remap" not in cmake
+        assert "version_info" not in cmake
+        assert "_version" not in cmake
